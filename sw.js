@@ -1,6 +1,6 @@
 // Mixtape offline cache. Bump VERSION whenever index.html changes so phones pick up the new copy.
-const VERSION = 'mixtape-v3';
-const CORE = ['./', './index.html', './app.js', './studio.html', './studio.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+const VERSION = 'mixtape-v4';
+const CORE = ['./', './index.html', './app.js', './studio.html', './studio.js', './dsp-worker.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));

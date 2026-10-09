@@ -16,7 +16,7 @@
   --bg:#ECEEE8; --surface:#F7F8F4; --raise:#FFFFFF; --ink:#1C1922; --muted:#67636F; --line:#D6D9D0;
   --accent:#5A2C84; --accent-ink:#FFFFFF; --accent-soft:#E6DCEF; --danger:#B3261E; --danger-ink:#FFFFFF;
   --sel:rgba(90,44,132,.18); --scrim:rgba(20,16,26,.45); --shadow:rgba(20,16,26,.28);
-  --wave-l:40%; --clip-l:55%; --head-w:200px;
+  --wave-l:40%; --clip-l:55%; --head-w:200px; --grid:rgba(28,25,34,.07); --grid-bar:rgba(28,25,34,.16);
   --f-display:"Bricolage Grotesque","Segoe UI",system-ui,sans-serif;
   --f-body:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --f-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
@@ -25,11 +25,11 @@
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
   --bg:#141218; --surface:#1C1922; --raise:#25202D; --ink:#EDE9F3; --muted:#9C96A7; --line:#2F2A38;
   --accent:#C6A4EC; --accent-ink:#1B1024; --accent-soft:#2E2440; --danger:#F2867C; --danger-ink:#2A0D0A;
-  --sel:rgba(198,164,236,.20); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.55); --wave-l:72%; --clip-l:45%; color-scheme:dark}}
+  --sel:rgba(198,164,236,.20); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.55); --wave-l:72%; --clip-l:45%; --grid:rgba(237,233,243,.06); --grid-bar:rgba(237,233,243,.15); color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#141218; --surface:#1C1922; --raise:#25202D; --ink:#EDE9F3; --muted:#9C96A7; --line:#2F2A38;
   --accent:#C6A4EC; --accent-ink:#1B1024; --accent-soft:#2E2440; --danger:#F2867C; --danger-ink:#2A0D0A;
-  --sel:rgba(198,164,236,.20); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.55); --wave-l:72%; --clip-l:45%; color-scheme:dark}
+  --sel:rgba(198,164,236,.20); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.55); --wave-l:72%; --clip-l:45%; --grid:rgba(237,233,243,.06); --grid-bar:rgba(237,233,243,.15); color-scheme:dark}
 
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -45,7 +45,7 @@ button,input,select{font:inherit;color:inherit}
 .top .name:hover,.top .name:focus{border-color:var(--line);outline:0;background:var(--bg)}
 .grp{display:flex;align-items:center;gap:4px}
 .sp{flex:1}
-.clock{font:500 15px var(--f-mono);font-variant-numeric:tabular-nums;min-width:132px;text-align:center;padding:6px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line)}
+.clock{white-space:nowrap;font:500 15px var(--f-mono);font-variant-numeric:tabular-nums;min-width:132px;text-align:center;padding:6px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line)}
 .clock span{color:var(--muted)}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 12px;border-radius:9px;border:1px solid var(--line);background:var(--raise);color:var(--ink);font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap;text-decoration:none}
 .btn:hover{border-color:var(--muted)}
@@ -114,6 +114,19 @@ button,input,select{font:inherit;color:inherit}
 .clip .h{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;z-index:2}
 .clip .h.l{left:0}.clip .h.r{right:0}
 .clip .h:hover{background:color-mix(in srgb,var(--accent) 35%,transparent)}
+.tgl[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.tempo{font:500 12px var(--f-mono);color:var(--muted);padding:0 6px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.rec .dot{width:10px;height:10px;border-radius:50%;background:var(--danger);flex:none}
+.rec.on{background:var(--danger);color:var(--danger-ink);border-color:var(--danger)}
+.rec.on .dot{background:var(--danger-ink);animation:blink 1s steps(2,start) infinite}
+@keyframes blink{to{visibility:hidden}}
+.lane-body.grid{background-image:repeating-linear-gradient(to right,var(--grid-bar) 0 1px,transparent 1px var(--bar)),repeating-linear-gradient(to right,var(--grid) 0 1px,transparent 1px var(--beat))}
+.field select,.sec select{height:30px;border-radius:7px;border:1px solid var(--line);background:var(--raise);padding:0 6px;min-width:0;width:100%}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+.chk input{accent-color:var(--accent);width:16px;height:16px;margin:0}
+.ana{font:12px var(--f-mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.sub{font:600 11px var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:4px 0 -2px}
+.lib .bk{font-family:var(--f-mono);font-size:11px}
 .playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--danger);z-index:3;pointer-events:none;margin-left:-1px}
 .addlane{position:sticky;left:0;padding:10px;width:var(--head-w)}
 
@@ -182,11 +195,16 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <button class="ib" data-act="redo" id="redoBtn" aria-label="Redo"><svg class="i"><use href="#i-redo"/></svg></button>
     </div>
     <div class="grp">
+      <button class="btn sm tgl" data-act="snap" id="snapBtn" aria-pressed="false" title="Line parts and selections up with the beat">Snap to beat</button>
+      <span class="tempo" id="tempoLbl" title="Tempo of the mix">— BPM</span>
+    </div>
+    <div class="grp">
       <button class="ib" data-act="zout" aria-label="Zoom out"><svg class="i"><use href="#i-zout"/></svg></button>
       <button class="btn sm" data-act="fit">Fit</button>
       <button class="ib" data-act="zin" aria-label="Zoom in"><svg class="i"><use href="#i-zin"/></svg></button>
     </div>
     <div class="sp"></div>
+    <button class="btn rec" data-act="record" id="recBtn"><span class="dot"></span><span id="recLbl">Record voice</span></button>
     <button class="btn" data-act="newproj">New mix</button>
     <button class="btn primary" data-act="save" id="saveBtn">Save as song</button>
   </header>
