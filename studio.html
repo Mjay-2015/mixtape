@@ -8,170 +8,225 @@
 <title>Mixtape Studio</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png" type="image/png">
-<meta name="theme-color" content="#1C1922">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<meta name="theme-color" content="#0E1014">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
-/* Layout: a three-column workbench — library on the left, part editor over a multi-layer timeline in the middle, settings on the right */
+/* Mixtape Studio: a dark audio workstation. Library on the left, coloured tracks in the middle,
+   part editor docked under the tracks, inspector on the right. Deliberately single-theme (dark),
+   with its own type and colour so it reads as a different app from the player. */
 :root{
-  --bg:#ECEEE8; --surface:#F7F8F4; --raise:#FFFFFF; --ink:#1C1922; --muted:#67636F; --line:#D6D9D0;
-  --accent:#5A2C84; --accent-ink:#FFFFFF; --accent-soft:#E6DCEF; --danger:#B3261E; --danger-ink:#FFFFFF;
-  --sel:rgba(90,44,132,.18); --scrim:rgba(20,16,26,.45); --shadow:rgba(20,16,26,.28);
-  --wave-l:40%; --clip-l:55%; --head-w:200px; --grid:rgba(28,25,34,.07); --grid-bar:rgba(28,25,34,.16);
-  --f-display:"Bricolage Grotesque","Segoe UI",system-ui,sans-serif;
-  --f-body:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  --f-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
-  color-scheme:light;
+  --bg:#0E1014; --panel:#15181E; --panel-2:#1A1E25; --raise:#222731; --line:#2A2F39; --line-2:#363C48;
+  --ink:#E8EBF0; --muted:#8C94A3; --dim:#5E6675;
+  --accent:#F5A524; --accent-ink:#1B1306; --sel:rgba(245,165,36,.22);
+  --danger:#FF5F5F; --danger-ink:#1C0707;
+  --scrim:rgba(5,6,8,.66); --shadow:rgba(0,0,0,.6);
+  --wave-l:72%; --head-w:236px; --clip-head:17px;
+  --f-ui:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
 }
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --bg:#141218; --surface:#1C1922; --raise:#25202D; --ink:#EDE9F3; --muted:#9C96A7; --line:#2F2A38;
-  --accent:#C6A4EC; --accent-ink:#1B1024; --accent-soft:#2E2440; --danger:#F2867C; --danger-ink:#2A0D0A;
-  --sel:rgba(198,164,236,.20); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.55); --wave-l:72%; --clip-l:45%; --grid:rgba(237,233,243,.06); --grid-bar:rgba(237,233,243,.15); color-scheme:dark}}
-:root[data-theme="dark"]{
-  --bg:#141218; --surface:#1C1922; --raise:#25202D; --ink:#EDE9F3; --muted:#9C96A7; --line:#2F2A38;
-  --accent:#C6A4EC; --accent-ink:#1B1024; --accent-soft:#2E2440; --danger:#F2867C; --danger-ink:#2A0D0A;
-  --sel:rgba(198,164,236,.20); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.55); --wave-l:72%; --clip-l:45%; --grid:rgba(237,233,243,.06); --grid-bar:rgba(237,233,243,.15); color-scheme:dark}
-
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--f-body);overflow:hidden}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 var(--f-ui);overflow:hidden;-webkit-font-smoothing:antialiased}
 button,input,select{font:inherit;color:inherit}
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .i{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:6px;border:2px solid var(--panel)}::-webkit-scrollbar-track{background:transparent}
 
-#app{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr)}
-.top{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--surface)}
-.top .name{font:700 18px var(--f-display);border:1px solid transparent;background:transparent;border-radius:8px;padding:4px 8px;width:220px;min-width:0}
-.top .name:hover,.top .name:focus{border-color:var(--line);outline:0;background:var(--bg)}
-.grp{display:flex;align-items:center;gap:4px}
-.sp{flex:1}
-.clock{white-space:nowrap;font:500 15px var(--f-mono);font-variant-numeric:tabular-nums;min-width:132px;text-align:center;padding:6px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line)}
-.clock span{color:var(--muted)}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 12px;border-radius:9px;border:1px solid var(--line);background:var(--raise);color:var(--ink);font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap;text-decoration:none}
-.btn:hover{border-color:var(--muted)}
+#app{height:100%;display:grid;grid-template-rows:56px minmax(0,1fr)}
+
+/* ---------- top bar ---------- */
+.top{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+.tb-left,.tb-right{display:flex;align-items:center;gap:8px;min-width:0}
+.tb-right{justify-content:flex-end}
+.mark{display:flex;align-items:center;gap:8px;font:600 13px var(--f-ui);letter-spacing:.02em;white-space:nowrap}
+.mark i{width:22px;height:22px;border-radius:6px;background:conic-gradient(from 200deg,#F5A524,#E5649A,#4F8EF7,#2EC4B6,#F5A524);display:block}
+.mark span{color:var(--muted);font-weight:500}
+.sepv{width:1px;height:24px;background:var(--line);flex:none}
+.top .name{font:600 14px var(--f-ui);border:1px solid transparent;background:transparent;border-radius:6px;padding:5px 8px;width:200px;min-width:0}
+.top .name:hover,.top .name:focus{border-color:var(--line-2);outline:0;background:var(--bg)}
+.transport{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:4px}
+.lcd{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:170px;padding:2px 14px;border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.clock{font:500 20px/1.1 var(--f-mono);font-variant-numeric:tabular-nums;color:var(--ink);white-space:nowrap;letter-spacing:.02em}
+.clock span{color:var(--dim);font-size:13px}
+.tempo{font:500 11px var(--f-mono);color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 12px;border-radius:7px;border:1px solid var(--line-2);background:var(--raise);color:var(--ink);font-weight:500;font-size:13px;cursor:pointer;white-space:nowrap;text-decoration:none}
+.btn:hover{border-color:#4A5262;background:#283040}
 .btn:disabled{opacity:.4;cursor:default}
-.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.btn.primary:hover{background:#FFB840}
 .btn.danger{background:var(--danger);color:var(--danger-ink);border-color:var(--danger)}
-.btn.sm{height:30px;padding:0 10px;font-size:12px}
-.ib{width:36px;height:36px;display:inline-grid;place-items:center;border:0;background:transparent;border-radius:9px;cursor:pointer;color:var(--ink);padding:0}
-.ib:hover{background:color-mix(in srgb,var(--ink) 9%,transparent)}
-.ib:disabled{opacity:.35;cursor:default}
-.ib.play{background:var(--accent);color:var(--accent-ink);border-radius:50%;width:40px;height:40px}
-
-.work{display:grid;grid-template-columns:250px minmax(0,1fr) 270px;min-height:0}
-.panel{min-height:0;overflow:auto;border-right:1px solid var(--line);background:var(--surface)}
-.panel.right{border-right:0;border-left:1px solid var(--line)}
-.ph{position:sticky;top:0;z-index:2;background:var(--surface);padding:12px 14px 8px;border-bottom:1px solid var(--line)}
-.ph h2,.sec h3{font:600 11px var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
-.ph input{width:100%;height:32px;border-radius:8px;border:1px solid var(--line);background:var(--bg);padding:0 10px;outline:0}
-.ph input:focus{border-color:var(--accent)}
-.lib{list-style:none;margin:0;padding:6px}
-.lib li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;padding:6px 8px;border-radius:8px}
-.lib li:hover{background:var(--bg)}
-.lib b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lib span{display:block;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lib .acts{display:flex;gap:2px}
-.lib .acts button{height:26px;padding:0 7px;border-radius:6px;border:1px solid var(--line);background:var(--raise);font-size:11px;font-weight:600;cursor:pointer}
-.lib .acts button:hover{border-color:var(--accent);color:var(--accent)}
-.empty-note{color:var(--muted);padding:14px;font-size:13px}
-
-.mid{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0}
-.editor{border-bottom:1px solid var(--line);padding:12px 16px;display:flex;flex-direction:column;gap:8px;background:var(--bg)}
-.ed-head{display:flex;align-items:baseline;gap:12px;min-width:0}
-.ed-head h2{font:700 17px var(--f-display);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.ed-head .info{font:12px var(--f-mono);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
-.ed-wrap{position:relative;height:120px;border-radius:10px;background:var(--surface);border:1px solid var(--line);overflow:hidden;cursor:crosshair}
-#edCanvas{width:100%;height:100%;display:block}
-.ed-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);text-align:center;padding:0 24px;cursor:default}
-.ed-acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.ed-acts .lbl{font:12px var(--f-mono);color:var(--muted);margin-right:4px}
-
-.tl{overflow:auto;position:relative;min-height:0}
-.tl-inner{position:relative;min-height:100%}
-.ruler-row{position:sticky;top:0;z-index:5;display:flex;height:28px;background:var(--surface);border-bottom:1px solid var(--line)}
-.corner{position:sticky;left:0;z-index:6;width:var(--head-w);flex:none;background:var(--surface);border-right:1px solid var(--line);display:flex;align-items:center;padding:0 10px;font:11px var(--f-mono);color:var(--muted)}
-#ruler{display:block;height:28px;cursor:pointer}
-.lane{display:flex;height:92px;border-bottom:1px solid var(--line)}
-.lane.on .lane-body{background:color-mix(in srgb,var(--accent) 5%,transparent)}
-.lane-head{position:sticky;left:0;z-index:4;width:var(--head-w);flex:none;background:var(--surface);border-right:1px solid var(--line);padding:6px 8px;display:flex;flex-direction:column;gap:3px}
-.lane.on .lane-head{box-shadow:inset 3px 0 0 var(--accent)}
-.lh-top{display:flex;align-items:center;gap:2px}
-.lh-top input{flex:1;min-width:0;border:1px solid transparent;background:transparent;border-radius:6px;padding:2px 4px;font-weight:600;outline:0}
-.lh-top input:focus{border-color:var(--line);background:var(--bg)}
-.tg{width:24px;height:22px;border-radius:5px;border:1px solid var(--line);background:var(--raise);font:600 11px var(--f-mono);cursor:pointer;padding:0;color:var(--muted)}
-.tg.on.m{background:var(--danger);border-color:var(--danger);color:var(--danger-ink)}
-.tg.on.s{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.tg.x{border-color:transparent;background:transparent}
-.tg.x:hover{color:var(--danger)}
-.lh-row{display:grid;grid-template-columns:28px minmax(0,1fr) 34px;align-items:center;gap:4px;font:10px var(--f-mono);color:var(--muted)}
-.lh-row output{text-align:right;font-variant-numeric:tabular-nums}
-.lane-body{position:relative;flex:1}
-.clip{position:absolute;top:5px;bottom:5px;border-radius:7px;overflow:hidden;cursor:grab;touch-action:none;
-  background:hsl(var(--h) 45% var(--clip-l) / .22);border:1px solid hsl(var(--h) 45% var(--wave-l) / .7)}
-.clip.sel{border:2px solid var(--accent);box-shadow:0 0 0 3px var(--sel)}
-.clip canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-.clip .cl{position:absolute;left:6px;top:3px;right:6px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;text-shadow:0 0 3px var(--bg)}
-.clip .h{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;z-index:2}
-.clip .h.l{left:0}.clip .h.r{right:0}
-.clip .h:hover{background:color-mix(in srgb,var(--accent) 35%,transparent)}
-.tgl[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
-.tempo{font:500 12px var(--f-mono);color:var(--muted);padding:0 6px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.btn.ghost:hover{color:var(--ink);background:var(--raise)}
+.btn.sm{height:28px;padding:0 10px;font-size:12px}
+.btn.block{width:100%}
+.btn .i{width:16px;height:16px}
+.ib{width:32px;height:32px;display:inline-grid;place-items:center;border:0;background:transparent;border-radius:7px;cursor:pointer;color:var(--muted);padding:0;flex:none}
+.ib:hover{background:var(--raise);color:var(--ink)}
+.ib:disabled{opacity:.3;cursor:default}
+.ib.play{width:38px;height:38px;border-radius:50%;background:var(--accent);color:var(--accent-ink)}
+.ib.play:hover{background:#FFB840;color:var(--accent-ink)}
+.tgl[aria-pressed="true"]{background:rgba(245,165,36,.14);border-color:var(--accent);color:var(--accent)}
 .rec .dot{width:10px;height:10px;border-radius:50%;background:var(--danger);flex:none}
 .rec.on{background:var(--danger);color:var(--danger-ink);border-color:var(--danger)}
 .rec.on .dot{background:var(--danger-ink);animation:blink 1s steps(2,start) infinite}
 @keyframes blink{to{visibility:hidden}}
-.lane-body.grid{background-image:repeating-linear-gradient(to right,var(--grid-bar) 0 1px,transparent 1px var(--bar)),repeating-linear-gradient(to right,var(--grid) 0 1px,transparent 1px var(--beat))}
-.field select,.sec select{height:30px;border-radius:7px;border:1px solid var(--line);background:var(--raise);padding:0 6px;min-width:0;width:100%}
-.chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
-.chk input{accent-color:var(--accent);width:16px;height:16px;margin:0}
-.ana{font:12px var(--f-mono);color:var(--muted);font-variant-numeric:tabular-nums}
-.sub{font:600 11px var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:4px 0 -2px}
-.lib .bk{font-family:var(--f-mono);font-size:11px}
-.playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--danger);z-index:3;pointer-events:none;margin-left:-1px}
-.addlane{position:sticky;left:0;padding:10px;width:var(--head-w)}
 
+/* ---------- workspace ---------- */
+.work{display:grid;grid-template-columns:288px minmax(0,1fr) 300px;min-height:0}
+.panel{min-height:0;display:flex;flex-direction:column;background:var(--panel);border-right:1px solid var(--line)}
+.panel.right{border-right:0;border-left:1px solid var(--line);overflow:auto;display:block}
+.ptitle{font:600 11px var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0}
+
+/* library */
+.br-head{padding:14px 14px 10px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--line)}
+.br-head .row{display:flex;align-items:center;justify-content:space-between}
+.br-head .count{font:12px var(--f-mono);color:var(--dim)}
+.search{display:flex;align-items:center;gap:8px;height:32px;border:1px solid var(--line-2);border-radius:7px;background:var(--bg);padding:0 10px;color:var(--dim)}
+.search:focus-within{border-color:var(--accent)}
+.search input{border:0;background:transparent;outline:0;flex:1;min-width:0;color:var(--ink)}
+.libhint{margin:0;font-size:12px;color:var(--muted);line-height:1.4}
+.libhint b{color:var(--ink);font-weight:600}
+.lib{list-style:none;margin:0;padding:8px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:4px}
+.lib li{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 8px 8px 6px;border-radius:8px;border:1px solid transparent;background:var(--panel-2)}
+.lib li:hover{border-color:var(--line-2);background:#1F242C}
+.lib li[draggable="true"]{cursor:grab}
+.lib li.dragging{opacity:.45}
+.lib .grip{color:var(--dim);font-size:14px;line-height:1;letter-spacing:-2px;user-select:none}
+.lib li:hover .grip{color:var(--muted)}
+.lib b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lib .li-sub{display:block;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lib .bk{display:inline-block;margin-top:4px;font:11px var(--f-mono);color:var(--accent);background:rgba(245,165,36,.1);border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.lib .bk.busy{color:var(--muted);background:var(--raise)}
+.lib .acts{display:flex;flex-direction:column;gap:4px}
+.lib .acts button{height:24px;padding:0 9px;border-radius:5px;border:1px solid var(--line-2);background:var(--raise);font-size:11px;font-weight:600;cursor:pointer;color:var(--ink);white-space:nowrap}
+.lib .acts button:first-child{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.lib .acts button:hover{filter:brightness(1.15)}
+.lib li.empty-note{display:block;color:var(--muted);padding:16px 10px;font-size:13px;background:none;border:0}
+
+/* centre: tracks over the part editor */
+.mid{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0;min-width:0;background:var(--bg)}
+.tl{overflow:auto;position:relative;min-height:0}
+.tl-inner{position:relative;min-height:100%}
+.ruler-row{position:sticky;top:0;z-index:5;display:flex;height:30px;background:var(--panel);border-bottom:1px solid var(--line)}
+.corner{position:sticky;left:0;z-index:6;width:var(--head-w);flex:none;background:var(--panel);border-right:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 6px 0 12px}
+#ruler{display:block;height:30px;cursor:pointer}
+.lane{display:flex;height:96px;border-bottom:1px solid #1C2027;--c:#4F8EF7}
+.lane:nth-child(even) .lane-body{background-color:#101318}
+.lane-head{position:sticky;left:0;z-index:4;width:var(--head-w);flex:none;background:var(--panel);border-right:1px solid var(--line);padding:8px 10px 8px 16px;display:flex;flex-direction:column;gap:4px}
+.lane-head::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--c)}
+.lane.on .lane-head{background:#1C2129}
+.lane.on .lane-head::after{content:"";position:absolute;inset:0;border:1px solid var(--c);opacity:.55;pointer-events:none}
+.lh-top{display:flex;align-items:center;gap:3px}
+.lh-top input{flex:1;min-width:0;border:1px solid transparent;background:transparent;border-radius:5px;padding:2px 4px;font-weight:600;outline:0;font-size:13px}
+.lh-top input:focus{border-color:var(--line-2);background:var(--bg)}
+.tg{width:24px;height:22px;border-radius:5px;border:1px solid var(--line-2);background:var(--raise);font:600 11px var(--f-mono);cursor:pointer;padding:0;color:var(--muted)}
+.tg:hover{color:var(--ink)}
+.tg.on.m{background:#E8B931;border-color:#E8B931;color:#1A1405}
+.tg.on.s{background:#4F8EF7;border-color:#4F8EF7;color:#06101F}
+.tg.x{border-color:transparent;background:transparent}
+.tg.x:hover{color:var(--danger)}
+.lh-row{display:grid;grid-template-columns:26px minmax(0,1fr) 34px;align-items:center;gap:6px;font:10px var(--f-mono);color:var(--dim)}
+.lh-row output{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.lh-row input[type=range]{accent-color:var(--c)}
+.lane-body{position:relative;flex:1}
+.lane-body.grid{background-image:repeating-linear-gradient(to right,rgba(255,255,255,.07) 0 1px,transparent 1px var(--bar)),repeating-linear-gradient(to right,rgba(255,255,255,.03) 0 1px,transparent 1px var(--beat))}
+.clip{position:absolute;top:6px;bottom:6px;border-radius:6px;overflow:hidden;cursor:grab;touch-action:none;
+  background:color-mix(in srgb,var(--c) 20%,#12151A);border:1px solid color-mix(in srgb,var(--c) 70%,transparent)}
+.clip:hover{border-color:var(--c)}
+.clip.sel{box-shadow:0 0 0 2px var(--ink),0 6px 18px -6px var(--shadow);border-color:var(--ink)}
+.clip canvas{position:absolute;left:0;right:0;top:var(--clip-head);bottom:0;width:100%;height:calc(100% - var(--clip-head));pointer-events:none}
+.clip .cl{position:absolute;left:0;top:0;right:0;height:var(--clip-head);padding:1px 8px 0;font-size:11px;font-weight:600;color:#0D0F13;background:var(--c);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.clip .h{position:absolute;top:0;bottom:0;width:9px;cursor:ew-resize;z-index:2}
+.clip .h.l{left:0}.clip .h.r{right:0}
+.clip .h:hover{background:rgba(255,255,255,.18)}
+.playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--ink);z-index:8;pointer-events:none;margin-left:-1px;box-shadow:0 0 6px rgba(255,255,255,.35)}
+.playhead::before{content:"";position:absolute;top:0;left:-6px;border:7px solid transparent;border-top:9px solid var(--accent)}
+.addlane{position:sticky;left:0;padding:12px;width:var(--head-w)}
+.tl-empty{position:absolute;left:calc(var(--head-w) + 32px);right:32px;top:64px;z-index:3;border:2px dashed var(--line-2);border-radius:14px;padding:40px 24px;display:flex;flex-direction:column;gap:10px;align-items:center;text-align:center;color:var(--muted);pointer-events:none;background:rgba(21,24,30,.6)}
+.tl-empty b{font:600 20px var(--f-ui);color:var(--ink)}
+.tl-empty .arrow{font:600 12px var(--f-mono);color:var(--accent);letter-spacing:.08em;text-transform:uppercase}
+.tl-empty .btn{pointer-events:auto;margin-top:6px}
+.tl.dragover .tl-empty{border-color:var(--accent);color:var(--ink)}
+.dropmark{position:absolute;z-index:7;border:2px dashed var(--accent);border-radius:6px;background:rgba(245,165,36,.16);pointer-events:none;overflow:hidden}
+.dropmark span{position:absolute;left:6px;top:4px;font:600 11px var(--f-mono);color:var(--accent);white-space:nowrap}
+
+/* part editor dock */
+.editor{border-top:1px solid var(--line);background:var(--panel);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.ed-head{display:flex;align-items:center;gap:12px;min-width:0}
+.ed-tag{font:600 10px var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);flex:none}
+.ed-head h2{font:600 14px var(--f-ui);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ed-head .info{font:11px var(--f-mono);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}
+.ed-head .sp{flex:1}
+.ed-wrap{position:relative;height:112px;border-radius:8px;background:var(--bg);border:1px solid var(--line);overflow:hidden;cursor:crosshair}
+#edCanvas{width:100%;height:100%;display:block}
+.ed-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);text-align:center;padding:0 24px;cursor:default}
+.ed-acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ed-acts .lbl{font:11px var(--f-mono);color:var(--muted);margin-right:6px;min-width:190px}
+
+/* inspector */
 .sec{padding:14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
-.field{display:grid;grid-template-columns:86px minmax(0,1fr) 52px;align-items:center;gap:8px;font-size:13px}
-.field output{font:12px var(--f-mono);text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.sec h3{font:600 11px var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0}
+.field{display:grid;grid-template-columns:82px minmax(0,1fr) 52px;align-items:center;gap:8px;font-size:12px}
+.field output{font:11px var(--f-mono);text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
 .field label{color:var(--muted)}
-.kv{display:grid;grid-template-columns:86px 1fr;gap:4px 8px;font-size:13px}
-.kv dt{color:var(--muted)}.kv dd{margin:0;font-family:var(--f-mono);font-size:12px;font-variant-numeric:tabular-nums}
+.field select,.sec select,.field input[type=number]{height:28px;border-radius:6px;border:1px solid var(--line-2);background:var(--bg);padding:0 6px;min-width:0;width:100%}
+.kv{display:grid;grid-template-columns:82px 1fr;gap:4px 8px;font-size:12px;margin:0}
+.kv dt{color:var(--muted)}.kv dd{margin:0;font-family:var(--f-mono);font-size:12px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .btnrow{display:flex;flex-wrap:wrap;gap:6px}
 .hint{color:var(--muted);font-size:12px;margin:0}
-.keys{font:11px/1.7 var(--f-mono);color:var(--muted)}
-.keys kbd{font:inherit;border:1px solid var(--line);border-radius:4px;padding:0 4px;background:var(--raise);color:var(--ink)}
+.sub{font:600 10px var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin:6px 0 -2px}
+.ana{font:11px var(--f-mono);color:var(--accent);margin:0;font-variant-numeric:tabular-nums}
+.chk{display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer}
+.chk input{accent-color:var(--accent);width:15px;height:15px;margin:0}
+.keys{font:11px/1.8 var(--f-mono);color:var(--muted)}
+.keys kbd{font:inherit;border:1px solid var(--line-2);border-radius:4px;padding:0 4px;background:var(--raise);color:var(--ink)}
 input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:80;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;max-width:calc(100vw - 32px);box-shadow:0 10px 30px -10px var(--shadow)}
+/* overlays */
+.menu{position:fixed;z-index:60;min-width:230px;background:var(--raise);border:1px solid var(--line-2);border-radius:10px;padding:5px;box-shadow:0 18px 40px -12px var(--shadow)}
+.menu button{display:block;width:100%;text-align:left;padding:7px 10px;border:0;background:none;border-radius:6px;cursor:pointer;color:var(--ink);font-size:13px}
+.menu button:hover,.menu button:focus-visible{background:#2E3442;outline:0}
+.menu button:disabled{opacity:.35;cursor:default}
+.menu button.danger{color:var(--danger)}
+.menu hr{border:0;border-top:1px solid var(--line-2);margin:4px 6px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:80;background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:8px;font-size:13px;font-weight:500;max-width:calc(100vw - 32px);box-shadow:0 10px 30px -10px var(--shadow)}
 .modalwrap{position:fixed;inset:0;z-index:70;background:var(--scrim);display:grid;place-items:center;padding:16px}
-.modal{background:var(--raise);border-radius:14px;padding:20px;width:min(100%,400px);display:flex;flex-direction:column;gap:12px;box-shadow:0 24px 60px -20px var(--shadow)}
-.modal h3{font:700 20px var(--f-display);margin:0}
-.modal p{margin:0;color:var(--muted)}
-.modal input{height:42px;border-radius:10px;border:1px solid var(--line);background:var(--surface);padding:0 12px;outline:0}
+.modal{background:var(--panel-2);border:1px solid var(--line-2);border-radius:12px;padding:20px;width:min(100%,420px);display:flex;flex-direction:column;gap:12px;box-shadow:0 24px 60px -20px var(--shadow)}
+.modal h3{font:600 17px var(--f-ui);margin:0}
+.modal p{margin:0;color:var(--muted);font-size:13px}
+.modal input{height:36px;border-radius:7px;border:1px solid var(--line-2);background:var(--bg);padding:0 10px;outline:0}
 .modal input:focus{border-color:var(--accent)}
 .mact{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
-.busy{position:fixed;inset:0;z-index:75;background:var(--scrim);display:grid;place-items:center;color:var(--bg)}
-.busybox{background:var(--raise);color:var(--ink);padding:18px 22px;border-radius:12px;font-weight:600;display:flex;flex-direction:column;gap:12px;align-items:flex-start;min-width:340px;max-width:min(90vw,460px)}
+.busy{position:fixed;inset:0;z-index:75;background:var(--scrim);display:grid;place-items:center}
+.busybox{background:var(--panel-2);border:1px solid var(--line-2);color:var(--ink);padding:18px 20px;border-radius:12px;font-weight:500;display:flex;flex-direction:column;gap:12px;align-items:flex-start;min-width:360px;max-width:min(90vw,480px)}
 .pbar{width:100%;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
 .pbar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
 
 .phone{height:100%;display:grid;place-items:center;padding:24px 16px;text-align:center}
 .phone div{max-width:40ch;display:flex;flex-direction:column;gap:12px;align-items:center}
-.phone h1{font:700 26px var(--f-display);margin:0}
+.phone h1{font:600 22px var(--f-ui);margin:0}
 .phone p{margin:0;color:var(--muted)}
-@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+@media (max-width:1180px){.work{grid-template-columns:250px minmax(0,1fr) 270px}.lcd{min-width:150px}.top .name{width:140px}}
+@media (prefers-reduced-motion:reduce){.rec.on .dot{animation:none}.pbar i{transition:none}}
 </style>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.6v14.8a.8.8 0 0 0 1.2.7l12-7.4a.8.8 0 0 0 0-1.4l-12-7.4A.8.8 0 0 0 7 4.6z" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/></symbol>
-  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><path d="M6 5v14"/><path d="M19 5.5v13L9 12z" fill="currentColor"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
   <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
   <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></symbol>
   <symbol id="i-zin" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4M8 11h6M11 8v6"/></symbol>
   <symbol id="i-zout" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4M8 11h6"/></symbol>
+  <symbol id="i-import" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4"/></symbol>
+  <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
 </svg>
 
 <div class="phone" id="phoneNote" hidden>
@@ -184,70 +239,84 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 
 <div id="app">
   <header class="top">
-    <a class="btn" href="./" title="Back to the player"><svg class="i"><use href="#i-back"/></svg>Player</a>
-    <input class="name" id="projName" value="My mix" aria-label="Mix name" maxlength="60">
-    <div class="sp"></div>
-    <div class="grp">
-      <button class="ib" data-act="stop" aria-label="Back to start"><svg class="i"><use href="#i-stop"/></svg></button>
-      <button class="ib play" data-act="play" aria-label="Play" id="playBtn"><svg class="i"><use id="playIcon" href="#i-play"/></svg></button>
-      <div class="clock" id="clock">0:00.0 <span>/ 0:00.0</span></div>
+    <div class="tb-left">
+      <a class="btn ghost" href="./" title="Back to your music player"><svg class="i"><use href="#i-back"/></svg>Player</a>
+      <div class="sepv"></div>
+      <div class="mark"><i aria-hidden="true"></i>Mixtape <span>Studio</span></div>
+      <input class="name" id="projName" value="My mix" aria-label="Mix name" maxlength="60" title="Name of this mix">
     </div>
-    <div class="grp">
-      <button class="ib" data-act="undo" id="undoBtn" aria-label="Undo"><svg class="i"><use href="#i-undo"/></svg></button>
-      <button class="ib" data-act="redo" id="redoBtn" aria-label="Redo"><svg class="i"><use href="#i-redo"/></svg></button>
+    <div class="transport" role="group" aria-label="Transport">
+      <button class="ib" data-act="stop" aria-label="Back to start" title="Back to start (Home)"><svg class="i"><use href="#i-stop"/></svg></button>
+      <button class="ib play" data-act="play" aria-label="Play" id="playBtn" title="Play / pause (Space)"><svg class="i"><use id="playIcon" href="#i-play"/></svg></button>
+      <div class="lcd"><div class="clock" id="clock">0:00.0 <span>/ 0:00.0</span></div><div class="tempo" id="tempoLbl">— BPM</div></div>
+      <button class="btn sm tgl" data-act="snap" id="snapBtn" aria-pressed="false" title="Line parts and selections up with the beat">Snap</button>
+      <button class="btn sm rec" data-act="record" id="recBtn" title="Record your voice over the mix"><span class="dot"></span><span id="recLbl">Record</span></button>
     </div>
-    <div class="grp">
-      <button class="btn sm tgl" data-act="snap" id="snapBtn" aria-pressed="false" title="Line parts and selections up with the beat">Snap to beat</button>
-      <span class="tempo" id="tempoLbl" title="Tempo of the mix">— BPM</span>
+    <div class="tb-right">
+      <button class="ib" data-act="undo" id="undoBtn" aria-label="Undo" title="Undo (Ctrl+Z)"><svg class="i"><use href="#i-undo"/></svg></button>
+      <button class="ib" data-act="redo" id="redoBtn" aria-label="Redo" title="Redo (Ctrl+Y)"><svg class="i"><use href="#i-redo"/></svg></button>
+      <div class="sepv"></div>
+      <button class="ib" data-act="zout" aria-label="Zoom out" title="Zoom out (−)"><svg class="i"><use href="#i-zout"/></svg></button>
+      <button class="btn sm ghost" data-act="fit" title="Fit the whole mix on screen">Fit</button>
+      <button class="ib" data-act="zin" aria-label="Zoom in" title="Zoom in (+)"><svg class="i"><use href="#i-zin"/></svg></button>
+      <div class="sepv"></div>
+      <button class="btn sm ghost" data-act="newproj" title="Clear the timeline and start a new mix">New mix</button>
+      <button class="btn primary" data-act="save" id="saveBtn" title="Mix everything down into one song in your library"><svg class="i"><use href="#i-export"/></svg>Save as song</button>
     </div>
-    <div class="grp">
-      <button class="ib" data-act="zout" aria-label="Zoom out"><svg class="i"><use href="#i-zout"/></svg></button>
-      <button class="btn sm" data-act="fit">Fit</button>
-      <button class="ib" data-act="zin" aria-label="Zoom in"><svg class="i"><use href="#i-zin"/></svg></button>
-    </div>
-    <div class="sp"></div>
-    <button class="btn rec" data-act="record" id="recBtn"><span class="dot"></span><span id="recLbl">Record voice</span></button>
-    <button class="btn" data-act="newproj">New mix</button>
-    <button class="btn primary" data-act="save" id="saveBtn">Save as song</button>
   </header>
 
   <div class="work">
-    <aside class="panel">
-      <div class="ph"><h2>Your songs</h2><input id="libQ" type="search" placeholder="Search" aria-label="Search your songs"></div>
+    <aside class="panel" aria-label="Library">
+      <div class="br-head">
+        <div class="row"><h2 class="ptitle">Library</h2><span class="count" id="libCount"></span></div>
+        <button class="btn primary block" data-act="import" title="Pick music files from this computer"><svg class="i"><use href="#i-import"/></svg>Import audio files</button>
+        <input id="fileIn" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac,.aif,.aiff" multiple hidden>
+        <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="libQ" type="search" placeholder="Search your songs" aria-label="Search your songs"></label>
+        <p class="libhint"><b>Drag</b> a song onto a track, or press <b>Add</b> to put it at the end of the selected track.</p>
+      </div>
       <ul class="lib" id="lib"></ul>
     </aside>
 
     <section class="mid">
-      <div class="editor">
-        <div class="ed-head"><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span></div>
+      <div class="tl" id="tl">
+        <div class="tl-empty" id="tlEmpty" hidden>
+          <span class="arrow">← from your library</span>
+          <b>Drag a song here to start</b>
+          <span>Drop it where you want it to play. You can also drop music files straight from your computer.</span>
+          <button class="btn primary" data-act="import"><svg class="i"><use href="#i-import"/></svg>Import audio files</button>
+        </div>
+        <div class="tl-inner" id="tlInner">
+          <div class="ruler-row"><div class="corner"><span class="ptitle">Tracks</span><button class="btn sm ghost" data-act="addlane" title="Add an empty track">+ Track</button></div><canvas id="ruler"></canvas></div>
+          <div id="lanes"></div>
+          <div class="addlane"><button class="btn sm" data-act="addlane">+ Add track</button></div>
+          <div class="playhead" id="playhead"></div>
+          <div class="dropmark" id="dropMark" hidden><span id="dropLbl"></span></div>
+        </div>
+      </div>
+
+      <div class="editor" hidden>
+        <div class="ed-head"><span class="ed-tag">Part editor</span><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span><span class="sp"></span><button class="ib" data-act="edclose" aria-label="Close the part editor" title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
         <div class="ed-wrap" id="edWrap">
           <canvas id="edCanvas"></canvas>
-          <div class="ed-empty" id="edEmpty">Click a part on the timeline to edit it here. Drag across the waveform to select a section.</div>
+          <div class="ed-empty" id="edEmpty">Click a part on the timeline to edit it here.</div>
         </div>
         <div class="ed-acts">
           <span class="lbl" id="selInfo">No selection</span>
           <button class="btn sm" data-act="selall">Select whole part</button>
-          <button class="btn sm" data-act="prevsel">Play selection</button>
+          <button class="btn sm" data-act="prevsel">Play part</button>
           <button class="btn sm primary" data-act="keep">Keep only this</button>
           <button class="btn sm" data-act="remove">Remove this</button>
-          <button class="btn sm" data-act="selappend">Add selection to end of layer</button>
-          <button class="btn sm" data-act="sellayer">Add selection as new layer</button>
-        </div>
-      </div>
-      <div class="tl" id="tl">
-        <div class="tl-inner" id="tlInner">
-          <div class="ruler-row"><div class="corner">Layers</div><canvas id="ruler"></canvas></div>
-          <div id="lanes"></div>
-          <div class="addlane"><button class="btn sm" data-act="addlane">+ Add layer</button></div>
-          <div class="playhead" id="playhead"></div>
+          <button class="btn sm" data-act="selappend">Copy to end of track</button>
+          <button class="btn sm" data-act="sellayer">Copy to a new track</button>
         </div>
       </div>
     </section>
 
-    <aside class="panel right" id="insp"></aside>
+    <aside class="panel right" id="insp" aria-label="Inspector"></aside>
   </div>
 </div>
 
+<div class="menu" id="menu" role="menu" hidden></div>
 <div class="modalwrap" id="modal" hidden>
   <form class="modal" id="modalForm">
     <h3 id="mTitle"></h3>

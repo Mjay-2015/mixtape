@@ -1,5 +1,5 @@
 // Mixtape offline cache. Bump VERSION whenever app files change so installed copies pick up the new version.
-const VERSION = 'mixtape-v6';
+const VERSION = 'mixtape-v7';
 const CORE = ['./', './index.html', './app.js', './studio.html', './studio.js', './dsp-worker.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 // The AI stem splitter is large and changes rarely, so it lives in its own caches that app updates don't clear.
 const STEMS_RUNTIME = 'mixtape-stems-runtime-v1';   // ONNX Runtime + splitter code, saved on first use

@@ -130,11 +130,14 @@ function ensureProc(c) {
 /* ---------- project ---------- */
 const LSP = 'mixtape-studio-project-v1';
 const FX0 = () => ({ bass: 0, treble: 0, filter: 0, echo: 0, reverb: 0 });
-const newLane = n => ({ id: uid(), name: typeof n === 'string' ? n : `Layer ${n}`, gain: 1, pan: 0, mute: false, solo: false, fx: FX0() });
+const PALETTE = ['#4F8EF7', '#F5A524', '#2EC4B6', '#E5649A', '#8B7CF6', '#7BC96F', '#F2734B', '#46B8E8'];
+const NAME_COLORS = { Vocals: '#E5649A', Drums: '#F5A524', Bass: '#4F8EF7', 'Other instruments': '#2EC4B6', Voice: '#8B7CF6' };
+const newLane = (n, color) => ({ id: uid(), name: typeof n === 'string' ? n : `Track ${n}`, gain: 1, pan: 0, mute: false, solo: false, fx: FX0(),
+  color: color || (typeof n === 'string' ? (NAME_COLORS[n] || PALETTE[4]) : PALETTE[(n - 1) % PALETTE.length]) });
 const newProject = () => ({ name: 'My mix', lanes: [newLane(1)], clips: [], xfade: 0.5, bpm: null, key: null, snap: false, polish: false });
 function normalize(p) {
   if (!p || !p.lanes || !p.lanes.length) return newProject();
-  p.lanes.forEach(l => { l.fx = { ...FX0(), ...(l.fx || {}) }; });
+  p.lanes.forEach((l, i) => { l.fx = { ...FX0(), ...(l.fx || {}) }; if (!l.color) l.color = NAME_COLORS[l.name] || PALETTE[i % PALETTE.length]; });
   p.clips.forEach(c => { if (c.rate == null) c.rate = 1; if (c.semi == null) c.semi = 0; if (c.keepPitch == null) c.keepPitch = true; c.fxIn = c.fxIn || 'fade'; c.fxOut = c.fxOut || 'fade'; });
   p.xfade = p.xfade ?? 0.5; p.snap = !!p.snap; p.polish = !!p.polish; p.bpm = p.bpm || null; p.key = p.key || null;
   return p;
@@ -144,6 +147,8 @@ let selClip = null, selLane = P.lanes[0].id, playhead = 0, pps = 24, edSel = nul
 let hist = [], fut = [], last = JSON.stringify(P);
 const persist = () => { try { localStorage.setItem(LSP, last); } catch (e) {} };
 const clipById = id => P.clips.find(c => c.id === id);
+const laneColor = id => { const l = P.lanes.find(x => x.id === id); return (l && l.color) || PALETTE[0]; };
+const withAlpha = (hex, a) => hex + Math.round(clamp(a, 0, 1) * 255).toString(16).padStart(2, '0');
 const dur = c => (c.end - c.start) / (c.rate || 1);
 const tlOf = (c, src) => c.at + (src - c.start) / (c.rate || 1);
 const projectEnd = () => P.clips.reduce((m, c) => Math.max(m, c.at + dur(c)), 0);
@@ -183,7 +188,7 @@ async function addRegion(trackId, a, b, mode) {
   }
   const c = newClip(trackId, laneId, at, a, b, { fadeIn: xf });
   P.clips.push(c); selClip = c.id; selLane = laneId; edSel = null;
-  commit(mode === 'layer' ? 'Added as a new layer' : xf ? `Joined with a ${xf.toFixed(1)}s fade` : 'Added to the layer');
+  commit(mode === 'layer' ? 'Added on a new track' : xf ? `Joined with a ${xf.toFixed(1)}s fade` : 'Added to the track');
   scrollToTime(c.at);
 }
 function keepSel() {
@@ -236,10 +241,10 @@ function closeGaps(laneId) {
 async function deleteLane(id) {
   const l = P.lanes.find(x => x.id === id); if (!l) return;
   const n = P.clips.filter(c => c.lane === id).length;
-  if (n && !(await ask({ title: `Delete “${l.name}”?`, text: `Its ${n} part${n === 1 ? '' : 's'} go too. You can undo this.`, ok: 'Delete layer', danger: true }))) return;
+  if (n && !(await ask({ title: `Delete “${l.name}”?`, text: `Its ${n} part${n === 1 ? '' : 's'} go too. You can undo this.`, ok: 'Delete track', danger: true }))) return;
   P.lanes = P.lanes.filter(x => x !== l); P.clips = P.clips.filter(c => c.lane !== id);
   if (!P.lanes.length) P.lanes.push(newLane(1));
-  commit('Layer deleted');
+  commit('Track deleted');
 }
 
 /* speed, key, beat */
@@ -478,7 +483,7 @@ async function stopRecord() {
     const lead = clamp((r.playWall - r.recWall) / 1000 + (ctx.outputLatency || 0) + (ctx.baseLatency || 0), 0, Math.max(0, e.buffer.duration - 0.1));
     const l = newLane('Voice'); P.lanes.push(l);
     const c = newClip(t.id, l.id, r.at, lead, e.buffer.duration); P.clips.push(c); selClip = c.id; selLane = l.id;
-    commit(`Saved “${title}” and added it as a new layer`);
+    commit(`Saved “${title}” and added it on a new track`);
   } catch (err) { toast('Could not save the recording: ' + err.message, 6000); }
   finally { busy(null); }
 }
@@ -575,7 +580,7 @@ async function splitStems() {
   P.clips = P.clips.filter(x => x !== c);
   selClip = null; selLane = newLanes[0].id;
   for (const k of Object.keys(STEMS)) { try { await ensureBuf(stems[k].id); } catch (e) {} }
-  commit('Split into 4 layers. Mute “Vocals” for a karaoke version, or keep only the drums.');
+  commit('Split into 4 tracks. Mute “Vocals” for a karaoke version, or keep only the drums.');
 }
 
 
@@ -632,11 +637,11 @@ function drawWave(g, e, ta, tb, x0, w, h, color) {
 }
 function drawClipCanvas(cv, c) {
   const e = bufs.get(c.trackId), r = dpr();
-  const wCss = Math.max(1, dur(c) * pps), hCss = cv.parentElement.clientHeight || 80;
+  const wCss = Math.max(1, dur(c) * pps), hCss = cv.clientHeight || 64;
   const w = Math.min(16000, Math.round(wCss * r)), h = Math.round(hCss * r);
   cv.width = w; cv.height = h; const g = cv.getContext('2d'); g.clearRect(0, 0, w, h);
   if (!e) return;
-  drawWave(g, e, c.start, c.end, 0, w, h, waveColor(hueOf(c.trackId), .9));
+  drawWave(g, e, c.start, c.end, 0, w, h, withAlpha(laneColor(c.lane), .95));
   g.fillStyle = css('--bg'); g.globalAlpha = .55;
   const fi = (c.fadeIn || 0) / dur(c) * w, fo = effFo(c) / dur(c) * w;
   if (fi > 1) { g.beginPath(); g.moveTo(0, 0); g.lineTo(fi, 0); g.lineTo(0, h); g.closePath(); g.fill(); }
@@ -659,27 +664,28 @@ function renderLanes() {
   $('#lanes').innerHTML = P.lanes.map(l => {
     const fxOn = Object.values(l.fx).some(v => v);
     return `
-    <div class="lane${l.id === selLane ? ' on' : ''}" data-lane="${l.id}">
+    <div class="lane${l.id === selLane ? ' on' : ''}" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]}">
       <div class="lane-head">
         <div class="lh-top">
-          <input value="${esc(l.name)}" data-lf="name" aria-label="Layer name" maxlength="40">
-          <button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute this layer" aria-pressed="${l.mute}">M</button>
-          <button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only this layer" aria-pressed="${l.solo}">S</button>
-          <button class="tg x" data-lf="del" title="Delete layer" aria-label="Delete layer">✕</button>
+          <input value="${esc(l.name)}" data-lf="name" aria-label="Track name" maxlength="40">
+          <button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute this track" aria-pressed="${l.mute}">M</button>
+          <button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only this track" aria-pressed="${l.solo}">S</button>
+          <button class="tg x" data-lf="del" title="Delete track" aria-label="Delete track">✕</button>
         </div>
-        <div class="lh-row"><span>VOL</span><input type="range" min="0" max="150" value="${Math.round(l.gain * 100)}" data-lf="gain" aria-label="Layer volume"><output>${Math.round(l.gain * 100)}%</output></div>
-        <div class="lh-row"><span>L·R</span><input type="range" min="-100" max="100" value="${Math.round(l.pan * 100)}" data-lf="pan" aria-label="Layer left-right balance"><output>${l.pan === 0 ? 'C' : (l.pan < 0 ? 'L' : 'R') + Math.abs(Math.round(l.pan * 100))}</output></div>
+        <div class="lh-row"><span>VOL</span><input type="range" min="0" max="150" value="${Math.round(l.gain * 100)}" data-lf="gain" aria-label="Track volume"><output>${Math.round(l.gain * 100)}%</output></div>
+        <div class="lh-row"><span>L·R</span><input type="range" min="-100" max="100" value="${Math.round(l.pan * 100)}" data-lf="pan" aria-label="Track left-right balance"><output>${l.pan === 0 ? 'C' : (l.pan < 0 ? 'L' : 'R') + Math.abs(Math.round(l.pan * 100))}</output></div>
         ${fxOn ? '<div class="lh-row"><span>FX</span><span style="grid-column:2/4;color:var(--accent)">effects on</span></div>' : ''}
       </div>
       <div class="lane-body${gridCls}" style="${gridVars}width:${timelineWidth()}px;${anySolo && !l.solo || l.mute ? 'opacity:.45' : ''}">
         ${P.clips.filter(c => c.lane === l.id).map(c => {
           const t = libTrack(c.trackId), name = t ? t.title : 'Missing song';
-          return `<div class="clip${c.id === selClip ? ' sel' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px;--h:${hueOf(c.trackId)}" title="${esc(name)} · ${fmtT(dur(c))}${esc(clipBadge(c))}">
+          return `<div class="clip${c.id === selClip ? ' sel' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px" title="${esc(name)} · ${fmtT(dur(c))}${esc(clipBadge(c))}">
             <canvas></canvas><span class="cl">${esc(name)}${esc(clipBadge(c))}</span><span class="h l" data-h="l"></span><span class="h r" data-h="r"></span></div>`;
         }).join('')}
       </div>
     </div>`; }).join('');
   $('#tlInner').style.width = (headW() + timelineWidth()) + 'px';
+  $('#tlEmpty').hidden = P.clips.length > 0;
   $$('.clip').forEach(el => drawClipCanvas(el.querySelector('canvas'), clipById(el.dataset.clip)));
   renderRuler(); drawPlayhead();
 }
@@ -710,6 +716,7 @@ let edView = null;
 function drawEditor() {
   const c = clipById(selClip), cv = $('#edCanvas'), wrap = $('#edWrap');
   $('#edEmpty').hidden = !!c;
+  const ed = $('.editor'); if (ed.hidden !== !c) { ed.hidden = !c; requestAnimationFrame(() => renderRuler()); }
   ['keep', 'remove', 'selappend', 'sellayer'].forEach(a => { const b = $(`[data-act="${a}"]`); if (b) b.disabled = !c || !edSel; });
   $('[data-act="selall"]').disabled = $('[data-act="prevsel"]').disabled = !c;
   if (!preview) $('[data-act="prevsel"]').textContent = edSel ? 'Play selection' : 'Play part';
@@ -723,10 +730,10 @@ function drawEditor() {
   $('#selInfo').textContent = edSel ? `Selected ${fmtT(edSel.a)}–${fmtT(edSel.b)} (${(edSel.b - edSel.a).toFixed(1)}s)` : P.snap ? 'Drag to select (snaps to the beat)' : 'Drag across the waveform to select';
   if (!e) return;
   const D = e.buffer.duration; edView = { D, w };
-  const X = s => s / D * w, hue = hueOf(c.trackId);
-  g.fillStyle = waveColor(hue, .12); g.fillRect(X(c.start), 0, X(c.end) - X(c.start), h);
-  drawWave(g, e, 0, D, 0, w, h, waveColor(hue, .35));
-  g.save(); g.beginPath(); g.rect(X(c.start), 0, X(c.end) - X(c.start), h); g.clip(); drawWave(g, e, 0, D, 0, w, h, waveColor(hue, 1)); g.restore();
+  const X = s => s / D * w, col = laneColor(c.lane);
+  g.fillStyle = withAlpha(col, .12); g.fillRect(X(c.start), 0, X(c.end) - X(c.start), h);
+  drawWave(g, e, 0, D, 0, w, h, withAlpha(col, .3));
+  g.save(); g.beginPath(); g.rect(X(c.start), 0, X(c.end) - X(c.start), h); g.clip(); drawWave(g, e, 0, D, 0, w, h, col); g.restore();
   const sb = songBeats(c.trackId);
   if (sb && sb.len / D * w >= 3) { g.fillStyle = css('--muted'); for (let b = 0, tb = sb.off; tb < D; b++, tb += sb.len) g.fillRect(Math.round(X(tb)), 0, 1, b % 4 ? 4 : 9); }
   g.fillStyle = css('--accent'); g.fillRect(X(c.start) - 1, 0, 2, h); g.fillRect(X(c.end) - 1, 0, 2, h);
@@ -765,7 +772,7 @@ function renderInspector() {
   }
   if (l) {
     const fx = l.fx, f = fx.filter;
-    html += `<div class="sec"><h3>Layer: ${esc(l.name)}</h3><p class="hint">Songs you add with “+ End” join the end of this layer. Effects apply to everything on it.</p>
+    html += `<div class="sec"><h3>Track: ${esc(l.name)}</h3><p class="hint">Songs you press “Add” on go to the end of this track. Effects apply to everything on it.</p>
       <div class="field"><label for="fBass">Bass</label><input id="fBass" type="range" min="-12" max="12" value="${fx.bass}" data-lx="bass"><output>${fx.bass > 0 ? '+' : ''}${fx.bass} dB</output></div>
       <div class="field"><label for="fTre">Treble</label><input id="fTre" type="range" min="-12" max="12" value="${fx.treble}" data-lx="treble"><output>${fx.treble > 0 ? '+' : ''}${fx.treble} dB</output></div>
       <div class="field"><label for="fFil">Filter</label><input id="fFil" type="range" min="-100" max="100" value="${f}" data-lx="filter"><output>${f === 0 ? 'off' : f < 0 ? 'muffle ' + -f : 'thin ' + f}</output></div>
@@ -788,12 +795,13 @@ function renderInspector() {
 }
 function renderLibrary() {
   const q = $('#libQ').value.trim().toLowerCase();
-  const list = lib.filter(t => !q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q));
+  const list = lib.filter(t => !t.stemOf && (!q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q)));
   $('#lib').innerHTML = list.length ? list.map(t => { const a = ana[t.id];
-    const info = a ? `<span class="bk">${a.bpm ? a.bpm + ' BPM' : 'no steady beat'} · ${esc(a.keyName)}</span>` : analyzing.has(t.id) ? '<span class="bk">finding tempo and key…</span>' : '';
-    return `<li><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span>${esc(t.artist || 'Unknown artist')} · ${fmtT(t.duration).replace(/\.\d$/, '')}</span>${info}</div>
-      <div class="acts"><button data-add="append" data-id="${t.id}" title="Add to the end of the selected layer">+ End</button><button data-add="layer" data-id="${t.id}" title="Add as a new layer at the playhead">+ Layer</button></div></li>`; }).join('')
-    : `<li class="empty-note">${lib.length ? 'No songs match.' : 'Your library is empty. Add songs in the player first.'}</li>`;
+    const info = a ? `<span class="bk">${a.bpm ? a.bpm + ' BPM' : 'no steady beat'} · ${esc(a.keyName)}</span>` : analyzing.has(t.id) ? '<span class="bk busy">finding tempo and key…</span>' : '';
+    return `<li draggable="true" data-drag="${t.id}" title="Drag onto a track"><span class="grip" aria-hidden="true">⋮⋮</span><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span class="li-sub">${esc(t.artist || 'Unknown artist')} · ${fmtT(t.duration).replace(/\.\d$/, '')}</span>${info}</div>
+      <div class="acts"><button data-add="append" data-id="${t.id}" title="Add to the end of the selected track">Add</button><button data-add="layer" data-id="${t.id}" title="Put it on a new track at the playhead">New track</button></div></li>`; }).join('')
+    : `<li class="empty-note">${lib.length ? 'No songs match your search.' : 'No songs yet. Press “Import audio files” above, or drop music files onto the timeline.'}</li>`;
+  const n = lib.filter(t => !t.stemOf).length; $('#libCount').textContent = `${n} song${n === 1 ? '' : 's'}`;
 }
 function renderTransport() {
   $('#playIcon').setAttribute('href', playing ? '#i-pause' : '#i-play');
@@ -813,7 +821,7 @@ const acts = {
   undo, redo, save: saveSong, record: toggleRecord,
   zin: () => zoom(1.5), zout: () => zoom(1 / 1.5), fit: fitZoom,
   snap: () => { P.snap = !P.snap; if (P.snap && !P.bpm) toast('Add a song first so the Studio can find the beat.'); commit(P.snap ? 'Snapping to the beat' : 'Snap off'); },
-  addlane: () => { const l = newLane(P.lanes.length + 1); P.lanes.push(l); selLane = l.id; commit('Layer added'); },
+  addlane: () => { const l = newLane(P.lanes.length + 1); P.lanes.push(l); selLane = l.id; commit('Track added'); },
   selall: () => { const c = clipById(selClip); if (c) { edSel = { a: c.start, b: c.end }; drawEditor(); } },
   prevsel: previewSel, keep: keepSel, remove: removeSel,
   selappend: () => { const c = clipById(selClip); if (c && edSel) addRegion(c.trackId, edSel.a, edSel.b, 'append'); },
@@ -821,6 +829,8 @@ const acts = {
   split: splitAtPlayhead, dup: dupClip, del: deleteClip, loop: b => loopClip(+b.dataset.n),
   closegaps: () => selLane && closeGaps(selLane),
   matchtempo: matchTempo, matchkey: matchKey, evenout: evenOut, stems: splitStems,
+  import: () => $('#fileIn').click(),
+  edclose: () => { selClip = null; edSel = null; stopPreview(); renderLanes(); drawEditor(); renderInspector(); },
   fxreset: () => { const l = P.lanes.find(x => x.id === selLane); if (l) { l.fx = FX0(); commit('Effects reset'); liveLanes(); } },
   newproj: async () => {
     if (P.clips.length && !(await ask({ title: 'Start a new mix?', text: 'This clears the timeline. Save your current mix as a song first if you want to keep it.', ok: 'Start new mix', danger: true }))) return;
@@ -974,6 +984,131 @@ document.addEventListener('keydown', e => {
   else if (k === 'Escape') { edSel = null; drawEditor(); }
 });
 window.addEventListener('resize', () => { renderLanes(); drawEditor(); });
+
+
+/* ---------- drag and drop onto the timeline ---------- */
+let dragTrack = null;
+const AUDIO_RE = /\.(mp3|m4a|m4b|aac|wav|wave|ogg|oga|opus|flac|weba|aif|aiff)$/i;
+const isFileDrag = e => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
+function dropTarget(e) {
+  const laneEl = document.elementFromPoint(e.clientX, e.clientY)?.closest('.lane');
+  const r = $('#tlInner').getBoundingClientRect();
+  let at = Math.max(0, (e.clientX - r.left - headW()) / pps);
+  const bl = beatLen(); if (P.snap && bl) at = Math.round(at / bl) * bl;
+  return { lane: laneEl ? laneEl.dataset.lane : null, laneEl, at };
+}
+function showDrop(tg, len) {
+  const m = $('#dropMark'), lanes = $('#lanes');
+  m.hidden = false;
+  m.style.left = (headW() + tg.at * pps) + 'px';
+  m.style.width = Math.max(6, len * pps) + 'px';
+  m.style.top = (tg.laneEl ? tg.laneEl.offsetTop + 5 : lanes.offsetTop + lanes.offsetHeight + 5) + 'px';
+  m.style.height = (tg.laneEl ? tg.laneEl.offsetHeight - 10 : 70) + 'px';
+  const l = tg.lane && P.lanes.find(x => x.id === tg.lane);
+  $('#dropLbl').textContent = `${l ? l.name : 'New track'} · ${fmtT(tg.at)}`;
+}
+function hideDrop() { $('#dropMark').hidden = true; $('#tl').classList.remove('dragover'); }
+async function placeSongs(ids, tg) {
+  let laneId = tg.lane;
+  if (!laneId) { const l = newLane(P.lanes.length + 1); P.lanes.push(l); laneId = l.id; }
+  let at = tg.at, lastClip = null;
+  for (const id of ids) {
+    let e; try { e = await ensureBuf(id); } catch (err) { toast(err.message, 5000); continue; }
+    const t = libTrack(id);
+    if (t && !(t.duration > 0)) { t.duration = e.buffer.duration; req('tracks', 'readwrite', o => o.put(t)).catch(() => {}); }
+    const c = newClip(id, laneId, at, 0, e.buffer.duration); P.clips.push(c); lastClip = c; at += dur(c);
+  }
+  if (!lastClip) return;
+  selClip = lastClip.id; selLane = laneId; edSel = null;
+  const first = libTrack(ids[0]);
+  commit(ids.length === 1 ? `Added “${first ? first.title : 'song'}” at ${fmtT(tg.at)}` : `Added ${ids.length} songs, one after another`);
+}
+async function importDropped(files) {
+  const ids = [], seen = new Map(lib.map(t => [t.name + '|' + t.size, t.id]));
+  for (const f of files) {
+    if (!((f.type || '').startsWith('audio/') || AUDIO_RE.test(f.name))) continue;
+    const key = f.name + '|' + f.size;
+    if (seen.has(key)) { ids.push(seen.get(key)); continue; }
+    const base = f.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim(), parts = base.split(/\s+[-–—]\s+/);
+    const t = { id: uid(), name: f.name, size: f.size, type: f.type || '', title: parts.length > 1 ? parts.slice(1).join(' - ') : base,
+      artist: parts.length > 1 ? parts[0] : '', album: '', track: 0, duration: 0, added: Date.now(), blob: f, art: null };
+    try { await req('tracks', 'readwrite', o => o.put(t)); } catch (e) { toast(`Couldn't save “${f.name}” in this browser.`, 5000); continue; }
+    ids.push(t.id); seen.set(key, t.id);
+  }
+  if (!ids.length) { toast('Only music files can go on the timeline (MP3, M4A, WAV, FLAC, OGG…).', 4500); return ids; }
+  await loadLibrary(); renderLibrary();
+  try { new BroadcastChannel('mixtape').postMessage({ type: 'library' }); } catch (e) {}
+  return ids;
+}
+$('#lib').addEventListener('dragstart', e => {
+  const li = e.target.closest('[data-drag]'); if (!li) return;
+  dragTrack = li.dataset.drag; li.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'copy';
+  e.dataTransfer.setData('text/plain', (libTrack(dragTrack) || {}).title || 'song');
+});
+$('#lib').addEventListener('dragend', e => { const li = e.target.closest('[data-drag]'); if (li) li.classList.remove('dragging'); dragTrack = null; hideDrop(); });
+$('#tl').addEventListener('dragover', e => {
+  if (!dragTrack && !isFileDrag(e)) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+  $('#tl').classList.add('dragover');
+  const t = dragTrack && libTrack(dragTrack);
+  showDrop(dropTarget(e), t && t.duration > 0 ? t.duration : 8);
+});
+$('#tl').addEventListener('dragleave', e => { if (!e.relatedTarget || !$('#tl').contains(e.relatedTarget)) hideDrop(); });
+$('#tl').addEventListener('drop', async e => {
+  if (!dragTrack && !isFileDrag(e)) return;
+  e.preventDefault(); hideDrop();
+  const tg = dropTarget(e), id = dragTrack; dragTrack = null;
+  if (id) return placeSongs([id], tg);
+  const ids = await importDropped([...e.dataTransfer.files]);
+  if (ids.length) placeSongs(ids, tg);
+});
+$('#fileIn').addEventListener('change', async e => {
+  const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
+  const ids = await importDropped(files);
+  if (ids.length) placeSongs(ids, { lane: null, at: playhead });
+});
+// Files dropped anywhere else must not make the browser leave the Studio
+window.addEventListener('dragover', e => { if (isFileDrag(e)) e.preventDefault(); });
+window.addEventListener('drop', e => { if (isFileDrag(e) && !e.target.closest('#tl')) { e.preventDefault(); toast('Drop music files on the timeline to add them.'); } });
+
+/* ---------- right-click menu on a part ---------- */
+const menu = $('#menu'); let menuItems = [];
+function openMenu(x, y, items) {
+  menuItems = items;
+  menu.innerHTML = items.map((it, i) => it.sep ? '<hr>' : `<button role="menuitem" data-i="${i}" class="${it.danger ? 'danger' : ''}" ${it.disabled ? 'disabled' : ''}>${esc(it.label)}</button>`).join('');
+  menu.hidden = false;
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  menu.style.left = Math.min(x, innerWidth - mw - 8) + 'px'; menu.style.top = Math.min(y, innerHeight - mh - 8) + 'px';
+  const first = menu.querySelector('button:not(:disabled)'); if (first) first.focus({ preventScroll: true });
+}
+const closeMenu = () => { menu.hidden = true; };
+menu.addEventListener('click', e => { const b = e.target.closest('button[data-i]'); if (!b || b.disabled) return; const it = menuItems[+b.dataset.i]; closeMenu(); it.act(); });
+document.addEventListener('pointerdown', e => { if (!menu.hidden && !menu.contains(e.target)) closeMenu(); }, true);
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) closeMenu(); }, true);
+$('#tl').addEventListener('scroll', closeMenu);
+$('#lanes').addEventListener('contextmenu', e => {
+  const el = e.target.closest('.clip'); if (!el) return;
+  e.preventDefault();
+  const c = clipById(el.dataset.clip); if (!c) return;
+  selClip = c.id; selLane = c.lane; edSel = null;
+  ensureBuf(c.trackId).then(() => drawEditor()).catch(() => {});
+  renderLanes(); drawEditor(); renderInspector();
+  const t = libTrack(c.trackId), a = ana[c.trackId];
+  openMenu(e.clientX, e.clientY, [
+    { label: 'Play from here', act: () => { seek(c.at); if (!playing) play(); } },
+    { label: 'Split at the red playhead', act: splitAtPlayhead, disabled: !(playhead > c.at && playhead < c.at + dur(c)) },
+    { label: 'Copy after', act: dupClip },
+    { label: 'Repeat ×2', act: () => loopClip(2) },
+    { label: 'Repeat ×4', act: () => loopClip(4) },
+    { sep: 1 },
+    { label: 'Split into vocals, drums, bass…', act: splitStems, disabled: !!(t && t.stemOf) },
+    { label: 'Match mix tempo', act: matchTempo, disabled: !(P.bpm && a && a.bpm) },
+    { label: 'Match mix key', act: matchKey, disabled: !(P.key && a && a.key != null) },
+    { sep: 1 },
+    { label: 'Delete part', danger: 1, act: deleteClip },
+  ]);
+});
 
 /* ---------- dialogs ---------- */
 let modalResolve = null; const mInput = $('#mInput');
