@@ -407,18 +407,19 @@ function probeDuration(blob) {
 let importing = false;
 async function importFiles(list) {
   const files = [...list].filter(isAudio);
-  if (!files.length) return toast('No songs found there. Pick audio files such as MP3, M4A, WAV, OGG or FLAC.', 4500);
-  if (importing) return toast('Still adding the last batch. Try again in a moment.');
+  if (!files.length) { toast('No songs found there. Pick audio files such as MP3, M4A, WAV, OGG or FLAC.', 4500); return []; }
+  if (importing) { toast('Still adding the last batch. Try again in a moment.'); return []; }
   importing = true;
-  const seen = new Set([...tracks.values()].map(t => t.name + '|' + t.size));
+  const seen = new Map([...tracks.values()].map(t => [t.name + '|' + t.size, t.id]));
+  const ids = [];
   let added = 0, dup = 0, lost = 0; const base = Date.now();
   for (let i = 0; i < files.length; i++) {
     const f = files[i]; toast(`Adding ${i + 1} of ${files.length}: ${f.name}`, 0);
-    const key = f.name + '|' + f.size; if (seen.has(key)) { dup++; continue; } seen.add(key);
+    const key = f.name + '|' + f.size; if (seen.has(key)) { dup++; ids.push(seen.get(key)); continue; }
     const tags = await readTags(f), guess = parseName(f.name);
     const t = { id: uid(), name: f.name, size: f.size, type: f.type || '', title: clean(tags.title) || guess.title, artist: clean(tags.artist) || guess.artist,
       album: clean(tags.album), track: parseInt(tags.track, 10) || 0, duration: await probeDuration(f), added: base - i, blob: f, art: pictureBlob(tags.picture) };
-    tracks.set(t.id, t);
+    tracks.set(t.id, t); seen.set(key, t.id); ids.push(t.id);
     try { await saveTrack(t); } catch (e) { lost++; }
     added++;
     if (i % 5 === 0) { renderNav(); renderList(); }
@@ -428,6 +429,7 @@ async function importFiles(list) {
   if (dup) parts.push(`${dup} already in your library`);
   if (lost) parts.push(`${lost} couldn't be saved here and will be gone when you close the page`);
   toast(parts.join(' · '), lost ? 7000 : 3500);
+  return ids;
 }
 async function filesFromDrop(dt) {
   const entries = [...(dt.items || [])].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
@@ -594,7 +596,7 @@ document.addEventListener('keydown', e => {
   for (const l of await dbAll('lists')) { if (l.id === '__fav') favs = new Set(l.ids || []); else lists.push(l); }
   lists.sort((a, b) => a.created - b.created);
   if (S.view.type === 'list' && !lists.some(l => l.id === S.view.id)) S.view = { type: 'all' };
-  booted = true;
+  booted = true; bootDone();
   if (S.lastId && tracks.has(S.lastId)) {
     S.queue = S.queue.filter(id => tracks.has(id)); S.orig = S.orig.filter(id => tracks.has(id));
     let qi = S.qi >= 0 && S.queue[S.qi] === S.lastId ? S.qi : S.queue.indexOf(S.lastId);
@@ -612,6 +614,28 @@ try {
     render(); updateStorage();
   };
 } catch (e) {}
+
+/* "Open with Mixtape" from Windows: add the song(s) to the library if new, then play */
+let bootDone; const bootReady = new Promise(r => { bootDone = r; });
+async function openLaunched(files) {
+  await bootReady;
+  const audio = files.filter(isAudio);
+  if (!audio.length) return toast('Mixtape can only open music files.', 4000);
+  const ids = await importFiles(audio);
+  if (!ids.length) return;
+  closeNow(); query = ''; $('#q').value = '';
+  if (S.view.type !== 'all') setView({ type: 'all' });
+  playFrom(ids, ids[0]);
+  if (ids.length === 1) toast(`Playing “${tracks.get(ids[0]).title}”`);
+}
+if ('launchQueue' in window) {
+  window.launchQueue.setConsumer(async params => {
+    if (!params.files || !params.files.length) return;
+    const files = [];
+    for (const h of params.files) { try { files.push(await h.getFile()); } catch (e) {} }
+    if (files.length) openLaunched(files);
+  });
+}
 
 /* offline app: cache the player so it opens with no internet, and offer to install it */
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
