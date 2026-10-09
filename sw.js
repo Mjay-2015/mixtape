@@ -1,12 +1,15 @@
-// Mixtape offline cache. Bump VERSION whenever index.html changes so phones pick up the new copy.
-const VERSION = 'mixtape-v4';
+// Mixtape offline cache. Bump VERSION whenever app files change so installed copies pick up the new version.
+const VERSION = 'mixtape-v5';
 const CORE = ['./', './index.html', './app.js', './studio.html', './studio.js', './dsp-worker.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+// The AI stem splitter is large and changes rarely, so it lives in its own caches that app updates don't clear.
+const STEMS_RUNTIME = 'mixtape-stems-runtime-v1';   // ONNX Runtime + splitter code, saved on first use
+const KEEP = k => k === VERSION || k.startsWith('mixtape-stems-');
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => !KEEP(k)).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
   const req = e.request;
@@ -22,11 +25,23 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (url.origin !== location.origin) return;
-  // The page itself: try the network for updates, fall back to the saved copy offline.
-  if (req.mode === 'navigate') {
-    e.respondWith(fetch(req).then(r => { caches.open(VERSION).then(c => c.put('./index.html', r.clone())); return r; })
-      .catch(() => caches.match('./index.html')));
+  const path = url.pathname;
+  // The AI model is downloaded, checked and saved by the stem worker itself.
+  if (path.includes('/stems/model/')) return;
+  // Splitter runtime: save on first use so splitting also works offline later.
+  if (path.includes('/stems/')) {
+    e.respondWith(caches.open(STEMS_RUNTIME).then(async c => {
+      const hit = await c.match(req); if (hit) return hit;
+      const r = await fetch(req); if (r.ok) c.put(req, r.clone()); return r;
+    }));
     return;
   }
-  e.respondWith(caches.match(req).then(hit => hit || fetch(req)));
+  // Pages: try the network for updates, fall back to the saved copy of that same page offline.
+  if (req.mode === 'navigate') {
+    const key = path.endsWith('studio.html') ? './studio.html' : './index.html';
+    e.respondWith(fetch(req).then(r => { if (r.ok) { const copy = r.clone(); caches.open(VERSION).then(c => c.put(key, copy)); } return r; })
+      .catch(() => caches.match(key)));
+    return;
+  }
+  e.respondWith(caches.match(req, { ignoreSearch: true }).then(hit => hit || fetch(req)));
 });

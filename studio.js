@@ -483,10 +483,109 @@ async function stopRecord() {
   finally { busy(null); }
 }
 
+
+/* ---------- splitting into stems (AI, on this device) ---------- */
+const STEMS = { vocals: 'Vocals', drums: 'Drums', bass: 'Bass', other: 'Other instruments' };
+const SPEED_KEY = 'mixtape-split-speed'; // minutes of work per minute of music, measured on this device
+const MODEL_PARTS = ['stems/model/htdemucs.part1', 'stems/model/htdemucs.part2'];
+function stemsOf(id) {
+  const s = {}; for (const t of lib) if (t.stemOf === id && STEMS[t.stemName]) s[t.stemName] = t;
+  return Object.keys(STEMS).every(k => s[k]) ? s : null;
+}
+async function modelSaved() {
+  try { const c = await caches.open('mixtape-stems-model-v1'); const r = await Promise.all(MODEL_PARTS.map(p => c.match(new URL(p, location.href).href))); return r.every(Boolean); }
+  catch (e) { return false; }
+}
+async function to44k(buffer) {
+  let b = buffer;
+  if (b.sampleRate !== 44100) {
+    const oc = new OfflineAudioContext(2, Math.ceil(b.duration * 44100), 44100);
+    const s = oc.createBufferSource(); s.buffer = b; s.connect(oc.destination); s.start(); b = await oc.startRendering();
+  }
+  const left = b.getChannelData(0).slice(), right = (b.numberOfChannels > 1 ? b.getChannelData(1) : b.getChannelData(0)).slice();
+  return { left, right };
+}
+const fmtLeft = s => s < 90 ? `${Math.max(5, Math.round(s / 5) * 5)} seconds` : `${Math.round(s / 60)} minutes`;
+function runSplit(src, left, right) {
+  const w = new Worker('stems/stem-worker.js', { type: 'module' });
+  let t1 = 0;
+  const p = new Promise((res, rej) => {
+    const cancel = () => { w.terminate(); const e = new Error('cancelled'); e.cancelled = true; rej(e); };
+    busy('Getting the song ready…', { progress: 0, onCancel: cancel });
+    w.onmessage = ev => {
+      const m = ev.data;
+      if (m.type === 'progress') {
+        if (m.stage === 'download') busy(`Downloading the AI model (one time only): ${Math.round(m.done / 1048576)} of ${Math.round(m.total / 1048576)} MB`, { progress: m.done / m.total, onCancel: cancel });
+        else if (m.stage === 'load') busy(m.backend === 'webgpu' ? 'Starting the AI on your graphics chip…' : 'Starting the AI. The browser cannot use a graphics chip on this laptop, so this will be slow…', { progress: 0, onCancel: cancel });
+        else {
+          if (!t1) t1 = performance.now();
+          const per = m.done > 1 ? (performance.now() - t1) / 1000 / (m.done - 1) : 0;
+          busy(`Splitting “${src.title}”: section ${m.done} of ${m.total}${per ? ` · about ${fmtLeft(per * (m.total - m.done))} left` : ''}`, { progress: m.done / m.total, onCancel: cancel });
+        }
+      } else if (m.type === 'done') res(m);
+      else if (m.type === 'error') rej(new Error(m.message));
+    };
+    w.onerror = ev => rej(new Error(ev.message || 'The stem splitter stopped unexpectedly.'));
+    w.postMessage({ type: 'split', left, right }, [left.buffer, right.buffer]);
+  });
+  return p.finally(() => w.terminate());
+}
+async function splitStems() {
+  const c = clipById(selClip); if (!c) return;
+  const src = libTrack(c.trackId); if (!src) return;
+  if (src.stemOf) return toast('This part is already a stem.');
+  let stems = stemsOf(src.id);
+  if (!stems) {
+    const saved = await modelSaved();
+    let speed = 0; try { speed = +localStorage.getItem(SPEED_KEY) || 0; } catch (e) {}
+    const songMin = (src.duration || 180) / 60;
+    const howLong = speed
+      ? `Last time, this laptop needed about ${Math.max(1, Math.round(speed))} minutes for every minute of music, so this song should take about ${Math.max(1, Math.round(speed * songMin))} minutes.`
+      : 'This is heavy work for a laptop: expect several minutes for every minute of music, and the first section is the slowest while the AI warms up.';
+    const ok = await ask({ title: `Split “${src.title}”?`, ok: 'Split song',
+      text: (saved ? '' : 'The first time, Mixtape downloads the AI model (181 MB). After that it works offline. ')
+        + howLong + ' Keep Mixtape open and in front while it works. You can cancel at any time, and each song only needs splitting once.' });
+    if (!ok) return;
+    pause(); stopPreview();
+    let e; try { e = await ensureBuf(src.id); } catch (err) { return toast(err.message, 5000); }
+    busy('Getting the song ready…', { progress: 0 });
+    const { left, right } = await to44k(e.buffer);
+    let result;
+    try { result = await runSplit(src, left, right); }
+    catch (err) { busy(null); return toast(err.cancelled ? 'Splitting cancelled' : `Couldn't split the song: ${err.message}`, err.cancelled ? 2600 : 7000); }
+    busy('Saving the four parts to your library…', { progress: 1 });
+    try {
+      const n = result.stems.vocals.left.length;
+      for (const k of Object.keys(STEMS)) {
+        const s = result.stems[k], blob = encodeWavData([s.left, s.right], 44100);
+        await saveToLibrary({ id: uid(), name: `${src.title} - ${STEMS[k]}.wav`, size: blob.size, type: 'audio/wav', title: `${src.title} (${STEMS[k].toLowerCase()})`,
+          artist: src.artist || '', album: 'Stems', track: 0, duration: n / 44100, added: Date.now(), blob, art: null, stemOf: src.id, stemName: k });
+      }
+    } catch (err) { busy(null); return toast('Could not save the stems: ' + (err.message || 'your browser may be out of storage space'), 7000); }
+    busy(null);
+    stems = stemsOf(src.id);
+    if (!stems) return toast('The stems were made but could not be found in your library.', 6000);
+    try { if (src.duration > 0) localStorage.setItem(SPEED_KEY, String(result.seconds / src.duration)); } catch (e) {}
+  }
+  // Replace the part with four layers, one per stem, lined up exactly where the part was
+  const at = P.lanes.findIndex(l => l.id === c.lane);
+  const newLanes = Object.keys(STEMS).map(k => newLane(STEMS[k]));
+  P.lanes.splice(at + 1, 0, ...newLanes);
+  Object.keys(STEMS).forEach((k, i) => P.clips.push({ ...c, id: uid(), trackId: stems[k].id, lane: newLanes[i].id }));
+  P.clips = P.clips.filter(x => x !== c);
+  selClip = null; selLane = newLanes[0].id;
+  for (const k of Object.keys(STEMS)) { try { await ensureBuf(stems[k].id); } catch (e) {} }
+  commit('Split into 4 layers. Mute “Vocals” for a karaoke version, or keep only the drums.');
+}
+
+
 /* ---------- saving the mix as a song ---------- */
 function encodeWav(buf, scale) {
-  const ch = Math.min(2, buf.numberOfChannels), n = buf.length, sr = buf.sampleRate;
-  const data = []; for (let c = 0; c < ch; c++) data.push(buf.getChannelData(c));
+  const data = []; for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) data.push(buf.getChannelData(c));
+  return encodeWavData(data, buf.sampleRate, scale);
+}
+function encodeWavData(data, sr, scale = 1) {
+  const ch = data.length, n = data[0].length;
   const ab = new ArrayBuffer(44 + n * ch * 2), v = new DataView(ab);
   const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
   w(0, 'RIFF'); v.setUint32(4, 36 + n * ch * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
@@ -652,6 +751,7 @@ function renderInspector() {
       <div class="field"><label for="cFxIn">Start style</label><select id="cFxIn" data-cs="fxIn"><option value="fade">Fade</option><option value="filter">Filter sweep</option></select><span></span></div>
       <div class="field"><label for="cFxOut">End style</label><select id="cFxOut" data-cs="fxOut"><option value="fade">Fade</option><option value="filter">Filter sweep</option><option value="echo">Echo out</option></select><span></span></div>
       <div class="btnrow"><button class="btn sm" data-act="split">Split at playhead</button><button class="btn sm" data-act="dup">Copy after</button><button class="btn sm" data-act="del">Delete part</button></div>
+      <div class="btnrow"><button class="btn sm primary" data-act="stems" ${t && t.stemOf ? 'disabled title="This part is already a stem"' : ''}>Split into vocals, drums, bass…</button></div>
       <div class="btnrow"><span class="hint" style="align-self:center">Repeat this part</span><button class="btn sm" data-act="loop" data-n="2">×2</button><button class="btn sm" data-act="loop" data-n="4">×4</button><button class="btn sm" data-act="loop" data-n="8">×8</button></div>
       <p class="sub">Speed and key</p>
       <div class="field"><label for="cRate">Speed</label><input id="cRate" type="range" min="50" max="200" value="${Math.round(r * 100)}" data-cf="rate"><output>${Math.round(r * 100)}%</output></div>
@@ -720,7 +820,7 @@ const acts = {
   sellayer: () => { const c = clipById(selClip); if (c && edSel) addRegion(c.trackId, edSel.a, edSel.b, 'layer'); },
   split: splitAtPlayhead, dup: dupClip, del: deleteClip, loop: b => loopClip(+b.dataset.n),
   closegaps: () => selLane && closeGaps(selLane),
-  matchtempo: matchTempo, matchkey: matchKey, evenout: evenOut,
+  matchtempo: matchTempo, matchkey: matchKey, evenout: evenOut, stems: splitStems,
   fxreset: () => { const l = P.lanes.find(x => x.id === selLane); if (l) { l.fx = FX0(); commit('Effects reset'); liveLanes(); } },
   newproj: async () => {
     if (P.clips.length && !(await ask({ title: 'Start a new mix?', text: 'This clears the timeline. Save your current mix as a song first if you want to keep it.', ok: 'Start new mix', danger: true }))) return;
@@ -890,7 +990,14 @@ function closeModal(v) { $('#modal').hidden = true; const r = modalResolve; moda
 $('#modalForm').addEventListener('submit', e => { e.preventDefault(); if (mInput.hidden) return closeModal(true); const v = mInput.value.trim(); if (!v) return mInput.focus(); closeModal(v); });
 $('#mCancel').addEventListener('click', () => closeModal(null));
 let toastT; function toast(m, ms = 2600) { const t = $('#toast'); t.textContent = m; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
-function busy(m) { $('#busy').hidden = !m; if (m) $('#busyText').textContent = m; }
+let busyCancel = null;
+function busy(m, opt = {}) {
+  $('#busy').hidden = !m; if (!m) { busyCancel = null; return; }
+  $('#busyText').textContent = m;
+  $('#busyBar').hidden = opt.progress == null; if (opt.progress != null) $('#busyFill').style.width = Math.round(clamp(opt.progress, 0, 1) * 100) + '%';
+  busyCancel = opt.onCancel || null; $('#busyCancel').hidden = !busyCancel;
+}
+$('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel(); });
 
 /* ---------- boot ---------- */
 (async () => {

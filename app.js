@@ -59,10 +59,12 @@ function artHTML(t) {
 /* ---------- views ---------- */
 const curList = () => S.view.type === 'list' ? lists.find(l => l.id === S.view.id) : null;
 function viewName(v = S.view) { if (v.type === 'fav') return 'Favorites'; if (v.type === 'list') { const l = lists.find(x => x.id === v.id); return l ? l.name : 'Playlist'; } return 'All songs'; }
+/* Stems made in the Studio are working files: they stay out of the song list */
+const songIds = () => [...tracks.keys()].filter(id => !tracks.get(id).stemOf);
 function baseIds() {
-  if (S.view.type === 'fav') return [...tracks.keys()].filter(id => favs.has(id));
+  if (S.view.type === 'fav') return songIds().filter(id => favs.has(id));
   if (S.view.type === 'list') { const l = curList(); return l ? l.ids.filter(id => tracks.has(id)) : []; }
-  return [...tracks.keys()];
+  return songIds();
 }
 function visibleIds() {
   let ids = baseIds(); const T = id => tracks.get(id);
@@ -84,10 +86,10 @@ function renderNav() {
   const chip = (type, id, label, n) => { const on = S.view.type === type && (type !== 'list' || S.view.id === id);
     return `<button class="chip" data-act="view" data-type="${type}" data-id="${id || ''}" aria-current="${on}">${esc(label)} <span class="n">${n}</span></button>`; };
   const live = ids => ids.filter(id => tracks.has(id)).length;
-  $('#nav').innerHTML = chip('all', '', 'All songs', tracks.size) + chip('fav', '', 'Favorites', live([...favs]))
+  $('#nav').innerHTML = chip('all', '', 'All songs', songIds().length) + chip('fav', '', 'Favorites', live([...favs]))
     + lists.map(l => chip('list', l.id, l.name, live(l.ids))).join('')
     + `<button class="chip ghost" data-act="newlist">+ New playlist</button>`;
-  $('#libCount').textContent = booted ? `${plural(tracks.size, 'song')} · ${plural(lists.length, 'playlist')}` : 'Loading your library…';
+  $('#libCount').textContent = booted ? `${plural(songIds().length, 'song')} · ${plural(lists.length, 'playlist')}` : 'Loading your library…';
 }
 function rowHTML(t, n) {
   const cur = t.id === curId;
@@ -322,6 +324,7 @@ async function deleteTrack(id) {
   tracks.delete(id); favs.delete(id); dbPut('lists', { id: '__fav', ids: [...favs] }).catch(() => {});
   lists.forEach(l => { if (l.ids.includes(id)) { l.ids = l.ids.filter(x => x !== id); dbPut('lists', l).catch(() => {}); } });
   const u = artUrls.get(id); if (u) { URL.revokeObjectURL(u); artUrls.delete(id); }
+  for (const s of [...tracks.values()].filter(x => x.stemOf === id)) { tracks.delete(s.id); dbDel('tracks', s.id); }
   dbDel('tracks', id); save(); render(); updateStorage(); toast('Song removed');
 }
 

@@ -1,0 +1,5 @@
+# Never let Git touch line endings inside binary files (it would corrupt them)
+stems/model/* binary
+*.wasm binary
+*.onnx binary
+*.png binary

@@ -151,7 +151,9 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 .modal input:focus{border-color:var(--accent)}
 .mact{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
 .busy{position:fixed;inset:0;z-index:75;background:var(--scrim);display:grid;place-items:center;color:var(--bg)}
-.busy div{background:var(--raise);color:var(--ink);padding:18px 22px;border-radius:12px;font-weight:600}
+.busybox{background:var(--raise);color:var(--ink);padding:18px 22px;border-radius:12px;font-weight:600;display:flex;flex-direction:column;gap:12px;align-items:flex-start;min-width:340px;max-width:min(90vw,460px)}
+.pbar{width:100%;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.pbar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
 
 .phone{height:100%;display:grid;place-items:center;padding:24px 16px;text-align:center}
 .phone div{max-width:40ch;display:flex;flex-direction:column;gap:12px;align-items:center}
@@ -254,7 +256,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
     <div class="mact"><button type="button" class="btn" id="mCancel">Cancel</button><button type="submit" class="btn primary" id="mOk">OK</button></div>
   </form>
 </div>
-<div class="busy" id="busy" hidden><div id="busyText">Working…</div></div>
+<div class="busy" id="busy" hidden><div class="busybox"><span id="busyText">Working…</span><div class="pbar" id="busyBar" hidden><i id="busyFill"></i></div><button class="btn sm" id="busyCancel" hidden>Cancel</button></div></div>
 <div class="toast" id="toast" role="status" hidden></div>
 <script src="studio.js"></script>
 </body>
