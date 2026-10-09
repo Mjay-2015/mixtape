@@ -37,14 +37,19 @@ button,input,select{font:inherit;color:inherit}
 #app{height:100%;display:grid;grid-template-rows:56px minmax(0,1fr)}
 
 /* ---------- top bar ---------- */
-.top{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line)}
-.tb-left,.tb-right{display:flex;align-items:center;gap:8px;min-width:0}
-.tb-right{justify-content:flex-end}
+/* top bar: left side gives way first, the transport and right-hand tools never overlap */
+.top{display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);min-width:0}
+.tb-left,.tb-right{display:flex;align-items:center;gap:6px}
+.tb-left{flex:1 1 0;min-width:0;overflow:hidden}
+.tb-right{flex:1 0 auto;justify-content:flex-end}
+.transport{flex:none}
+@media (max-width:1500px){.mark span{display:none}.lcd{min-width:150px;padding:2px 10px}.clock{font-size:18px}}
+@media (max-width:1320px){.mark{display:none}.top .sepv:first-of-type{display:none}.transport .btn.sm{padding:0 8px}}
 .mark{display:flex;align-items:center;gap:8px;font:600 13px var(--f-ui);letter-spacing:.02em;white-space:nowrap}
 .mark i{width:22px;height:22px;border-radius:6px;background:conic-gradient(from 200deg,#F5A524,#E5649A,#4F8EF7,#2EC4B6,#F5A524);display:block}
 .mark span{color:var(--muted);font-weight:500}
 .sepv{width:1px;height:24px;background:var(--line);flex:none}
-.top .name{font:600 14px var(--f-ui);border:1px solid transparent;background:transparent;border-radius:6px;padding:5px 8px;width:200px;min-width:0}
+.top .name{font:600 14px var(--f-ui);border:1px solid transparent;background:transparent;border-radius:6px;padding:5px 8px;width:200px;min-width:60px;flex:0 1 200px}
 .top .name:hover,.top .name:focus{border-color:var(--line-2);outline:0;background:var(--bg)}
 .transport{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:4px}
 .lcd{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:170px;padding:2px 14px;border-left:1px solid var(--line);border-right:1px solid var(--line)}
@@ -103,7 +108,9 @@ button,input,select{font:inherit;color:inherit}
 .lib .li-sub{display:block;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lib .bk{display:inline-block;margin-top:4px;font:11px var(--f-mono);color:var(--accent);background:rgba(245,165,36,.1);border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .lib .bk.busy{color:var(--muted);background:var(--raise)}
-.lib .acts{display:flex;flex-direction:column;gap:4px}
+.lib .acts{display:flex;flex-direction:column;gap:4px;opacity:0;transition:opacity .12s}
+.lib li:hover .acts,.lib li:focus-within .acts{opacity:1}
+@media (hover:none){.lib .acts{opacity:1}}
 .lib .acts button{height:24px;padding:0 9px;border-radius:5px;border:1px solid var(--line-2);background:var(--raise);font-size:11px;font-weight:600;cursor:pointer;color:var(--ink);white-space:nowrap}
 .lib .acts button:first-child{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .lib .acts button:hover{filter:brightness(1.15)}
@@ -150,6 +157,16 @@ button,input,select{font:inherit;color:inherit}
 .hsz button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 #lanes[data-h="s"] .lane{height:58px}#lanes[data-h="s"] .lh-row{display:none}
 #lanes[data-h="l"] .lane{height:150px}
+.lane{position:relative}
+.lane.folded{height:30px!important}
+.lane.folded .lane-head{padding-top:4px;padding-bottom:4px}
+.lane.folded .lh-row{display:none}
+.lane.folded .clip{top:4px;bottom:4px}
+.lane.folded .clip canvas,.lane.folded .fh,.lane.folded .tlsel{display:none}
+.fold{width:20px;height:22px;border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0;font-size:11px;flex:none;border-radius:4px}
+.fold:hover{color:var(--ink);background:var(--raise)}
+.lane-grip{position:absolute;left:0;right:0;bottom:-3px;height:7px;cursor:row-resize;z-index:6}
+.lane-grip:hover,.lane-grip.on{background:linear-gradient(transparent 2px,var(--accent) 2px 4px,transparent 4px)}
 .clip{cursor:text}
 .clip .cl{pointer-events:auto;cursor:grab}
 .clip .cl:active{cursor:grabbing}

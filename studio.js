@@ -807,9 +807,10 @@ function renderLanes() {
   $('#lanes').innerHTML = P.lanes.map(l => {
     const fxOn = Object.values(l.fx).some(v => v);
     return `
-    <div class="lane${l.id === selLane ? ' on' : ''}" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]}">
+    <div class="lane${l.id === selLane ? ' on' : ''}${l.folded ? ' folded' : ''}" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]};${!l.folded && l.h ? `height:${l.h}px` : ''}">
       <div class="lane-head">
         <div class="lh-top">
+          <button class="fold" data-lf="fold" aria-expanded="${!l.folded}" title="${l.folded ? 'Open this track' : 'Fold this track to a slim bar'} (Alt+click: all tracks)">${l.folded ? '▸' : '▾'}</button>
           <input value="${esc(l.name)}" data-lf="name" aria-label="Track name" maxlength="40">
           <button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute this track" aria-pressed="${l.mute}">M</button>
           <button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only this track" aria-pressed="${l.solo}">S</button>
@@ -819,6 +820,7 @@ function renderLanes() {
         <div class="lh-row"><span>L·R</span><input type="range" min="-100" max="100" value="${Math.round(l.pan * 100)}" data-lf="pan" aria-label="Track left-right balance"><output>${l.pan === 0 ? 'C' : (l.pan < 0 ? 'L' : 'R') + Math.abs(Math.round(l.pan * 100))}</output></div>
         ${fxOn ? '<div class="lh-row"><span>FX</span><span style="grid-column:2/4;color:var(--accent)">effects on</span></div>' : ''}
       </div>
+      <div class="lane-grip" data-grip="${l.id}" title="Drag to make this track taller or smaller"></div>
       <div class="lane-body${gridCls}" style="${gridVars}width:${timelineWidth()}px;${anySolo && !l.solo || l.mute ? 'opacity:.45' : ''}">
         ${P.clips.filter(c => c.lane === l.id).map(c => {
           const t = libTrack(c.trackId), name = t ? t.title : 'Missing song';
@@ -1047,7 +1049,7 @@ const acts = {
   showlib: () => { if (!UI.lib) { UI.lib = true; applyUI(); } const f = $('.lib li[draggable]'); if (f) { f.animate([{ outline: '2px solid #F5A524' }, { outline: '2px solid transparent' }], { duration: 1400 }); } else toast('Your library is empty. Use “Import songs” first.'); },
   togglelib: () => { UI.lib = !UI.lib; applyUI(); },
   toggleinsp: () => { UI.insp = !UI.insp; applyUI(); },
-  lh: b => { UI.h = b.dataset.h; applyUI(); },
+  lh: b => { UI.h = b.dataset.h; P.lanes.forEach(l => { l.h = null; l.folded = false; }); quietCommit(); applyUI(); },
   looptoggle: () => {
     if (!P.loop) { if (tlSel) return setLoop(tlSel.a, tlSel.b, 'Looping the selected stretch'); return toast('Drag along the time ruler above the tracks to mark the section to loop.', 4500); }
     P.loopOn = !P.loopOn; quietCommit(); renderLoop(); renderRuler(); renderTransport(); toast(P.loopOn ? 'Loop on' : 'Loop off');
@@ -1121,12 +1123,24 @@ $('#lanes').addEventListener('click', e => {
     if (b.dataset.lf === 'mute') { l.mute = !l.mute; liveLanes(); quietCommit(); renderLanes(); renderMixer(); }
     else if (b.dataset.lf === 'solo') { l.solo = !l.solo; liveLanes(); quietCommit(); renderLanes(); renderMixer(); }
     else if (b.dataset.lf === 'del') deleteLane(l.id);
+    else if (b.dataset.lf === 'fold') { const v = !l.folded; (e.altKey ? P.lanes : [l]).forEach(x => { x.folded = v; }); quietCommit(); renderLanes(); }
     return;
   }
   if (selLane !== l.id && !e.target.closest('.clip')) { selLane = l.id; renderLanes(); renderInspector(); }
 });
 
 $('#lanes').addEventListener('pointerdown', e => {
+  const grip = e.target.closest('.lane-grip');
+  if (grip && e.button === 0) {
+    e.preventDefault(); const l = P.lanes.find(x => x.id === grip.dataset.grip); if (!l) return;
+    const laneEl = grip.closest('.lane'), y0 = e.clientY, h0 = laneEl.offsetHeight; grip.classList.add('on');
+    try { grip.setPointerCapture(e.pointerId); } catch (_) {}
+    if (l.folded) { l.folded = false; laneEl.classList.remove('folded'); }
+    const mv = ev => { l.h = Math.round(clamp(h0 + ev.clientY - y0, 40, 360)); laneEl.style.height = l.h + 'px'; };
+    grip.addEventListener('pointermove', mv);
+    grip.addEventListener('pointerup', () => { grip.removeEventListener('pointermove', mv); grip.classList.remove('on'); quietCommit(); renderLanes(); }, { once: true });
+    return;
+  }
   const body = e.target.closest('.lane-body'); if (!body || e.button !== 0) return;
   const el = e.target.closest('.clip');
   if (!el) {
