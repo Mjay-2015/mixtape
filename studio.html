@@ -75,7 +75,10 @@ button,input,select{font:inherit;color:inherit}
 @keyframes blink{to{visibility:hidden}}
 
 /* ---------- workspace ---------- */
-.work{display:grid;grid-template-columns:288px minmax(0,1fr) 300px;min-height:0}
+.work{--libw:288px;--inspw:300px;display:grid;grid-template-columns:var(--libw) minmax(0,1fr) var(--inspw);min-height:0}
+.work.nolib{--libw:0px}.work.noinsp{--inspw:0px}
+.work.nolib>.panel:first-child,.work.noinsp>#insp{visibility:hidden;border:0;overflow:hidden}
+.tgl2[aria-pressed="true"]{color:var(--accent);background:rgba(245,165,36,.12)}
 .panel{min-height:0;display:flex;flex-direction:column;background:var(--panel);border-right:1px solid var(--line)}
 .panel.right{border-right:0;border-left:1px solid var(--line);overflow:auto;display:block}
 .ptitle{font:600 11px var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0}
@@ -107,7 +110,7 @@ button,input,select{font:inherit;color:inherit}
 .lib li.empty-note{display:block;color:var(--muted);padding:16px 10px;font-size:13px;background:none;border:0}
 
 /* centre: tracks over the part editor */
-.mid{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0;min-width:0;background:var(--bg)}
+.mid{display:grid;grid-template-rows:minmax(0,1fr) auto auto;min-height:0;min-width:0;background:var(--bg)}
 .tl{overflow:auto;position:relative;min-height:0}
 .tl-inner{position:relative;min-height:100%}
 .ruler-row{position:sticky;top:0;z-index:5;display:flex;height:30px;background:var(--panel);border-bottom:1px solid var(--line)}
@@ -142,6 +145,55 @@ button,input,select{font:inherit;color:inherit}
 .clip .h{position:absolute;top:0;bottom:0;width:9px;cursor:ew-resize;z-index:2}
 .clip .h.l{left:0}.clip .h.r{right:0}
 .clip .h:hover{background:rgba(255,255,255,.18)}
+.hsz{display:flex;gap:2px}
+.hsz button{width:22px;height:20px;border-radius:4px;border:1px solid var(--line-2);background:var(--raise);color:var(--muted);font:600 10px var(--f-mono);cursor:pointer;padding:0}
+.hsz button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+#lanes[data-h="s"] .lane{height:58px}#lanes[data-h="s"] .lh-row{display:none}
+#lanes[data-h="l"] .lane{height:150px}
+.clip{cursor:text}
+.clip .cl{pointer-events:auto;cursor:grab}
+.clip .cl:active{cursor:grabbing}
+.clip.muted{opacity:.42}
+.clip.muted .cl::after{content:" · muted";font-weight:500}
+.tlsel{position:absolute;top:var(--clip-head);bottom:0;background:rgba(255,255,255,.2);border-left:1px solid var(--ink);border-right:1px solid var(--ink);pointer-events:none;z-index:1}
+.fh{position:absolute;top:var(--clip-head);width:12px;height:12px;z-index:3;cursor:ew-resize;opacity:0;transition:opacity .12s}
+.fh::before{content:"";position:absolute;inset:0;background:var(--ink);clip-path:polygon(0 0,100% 0,0 100%)}
+.fh.r::before{clip-path:polygon(0 0,100% 0,100% 100%)}
+.fh.l{margin-left:-1px}.fh.r{margin-right:-1px}
+.clip:hover .fh,.clip.sel .fh{opacity:1}
+.loopband{position:absolute;top:30px;bottom:0;z-index:1;pointer-events:none;background:rgba(245,165,36,.07);border-left:1px solid rgba(245,165,36,.7);border-right:1px solid rgba(245,165,36,.7)}
+.loopband.off{background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.18)}
+#mExtra:empty{display:none}
+#mExtra{display:flex;flex-direction:column;gap:12px}
+.opts{border:1px solid var(--line-2);border-radius:8px;padding:10px 12px;margin:0;display:flex;flex-direction:column;gap:7px}
+.opts legend{font:600 10px var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:0 4px}
+.opts label{display:flex;gap:9px;align-items:flex-start;font-size:13px;cursor:pointer}
+.opts input{accent-color:var(--accent);margin:2px 0 0;flex:none}
+.opts label.dis{opacity:.45;cursor:default}
+.lcd{cursor:pointer;border-radius:6px}.lcd:hover{background:var(--panel-2)}
+.tl-empty{pointer-events:none}
+.starts{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:10px}
+.start{pointer-events:auto;display:flex;flex-direction:column;align-items:center;gap:4px;width:170px;padding:16px 12px;border-radius:12px;border:1px solid var(--line-2);background:var(--panel-2);color:var(--ink);cursor:pointer}
+.start:hover{border-color:var(--accent);background:#232833}
+.start .i{width:22px;height:22px;color:var(--accent)}
+.start b{font-size:14px}.start span{font-size:12px;color:var(--muted)}
+.recdot{width:16px;height:16px;border-radius:50%;background:var(--danger);margin:3px 0}
+.mixer{border-top:1px solid var(--line);background:var(--panel);padding:8px 12px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.mx-head{display:flex;align-items:center;gap:8px}.mx-head .sp{flex:1}
+.strips{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+.strip{flex:none;width:92px;display:flex;flex-direction:column;align-items:center;gap:6px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:8px 6px;border-top:4px solid var(--c)}
+.strip.master{border-top-color:var(--ink);background:#1F242C}
+.strip .nm{font-size:11px;font-weight:600;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.strip .fdr{display:flex;gap:6px;align-items:stretch;height:120px}
+.strip input[type=range].vert{writing-mode:vertical-lr;direction:rtl;width:22px;height:120px;accent-color:var(--c)}
+.strip.master input[type=range].vert{accent-color:var(--ink)}
+.meter{width:8px;border-radius:3px;background:#0B0D10;position:relative;overflow:hidden}
+.meter i{position:absolute;left:0;right:0;bottom:0;height:0;background:linear-gradient(to top,#4FD1A5 0 70%,#F5C04A 70% 88%,#FF5F5F 88%)}
+.strip output{font:10px var(--f-mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.strip .pan{width:100%;accent-color:var(--c)}
+.strip .ms{display:flex;gap:3px}
+.strip .fxb{font-size:10px;height:22px;padding:0 6px;border-radius:5px;border:1px solid var(--line-2);background:var(--raise);color:var(--muted);cursor:pointer;width:100%}
+.strip .fxb.on{color:var(--accent);border-color:var(--accent)}
 .playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--ink);z-index:8;pointer-events:none;margin-left:-1px;box-shadow:0 0 6px rgba(255,255,255,.35)}
 .playhead::before{content:"";position:absolute;top:0;left:-6px;border:7px solid transparent;border-top:9px solid var(--accent)}
 .addlane{position:sticky;left:0;padding:12px;width:var(--head-w)}
@@ -209,7 +261,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 .phone div{max-width:40ch;display:flex;flex-direction:column;gap:12px;align-items:center}
 .phone h1{font:600 22px var(--f-ui);margin:0}
 .phone p{margin:0;color:var(--muted)}
-@media (max-width:1180px){.work{grid-template-columns:250px minmax(0,1fr) 270px}.lcd{min-width:150px}.top .name{width:140px}}
+@media (max-width:1180px){.work{--libw:250px;--inspw:270px}.work.nolib{--libw:0px}.work.noinsp{--inspw:0px}.lcd{min-width:150px}.top .name{width:140px}}
 @media (prefers-reduced-motion:reduce){.rec.on .dot{animation:none}.pbar i{transition:none}}
 </style>
 </head>
@@ -227,6 +279,9 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4"/></symbol>
   <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-mixer" viewBox="0 0 24 24"><path d="M6 4v16M12 4v16M18 4v16"/><rect x="4" y="13" width="4" height="3" rx="1" fill="currentColor"/><rect x="10" y="7" width="4" height="3" rx="1" fill="currentColor"/><rect x="16" y="11" width="4" height="3" rx="1" fill="currentColor"/></symbol>
+  <symbol id="i-pleft" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></symbol>
+  <symbol id="i-pright" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15"/></symbol>
 </svg>
 
 <div class="phone" id="phoneNote" hidden>
@@ -248,7 +303,9 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
     <div class="transport" role="group" aria-label="Transport">
       <button class="ib" data-act="stop" aria-label="Back to start" title="Back to start (Home)"><svg class="i"><use href="#i-stop"/></svg></button>
       <button class="ib play" data-act="play" aria-label="Play" id="playBtn" title="Play / pause (Space)"><svg class="i"><use id="playIcon" href="#i-play"/></svg></button>
-      <div class="lcd"><div class="clock" id="clock">0:00.0 <span>/ 0:00.0</span></div><div class="tempo" id="tempoLbl">— BPM</div></div>
+      <div class="lcd" data-act="rulermode" role="button" tabindex="0" title="Click to switch between minutes and bars"><div class="clock" id="clock">0:00.0 <span>/ 0:00.0</span></div><div class="tempo" id="tempoLbl">— BPM</div></div>
+      <button class="btn sm tgl" data-act="looptoggle" id="loopBtn" aria-pressed="false" title="Loop the marked section (L). Drag along the time ruler to mark it.">Loop</button>
+      <button class="btn sm tgl" data-act="metro" id="metroBtn" aria-pressed="false" title="Metronome: a click on every beat while playing (C)">Click</button>
       <button class="btn sm tgl" data-act="snap" id="snapBtn" aria-pressed="false" title="Line parts and selections up with the beat">Snap</button>
       <button class="btn sm rec" data-act="record" id="recBtn" title="Record your voice over the mix"><span class="dot"></span><span id="recLbl">Record</span></button>
     </div>
@@ -260,8 +317,12 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <button class="btn sm ghost" data-act="fit" title="Fit the whole mix on screen">Fit</button>
       <button class="ib" data-act="zin" aria-label="Zoom in" title="Zoom in (+)"><svg class="i"><use href="#i-zin"/></svg></button>
       <div class="sepv"></div>
+      <button class="ib tgl2" data-act="togglemixer" id="mixBtn" aria-pressed="false" aria-label="Show or hide the mixer" title="Show or hide the mixer (X)"><svg class="i"><use href="#i-mixer"/></svg></button>
+      <button class="ib tgl2" data-act="togglelib" id="libBtn" aria-pressed="true" aria-label="Show or hide the library" title="Show or hide the library (B)"><svg class="i"><use href="#i-pleft"/></svg></button>
+      <button class="ib tgl2" data-act="toggleinsp" id="inspBtn" aria-pressed="true" aria-label="Show or hide the settings" title="Show or hide the settings (I)"><svg class="i"><use href="#i-pright"/></svg></button>
+      <div class="sepv"></div>
       <button class="btn sm ghost" data-act="newproj" title="Clear the timeline and start a new mix">New mix</button>
-      <button class="btn primary" data-act="save" id="saveBtn" title="Mix everything down into one song in your library"><svg class="i"><use href="#i-export"/></svg>Save as song</button>
+      <button class="btn primary" data-act="save" id="saveBtn" title="Save your mix as a song in your library or as a file"><svg class="i"><use href="#i-export"/></svg>Export</button>
     </div>
   </header>
 
@@ -280,20 +341,25 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
     <section class="mid">
       <div class="tl" id="tl">
         <div class="tl-empty" id="tlEmpty" hidden>
-          <span class="arrow">← from your library</span>
-          <b>Drag a song here to start</b>
-          <span>Drop it where you want it to play. You can also drop music files straight from your computer.</span>
-          <button class="btn primary" data-act="import"><svg class="i"><use href="#i-import"/></svg>Import audio files</button>
+          <b>Start a mix</b>
+          <span>Drag a song here from your library, or drop music files from your computer. Drop it where you want it to play.</span>
+          <div class="starts">
+            <button class="start" data-act="import"><svg class="i"><use href="#i-import"/></svg><b>Import songs</b><span>From this computer</span></button>
+            <button class="start" data-act="showlib"><svg class="i"><use href="#i-pleft"/></svg><b>Use my library</b><span>Drag a song from the list</span></button>
+            <button class="start" data-act="record"><span class="recdot"></span><b>Record my voice</b><span>With a one-bar count-in</span></button>
+          </div>
         </div>
         <div class="tl-inner" id="tlInner">
-          <div class="ruler-row"><div class="corner"><span class="ptitle">Tracks</span><button class="btn sm ghost" data-act="addlane" title="Add an empty track">+ Track</button></div><canvas id="ruler"></canvas></div>
+          <div class="ruler-row"><div class="corner"><span class="ptitle">Tracks</span><span class="hsz" role="group" aria-label="Track height"><button data-act="lh" data-h="s" title="Small tracks">S</button><button data-act="lh" data-h="m" title="Medium tracks">M</button><button data-act="lh" data-h="l" title="Tall tracks">L</button></span></div><canvas id="ruler"></canvas></div>
           <div id="lanes"></div>
           <div class="addlane"><button class="btn sm" data-act="addlane">+ Add track</button></div>
+          <div class="loopband" id="loopBand" hidden></div>
           <div class="playhead" id="playhead"></div>
           <div class="dropmark" id="dropMark" hidden><span id="dropLbl"></span></div>
         </div>
       </div>
 
+      <div class="mixer" id="mixer" hidden aria-label="Mixer"><div class="mx-head"><span class="ed-tag">Mixer</span><span class="sp"></span><button class="ib" data-act="togglemixer" aria-label="Close the mixer" title="Close the mixer (X)"><svg class="i"><use href="#i-close"/></svg></button></div><div class="strips" id="strips"></div></div>
       <div class="editor" hidden>
         <div class="ed-head"><span class="ed-tag">Part editor</span><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span><span class="sp"></span><button class="ib" data-act="edclose" aria-label="Close the part editor" title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
         <div class="ed-wrap" id="edWrap">
@@ -322,6 +388,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
     <h3 id="mTitle"></h3>
     <p id="mText"></p>
     <input id="mInput" type="text" autocomplete="off" maxlength="80">
+    <div id="mExtra"></div>
     <div class="mact"><button type="button" class="btn" id="mCancel">Cancel</button><button type="submit" class="btn primary" id="mOk">OK</button></div>
   </form>
 </div>

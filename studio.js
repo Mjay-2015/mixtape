@@ -134,18 +134,26 @@ const PALETTE = ['#4F8EF7', '#F5A524', '#2EC4B6', '#E5649A', '#8B7CF6', '#7BC96F
 const NAME_COLORS = { Vocals: '#E5649A', Drums: '#F5A524', Bass: '#4F8EF7', 'Other instruments': '#2EC4B6', Voice: '#8B7CF6' };
 const newLane = (n, color) => ({ id: uid(), name: typeof n === 'string' ? n : `Track ${n}`, gain: 1, pan: 0, mute: false, solo: false, fx: FX0(),
   color: color || (typeof n === 'string' ? (NAME_COLORS[n] || PALETTE[4]) : PALETTE[(n - 1) % PALETTE.length]) });
-const newProject = () => ({ name: 'My mix', lanes: [newLane(1)], clips: [], xfade: 0.5, bpm: null, key: null, snap: false, polish: false });
+const newProject = () => ({ name: 'My mix', lanes: [newLane(1)], clips: [], xfade: 0.5, bpm: null, key: null, snap: false, polish: false, loop: null, loopOn: false });
 function normalize(p) {
   if (!p || !p.lanes || !p.lanes.length) return newProject();
   p.lanes.forEach((l, i) => { l.fx = { ...FX0(), ...(l.fx || {}) }; if (!l.color) l.color = NAME_COLORS[l.name] || PALETTE[i % PALETTE.length]; });
   p.clips.forEach(c => { if (c.rate == null) c.rate = 1; if (c.semi == null) c.semi = 0; if (c.keepPitch == null) c.keepPitch = true; c.fxIn = c.fxIn || 'fade'; c.fxOut = c.fxOut || 'fade'; });
   p.xfade = p.xfade ?? 0.5; p.snap = !!p.snap; p.polish = !!p.polish; p.bpm = p.bpm || null; p.key = p.key || null;
+  p.loop = p.loop && p.loop.b > p.loop.a ? p.loop : null; p.loopOn = !!p.loopOn && !!p.loop;
+  p.metro = !!p.metro; p.master = p.master ?? 1;
   return p;
 }
 let P; try { P = normalize(JSON.parse(localStorage.getItem(LSP))); } catch (e) { P = newProject(); }
 let selClip = null, selLane = P.lanes[0].id, playhead = 0, pps = 24, edSel = null;
 let hist = [], fut = [], last = JSON.stringify(P);
 const persist = () => { try { localStorage.setItem(LSP, last); } catch (e) {} };
+const UI_KEY = 'mixtape-studio-ui';
+let UI = { lib: true, insp: true, h: 'm', mixer: false, bars: false }; try { UI = { ...UI, ...(JSON.parse(localStorage.getItem(UI_KEY)) || {}) }; } catch (e) {}
+const saveUI = () => { try { localStorage.setItem(UI_KEY, JSON.stringify(UI)); } catch (e) {} };
+let tlSel = null;      // a stretch selected right on the timeline: { clipId, a, b } in timeline seconds
+let edOpen = false;    // the detailed part editor is open (double-click a part)
+let clipboard = null;  // last copied part or stretch
 const clipById = id => P.clips.find(c => c.id === id);
 const laneColor = id => { const l = P.lanes.find(x => x.id === id); return (l && l.color) || PALETTE[0]; };
 const withAlpha = (hex, a) => hex + Math.round(clamp(a, 0, 1) * 255).toString(16).padStart(2, '0');
@@ -158,10 +166,19 @@ const beatLen = () => P.bpm ? 60 / P.bpm : 0;
 const effFo = c => c.fxOut === 'echo' && !(c.fadeOut > 0) ? Math.min(1, dur(c) / 3) : (c.fadeOut || 0);
 function fixFades(c) { const d = dur(c); c.fadeIn = clamp(c.fadeIn || 0, 0, d); c.fadeOut = clamp(c.fadeOut || 0, 0, d - c.fadeIn); }
 function fixSel() {
+  if (tlSel && !clipById(tlSel.clipId)) tlSel = null;
   if (selClip && !clipById(selClip)) selClip = null;
   if (!P.lanes.some(l => l.id === selLane)) selLane = P.lanes[0] ? P.lanes[0].id : null;
 }
+// The mix takes its tempo and key from the first song in it that has them (songs analysed earlier included)
+function adoptTempoKey() {
+  for (const c of P.clips) { const a = ana[c.trackId]; if (!a) continue;
+    if (!P.bpm && a.bpm) P.bpm = a.bpm;
+    if (!P.key && a.key != null) P.key = { key: a.key, mode: a.mode };
+    if (P.bpm && P.key) break; }
+}
 function commit(msg) {
+  adoptTempoKey();
   P.clips.forEach(fixFades);
   const s = JSON.stringify(P); if (s === last) { renderAll(); if (msg) toast(msg); return; }
   hist.push(last); if (hist.length > 150) hist.shift(); fut = []; last = s; persist();
@@ -220,6 +237,58 @@ function splitAtPlayhead() {
   const c2 = { ...c, id: uid(), start: srcT, at: playhead, fadeIn: 0, fxIn: 'fade' };
   c.end = srcT; c.fadeOut = 0; c.fxOut = 'fade'; P.clips.push(c2); selClip = c2.id; commit('Split in two');
 }
+function splitClipAt(c, t) {
+  if (!c || t <= c.at + 0.03 || t >= c.at + dur(c) - 0.03) return null;
+  const srcT = c.start + (t - c.at) * (c.rate || 1);
+  const c2 = { ...c, id: uid(), start: srcT, at: t, fadeIn: 0, fxIn: 'fade' };
+  c.end = srcT; c.fadeOut = 0; c.fxOut = 'fade'; P.clips.push(c2); return c2;
+}
+function selSource() {
+  const c = tlSel && clipById(tlSel.clipId); if (!c) return null;
+  const r = c.rate || 1;
+  return { c, a: c.start + (tlSel.a - c.at) * r, b: c.start + (tlSel.b - c.at) * r };
+}
+function removeStretch() {
+  const s = selSource(); if (!s) return;
+  selClip = s.c.id; edSel = { a: s.a, b: s.b }; tlSel = null; removeSel();
+}
+function keepStretch() {
+  const s = selSource(); if (!s) return;
+  s.c.at = tlSel.a; s.c.start = s.a; s.c.end = s.b; selClip = s.c.id; tlSel = null; commit('Kept only the selected stretch');
+}
+function splitHere() {
+  if (!tlSel) return splitAtPlayhead();
+  const c = clipById(tlSel.clipId); if (!c) return;
+  splitClipAt(c, tlSel.b);
+  const mid = splitClipAt(c, tlSel.a) || c;
+  selClip = mid.id; tlSel = null; commit('Split. The selected stretch is now its own part.');
+}
+function repeatStretch() {
+  if (!tlSel) return dupClip();
+  const s = selSource(); if (!s) return;
+  const len = tlSel.b - tlSel.a;
+  splitClipAt(s.c, tlSel.b);
+  ripple(s.c.lane, tlSel.b - 1e-3, len, [s.c.id]);
+  P.clips.push({ ...s.c, id: uid(), start: s.a, end: s.b, at: tlSel.b, fadeIn: Math.min(0.01, len / 4), fadeOut: Math.min(0.01, len / 4), fxIn: 'fade', fxOut: 'fade' });
+  tlSel = { clipId: tlSel.clipId, a: tlSel.b, b: tlSel.b + len };
+  const copy = P.clips[P.clips.length - 1]; tlSel.clipId = copy.id; selClip = copy.id;
+  commit('Repeated the stretch. Press Ctrl+D again to repeat it once more.');
+}
+function copySel() {
+  const s = selSource();
+  if (s) clipboard = { ...s.c, start: s.a, end: s.b };
+  else { const c = clipById(selClip); if (!c) return; clipboard = { ...c }; }
+  toast('Copied. Move the red playhead and press Ctrl+V to paste.');
+}
+function pasteAtPlayhead() {
+  if (!clipboard || !libTrack(clipboard.trackId)) return toast('Copy a part or a stretch first (Ctrl+C).');
+  const laneId = selLane && P.lanes.some(l => l.id === selLane) ? selLane : P.lanes[0].id;
+  const c = { ...clipboard, id: uid(), lane: laneId, at: playhead, mute: false };
+  P.clips.push(c); selClip = c.id; tlSel = null; commit(`Pasted at ${fmtT(playhead)}`);
+}
+function toggleMutePart() { const c = clipById(selClip); if (!c) return; c.mute = !c.mute; commit(c.mute ? 'Part muted' : 'Part unmuted'); }
+const loopActive = () => !!(P.loopOn && P.loop && P.loop.b - P.loop.a > 0.2);
+function setLoop(a, b, msg) { P.loop = { a: Math.max(0, Math.min(a, b)), b: Math.max(a, b) }; P.loopOn = true; quietCommit(); renderLoop(); renderTransport(); renderRuler(); if (msg) toast(msg); }
 function loopClip(n) {
   const c = clipById(selClip); if (!c) return;
   const d = dur(c), after = c.at + d, edge = Math.min(0.01, d / 4), lastFade = c.fadeOut, lastFx = c.fxOut;
@@ -311,8 +380,8 @@ function setFilter(node, v) {
   else { node.type = 'lowpass'; node.frequency.value = 22000; node.Q.value = 0.0001; }
 }
 const laneAudible = l => !l.mute && (!P.lanes.some(x => x.solo) || l.solo);
-function buildLane(ac, l, master) {
-  const g = ac.createGain(); g.gain.value = laneAudible(l) ? l.gain : 0;
+function buildLane(ac, l, master, force) {
+  const g = ac.createGain(); g.gain.value = force || laneAudible(l) ? l.gain : 0;
   const bass = ac.createBiquadFilter(); bass.type = 'lowshelf'; bass.frequency.value = 150; bass.gain.value = l.fx.bass;
   const treble = ac.createBiquadFilter(); treble.type = 'highshelf'; treble.frequency.value = 5000; treble.gain.value = l.fx.treble;
   const filt = ac.createBiquadFilter(); setFilter(filt, l.fx.filter);
@@ -326,7 +395,8 @@ function buildLane(ac, l, master) {
   const conv = ac.createConvolver(); conv.buffer = getImpulse(ac);
   filt.connect(revSend); revSend.connect(conv); conv.connect(pan);
   pan.connect(master);
-  return { g, bass, treble, filt, pan, echoSend, delay, revSend };
+  const meter = ac.createAnalyser(); meter.fftSize = 512; pan.connect(meter); keepAlive(ac, meter);
+  return { g, bass, treble, filt, pan, echoSend, delay, revSend, meter };
 }
 function envelope(param, c, startPos, when0) {
   const d = dur(c), fi = c.fadeIn || 0, fo = effFo(c), g = c.gain ?? 1;
@@ -337,8 +407,8 @@ function envelope(param, c, startPos, when0) {
   if (fi > 0 && u0 < fi) param.linearRampToValueAtTime(v(fi), T(fi));
   if (fo > 0) { if (u0 < d - fo) param.setValueAtTime(v(d - fo), T(d - fo)); param.linearRampToValueAtTime(0, T(d)); }
 }
-function buildGraph(ac, startPos, when0) {
-  const master = ac.createGain();
+function buildGraph(ac, startPos, when0, opts = {}) {
+  const master = ac.createGain(); master.gain.value = P.master ?? 1;
   let out = master;
   if (P.polish) { // one-tap mastering: gentle compression, more level, peak catcher
     const comp = ac.createDynamicsCompressor(); comp.threshold.value = -20; comp.knee.value = 8; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.2;
@@ -348,9 +418,10 @@ function buildGraph(ac, startPos, when0) {
   }
   out.connect(ac.destination);
   const lanes = new Map();
-  for (const l of P.lanes) lanes.set(l.id, buildLane(ac, l, master));
+  for (const l of P.lanes) if (!opts.lane || l.id === opts.lane) lanes.set(l.id, buildLane(ac, l, master, !!opts.lane));
   const srcs = [];
   for (const c of P.clips) {
+    if (c.mute) continue;
     const e = bufs.get(c.trackId), ln = lanes.get(c.lane); if (!e || !ln) continue;
     const d = dur(c); if (c.at + d <= startPos) continue;
     const { r, p, k } = clipParams(c);
@@ -388,12 +459,29 @@ function buildGraph(ac, startPos, when0) {
     s.stop(when + (d - off) + 0.01);
     srcs.push(s);
   }
-  return { master, out, lanes, srcs };
+  if (opts.metro) srcs.push(...scheduleClicks(ac, ac.destination, startPos, when0, projectEnd() + 1));
+  const mmeter = ac.createAnalyser(); mmeter.fftSize = 512; out.connect(mmeter); keepAlive(ac, mmeter);
+  return { master, out, lanes, srcs, mmeter };
+}
+// Level meters must be wired through to the output (silently) or the browser skips measuring them
+function keepAlive(ac, node) { const z = ac.createGain(); z.gain.value = 0; node.connect(z); z.connect(ac.destination); }
+/* metronome: a short click on every beat, higher on the first beat of each bar */
+function clickAt(ac, dest, when, accent) {
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.frequency.value = accent ? 1760 : 1100; o.connect(g); g.connect(dest);
+  g.gain.setValueAtTime(0.0001, when); g.gain.exponentialRampToValueAtTime(accent ? 0.5 : 0.32, when + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
+  o.start(when); o.stop(when + 0.06); return o;
+}
+function scheduleClicks(ac, dest, startPos, when0, until) {
+  const bl = beatLen(); if (!bl) return [];
+  const out = []; let b = Math.ceil((startPos - 1e-6) / bl);
+  for (; b * bl < until && out.length < 4000; b++) out.push(clickAt(ac, dest, when0 + (b * bl - startPos), b % 4 === 0));
+  return out;
 }
 const hasTails = () => P.clips.some(c => c.fxOut === 'echo') || P.lanes.some(l => l.fx.echo > 0 || l.fx.reverb > 0);
 
 /* ---------- playback ---------- */
-let playing = false, pos0 = 0, t0 = 0, graph = null, preview = null, tickT = null, previewT = null;
+let playing = false, pos0 = 0, t0 = 0, graph = null, preview = null, tickT = null, previewT = null, pendingLoop = null;
 async function ensureAll() {
   for (const id of new Set(P.clips.map(c => c.trackId))) await ensureBuf(id);
   for (const c of P.clips) await ensureProc(c);
@@ -404,26 +492,43 @@ async function play() {
   try { await ensureAll(); } catch (err) { toast(err.message, 5000); return false; }
   await ctx.resume();
   if (playhead >= projectEnd() - 0.02) playhead = 0;
+  if (loopActive() && (playhead < P.loop.a || playhead >= P.loop.b - 0.05)) playhead = P.loop.a;
+  pendingLoop = null;
   pos0 = playhead; t0 = ctx.currentTime + 0.05;
-  graph = buildGraph(ctx, pos0, t0); playing = true; renderTransport(); clearInterval(tickT); tickT = setInterval(tick, 33);
+  graph = buildGraph(ctx, pos0, t0, { metro: P.metro }); playing = true; renderTransport(); clearInterval(tickT); tickT = setInterval(tick, 33);
   return true;
 }
 function pause() {
   if (!playing) return;
   playhead = curPos(); playing = false; clearInterval(tickT);
-  if (graph) { graph.srcs.forEach(s => { try { s.stop(); } catch (e) {} }); try { graph.out.disconnect(); graph.master.disconnect(); } catch (e) {} }
-  graph = null; renderTransport(); drawPlayhead();
+  for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr) { gr.srcs.forEach(s => { try { s.stop(); } catch (e) {} }); try { gr.out.disconnect(); gr.master.disconnect(); } catch (e) {} }
+  graph = null; pendingLoop = null; renderTransport(); drawPlayhead();
 }
 const curPos = () => playing ? pos0 + Math.max(0, ctx.currentTime - t0) : playhead;
 function restartIfPlaying() { if (playing && !rec) { pause(); play(); } }
 function tick() {
   if (!playing) return clearInterval(tickT);
+  if (loopActive() && graph && !rec) {
+    const L = P.loop, now = ctx.currentTime;
+    // schedule the next pass a moment early so the loop is seamless
+    if (!pendingLoop && pos0 < L.b && pos0 + (now - t0) >= L.b - 0.3) {
+      const tEnd = t0 + (L.b - pos0);
+      graph.srcs.forEach(s => { try { s.stop(tEnd); } catch (e) {} });
+      pendingLoop = { graph: buildGraph(ctx, L.a, tEnd, { metro: P.metro }), t0: tEnd };
+    }
+    if (pendingLoop && now >= pendingLoop.t0) {
+      const old = graph; graph = pendingLoop.graph; pos0 = L.a; t0 = pendingLoop.t0; pendingLoop = null;
+      setTimeout(() => { try { old.out.disconnect(); old.master.disconnect(); } catch (e) {} }, 400);
+    }
+  }
   const p = curPos();
-  if (p >= projectEnd() && !rec) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
+  if (p >= projectEnd() && !rec && !loopActive()) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
   drawPlayhead(p); followPlayhead(p); if (rec) renderTransport();
+  if (UI.mixer) updateMeters();
 }
 function liveLanes() {
   if (!graph) return; const now = ctx.currentTime;
+  graph.master.gain.setTargetAtTime(P.master ?? 1, now, 0.02);
   for (const l of P.lanes) {
     const n = graph.lanes.get(l.id); if (!n) continue;
     n.g.gain.setTargetAtTime(laneAudible(l) ? l.gain : 0, now, 0.02); n.pan.pan.setTargetAtTime(l.pan, now, 0.02);
@@ -462,6 +567,10 @@ async function toggleRecord() {
   mr.start(); const recWall = await started;
   const at = playhead;
   rec = { mr, stream, chunks, recWall, playWall: performance.now(), at, began: Date.now() };
+  // one bar of count-in clicks; the recording is trimmed to start when the music starts
+  { const bl = beatLen() || 0.6; await ctx.resume(); const t = ctx.currentTime + 0.05;
+    for (let i = 0; i < 4; i++) clickAt(ctx, ctx.destination, t + i * bl, i === 0);
+    toast('Count-in: 1, 2, 3, 4…', bl * 4 * 1000); await new Promise(r => setTimeout(r, (bl * 4 + 0.05) * 1000)); }
   if (P.clips.length) { const ok = await play(); if (ok) rec.playWall = performance.now() + Math.max(0, t0 - ctx.currentTime) * 1000; }
   else { await ctx.resume(); playing = true; pos0 = playhead; t0 = ctx.currentTime; rec.playWall = performance.now(); clearInterval(tickT); tickT = setInterval(tick, 33); }
   renderTransport(); toast('Recording. Wear headphones so the music isn’t recorded as well.', 4000);
@@ -539,7 +648,11 @@ async function splitStems() {
   const c = clipById(selClip); if (!c) return;
   const src = libTrack(c.trackId); if (!src) return;
   if (src.stemOf) return toast('This part is already a stem.');
-  let stems = stemsOf(src.id);
+  let stems = stemsOf(src.id), choice = null;
+  if (stems) {
+    choice = await ask({ title: `Split “${src.title}”`, ok: 'Add tracks', text: 'This song is already split, so this is instant.', extra: stemChoiceHTML(), read: readStemChoice });
+    if (!choice) return;
+  }
   if (!stems) {
     const saved = await modelSaved();
     let speed = 0; try { speed = +localStorage.getItem(SPEED_KEY) || 0; } catch (e) {}
@@ -547,10 +660,11 @@ async function splitStems() {
     const howLong = speed
       ? `Last time, this laptop needed about ${Math.max(1, Math.round(speed))} minutes for every minute of music, so this song should take about ${Math.max(1, Math.round(speed * songMin))} minutes.`
       : 'This is heavy work for a laptop: expect several minutes for every minute of music, and the first section is the slowest while the AI warms up.';
-    const ok = await ask({ title: `Split “${src.title}”?`, ok: 'Split song',
+    choice = await ask({ title: `Split “${src.title}”?`, ok: 'Split song',
       text: (saved ? '' : 'The first time, Mixtape downloads the AI model (181 MB). After that it works offline. ')
-        + howLong + ' Keep Mixtape open and in front while it works. You can cancel at any time, and each song only needs splitting once.' });
-    if (!ok) return;
+        + howLong + ' Keep Mixtape open and in front while it works. You can cancel at any time, and each song only needs splitting once.',
+      extra: stemChoiceHTML(), read: readStemChoice });
+    if (!choice) return;
     pause(); stopPreview();
     let e; try { e = await ensureBuf(src.id); } catch (err) { return toast(err.message, 5000); }
     busy('Getting the song ready…', { progress: 0 });
@@ -572,15 +686,15 @@ async function splitStems() {
     if (!stems) return toast('The stems were made but could not be found in your library.', 6000);
     try { if (src.duration > 0) localStorage.setItem(SPEED_KEY, String(result.seconds / src.duration)); } catch (e) {}
   }
-  // Replace the part with four layers, one per stem, lined up exactly where the part was
-  const at = P.lanes.findIndex(l => l.id === c.lane);
-  const newLanes = Object.keys(STEMS).map(k => newLane(STEMS[k]));
+  // Put each chosen stem on its own track, lined up exactly where the part was
+  const keys = choice.stems, at = P.lanes.findIndex(l => l.id === c.lane);
+  const newLanes = keys.map(k => newLane(STEMS[k]));
   P.lanes.splice(at + 1, 0, ...newLanes);
-  Object.keys(STEMS).forEach((k, i) => P.clips.push({ ...c, id: uid(), trackId: stems[k].id, lane: newLanes[i].id }));
-  P.clips = P.clips.filter(x => x !== c);
-  selClip = null; selLane = newLanes[0].id;
-  for (const k of Object.keys(STEMS)) { try { await ensureBuf(stems[k].id); } catch (e) {} }
-  commit('Split into 4 tracks. Mute “Vocals” for a karaoke version, or keep only the drums.');
+  keys.forEach((k, i) => P.clips.push({ ...c, id: uid(), trackId: stems[k].id, lane: newLanes[i].id, mute: false }));
+  if (choice.orig === 'replace') P.clips = P.clips.filter(x => x !== c); else c.mute = true;
+  selClip = null; selLane = newLanes[0].id; tlSel = null;
+  for (const k of keys) { try { await ensureBuf(stems[k].id); } catch (e) {} }
+  commit(`Added ${keys.length === 1 ? 'a ' + STEMS[keys[0]].toLowerCase() + ' track' : keys.length + ' tracks'}.${choice.orig === 'replace' ? '' : ' The original part is muted; right-click it to unmute.'}`);
 }
 
 
@@ -600,25 +714,54 @@ function encodeWavData(data, sr, scale = 1) {
   for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) { const s = clamp(data[c][i] * scale, -1, 1); v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true); o += 2; }
   return new Blob([ab], { type: 'audio/wav' });
 }
-async function renderMix() {
+async function renderMix(opts = {}) {
   await ensureAll();
-  const end = projectEnd() + (hasTails() ? 2.5 : 0), sr = ctx.sampleRate;
+  const from = opts.from || 0, to = opts.to ?? projectEnd();
+  const end = (to - from) + (hasTails() ? 2.5 : 0), sr = ctx.sampleRate;
   const oc = new OfflineAudioContext(2, Math.max(1, Math.ceil(end * sr)), sr);
-  buildGraph(oc, 0, 0);
+  buildGraph(oc, from, 0, { lane: opts.lane });
   const out = await oc.startRendering();
   let peak = 0; for (let c = 0; c < out.numberOfChannels; c++) { const d = out.getChannelData(c); for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; } }
   return { blob: encodeWav(out, peak > 0.98 ? 0.98 / peak : 1), duration: out.duration, buffer: out };
 }
+function downloadBlob(blob, name) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+const safeName = s => s.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'My mix';
 async function saveSong() {
-  if (!P.clips.length) return toast('There is nothing to save yet. Add a song first.');
-  const name = await ask({ title: 'Save as a song', text: 'Your mix is added to your library as a new song. The original songs stay as they are.', input: P.name || 'My mix', ok: 'Save song' });
-  if (!name) return;
-  pause(); busy('Mixing your song…');
+  if (!P.clips.length) return toast('There is nothing to export yet. Add a song first.');
+  const hasLoop = !!P.loop;
+  const choice = await ask({ title: 'Export', text: 'Name it, choose what to export and where it goes. Your original songs stay as they are.', input: P.name || 'My mix', ok: 'Export',
+    extra: `<fieldset class="opts"><legend>What</legend>
+      <label><input type="radio" name="what" value="mix" checked> The whole mix (${fmtT(projectEnd())})</label>
+      <label class="${hasLoop ? '' : 'dis'}"><input type="radio" name="what" value="loop" ${hasLoop ? '' : 'disabled'}> Only the looped section${hasLoop ? ` (${fmtT(P.loop.a)}–${fmtT(P.loop.b)})` : ' (mark a loop on the ruler first)'}</label>
+      <label><input type="radio" name="what" value="tracks"> Each track as its own file</label></fieldset>
+      <fieldset class="opts"><legend>Where</legend>
+      <label><input type="checkbox" name="where" value="lib" checked> Add to my Mixtape library on this laptop</label>
+      <label><input type="checkbox" name="where" value="file" checked> Download as a WAV file, to share or to add to Mixtape on your phone</label></fieldset>`,
+    read: f => {
+      const where = [...f.querySelectorAll('[name=where]:checked')].map(x => x.value);
+      if (!where.length) { toast('Tick at least one place to export to.'); return undefined; }
+      return { what: f.querySelector('[name=what]:checked').value, where };
+    } });
+  if (!choice) return;
+  const name = choice.input || 'My mix';
+  const jobs = choice.what === 'tracks'
+    ? P.lanes.filter(l => P.clips.some(c => c.lane === l.id && !c.mute)).map(l => ({ title: `${name} - ${l.name}`, lane: l.id }))
+    : choice.what === 'loop' ? [{ title: `${name} (loop)`, from: P.loop.a, to: P.loop.b }] : [{ title: name }];
+  pause(); let done = 0;
   try {
-    const { blob, duration } = await renderMix();
-    await saveToLibrary({ id: uid(), name: name + '.wav', size: blob.size, type: 'audio/wav', title: name, artist: 'My mixes', album: 'Mixtape Studio', track: 0, duration, added: Date.now(), blob, art: null });
-    toast(`Saved “${name}” to your library (${(blob.size / 1048576).toFixed(1)} MB).`, 4500);
-  } catch (err) { toast(`Couldn't save the mix: ${err.message || 'your browser may be out of storage space'}.`, 6000); }
+    for (const j of jobs) {
+      busy(jobs.length > 1 ? `Mixing ${done + 1} of ${jobs.length}: “${j.title}”…` : 'Mixing your song…', { progress: done / jobs.length });
+      const { blob, duration } = await renderMix(j);
+      if (choice.where.includes('lib')) await saveToLibrary({ id: uid(), name: j.title + '.wav', size: blob.size, type: 'audio/wav', title: j.title, artist: 'My mixes', album: 'Mixtape Studio', track: 0, duration, added: Date.now(), blob, art: null });
+      if (choice.where.includes('file')) downloadBlob(blob, safeName(j.title) + '.wav');
+      done++;
+    }
+    const where = choice.where.length === 2 ? 'saved to your library and downloaded' : choice.where[0] === 'lib' ? 'saved to your library' : 'downloaded to your Downloads folder';
+    toast(`${jobs.length === 1 ? `“${jobs[0].title}”` : `${jobs.length} files`} ${where}.`, 5000);
+  } catch (err) { toast(`Couldn't export: ${err.message || 'your browser may be out of storage space'}.`, 6000); }
   finally { busy(null); }
 }
 
@@ -679,13 +822,18 @@ function renderLanes() {
       <div class="lane-body${gridCls}" style="${gridVars}width:${timelineWidth()}px;${anySolo && !l.solo || l.mute ? 'opacity:.45' : ''}">
         ${P.clips.filter(c => c.lane === l.id).map(c => {
           const t = libTrack(c.trackId), name = t ? t.title : 'Missing song';
-          return `<div class="clip${c.id === selClip ? ' sel' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px" title="${esc(name)} · ${fmtT(dur(c))}${esc(clipBadge(c))}">
-            <canvas></canvas><span class="cl">${esc(name)}${esc(clipBadge(c))}</span><span class="h l" data-h="l"></span><span class="h r" data-h="r"></span></div>`;
+          const sel = tlSel && tlSel.clipId === c.id ? `<span class="tlsel" style="left:${(tlSel.a - c.at) * pps}px;width:${(tlSel.b - tlSel.a) * pps}px"></span>` : '';
+          return `<div class="clip${c.id === selClip ? ' sel' : ''}${c.mute ? ' muted' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px">
+            <canvas></canvas><span class="cl" title="Drag here to move · ${esc(name)} · ${fmtT(dur(c))}${esc(clipBadge(c))}">${esc(name)}${esc(clipBadge(c))}</span>${sel}
+            <span class="fh l" data-fade="in" style="left:${(c.fadeIn || 0) * pps}px" title="Drag to fade in"></span><span class="fh r" data-fade="out" style="right:${(c.fadeOut || 0) * pps}px" title="Drag to fade out"></span>
+            <span class="h l" data-h="l" title="Drag to trim the start"></span><span class="h r" data-h="r" title="Drag to trim the end"></span></div>`;
         }).join('')}
       </div>
     </div>`; }).join('');
   $('#tlInner').style.width = (headW() + timelineWidth()) + 'px';
   $('#tlEmpty').hidden = P.clips.length > 0;
+  $('#lanes').dataset.h = UI.h;
+  renderLoop();
   $$('.clip').forEach(el => drawClipCanvas(el.querySelector('canvas'), clipById(el.dataset.clip)));
   renderRuler(); drawPlayhead();
 }
@@ -695,16 +843,28 @@ function renderRuler() {
   const g = cv.getContext('2d'); g.setTransform(cv.width / w, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
   const bl = beatLen();
   if (bl && bl * pps >= 5) { g.fillStyle = css('--line'); for (let b = 0; b * bl * pps < w; b++) g.fillRect(Math.round(b * bl * pps), b % 4 ? 23 : 19, 1, b % 4 ? 5 : 9); }
-  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120]; const step = steps.find(s => s * pps >= 64) || 300;
+  if (P.loop) { g.fillStyle = P.loopOn ? css('--accent') : css('--line-2'); g.fillRect(P.loop.a * pps, 0, (P.loop.b - P.loop.a) * pps, 5); }
   g.fillStyle = css('--muted'); g.strokeStyle = css('--line'); g.font = `11px ${css('--f-mono')}`; g.textBaseline = 'middle';
+  if (UI.bars && bl) {
+    const barW = bl * 4 * pps, every = [1, 2, 4, 8, 16, 32].find(n => n * barW >= 44) || 64;
+    for (let b = 0; b * bl * 4 * pps < w; b += every) { const x = Math.round(b * barW) + .5; g.beginPath(); g.moveTo(x, 12); g.lineTo(x, h); g.stroke(); g.fillText(String(b + 1), x + 4, 8); }
+    return;
+  }
+  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120]; const step = steps.find(s => s * pps >= 64) || 300;
   for (let t = 0; t * pps < w; t += step) {
     const x = Math.round(t * pps) + .5; g.beginPath(); g.moveTo(x, 14); g.lineTo(x, h); g.stroke();
     const m = Math.floor(t / 60), s = t % 60; g.fillText(`${m}:${String(Math.floor(s)).padStart(2, '0')}${step < 1 && s % 1 ? '.5' : ''}`, x + 4, 8);
   }
 }
+function fmtBars(t) { const bl = beatLen(); const beats = Math.floor(t / bl + 1e-6); const frac = t / bl - beats; return `${Math.floor(beats / 4) + 1}.${(beats % 4) + 1}.${Math.floor(frac * 4) + 1}`; }
+function renderLoop() {
+  const b = $('#loopBand'); if (!P.loop) { b.hidden = true; return; }
+  b.hidden = false; b.classList.toggle('off', !P.loopOn);
+  b.style.left = (headW() + P.loop.a * pps) + 'px'; b.style.width = ((P.loop.b - P.loop.a) * pps) + 'px';
+}
 function drawPlayhead(p = curPos()) {
   $('#playhead').style.left = (headW() + p * pps) + 'px';
-  $('#clock').innerHTML = `${fmtT(p)} <span>/ ${fmtT(projectEnd())}</span>`;
+  $('#clock').innerHTML = UI.bars && beatLen() ? `${fmtBars(p)} <span>/ ${fmtBars(projectEnd())}</span>` : `${fmtT(p)} <span>/ ${fmtT(projectEnd())}</span>`;
 }
 function followPlayhead(p) {
   const tl = $('#tl'), x = headW() + p * pps;
@@ -716,7 +876,7 @@ let edView = null;
 function drawEditor() {
   const c = clipById(selClip), cv = $('#edCanvas'), wrap = $('#edWrap');
   $('#edEmpty').hidden = !!c;
-  const ed = $('.editor'); if (ed.hidden !== !c) { ed.hidden = !c; requestAnimationFrame(() => renderRuler()); }
+  const show = !!c && edOpen, ed = $('.editor'); if (ed.hidden !== !show) { ed.hidden = !show; requestAnimationFrame(() => { renderRuler(); renderLoop(); }); }
   ['keep', 'remove', 'selappend', 'sellayer'].forEach(a => { const b = $(`[data-act="${a}"]`); if (b) b.disabled = !c || !edSel; });
   $('[data-act="selall"]').disabled = $('[data-act="prevsel"]').disabled = !c;
   if (!preview) $('[data-act="prevsel"]').textContent = edSel ? 'Play selection' : 'Play part';
@@ -757,7 +917,8 @@ function renderInspector() {
       <div class="field"><label for="cFo">Fade out</label><input id="cFo" type="range" min="0" max="${Math.min(10, d).toFixed(1)}" step="0.1" value="${(c.fadeOut || 0).toFixed(1)}" data-cf="fadeOut"><output>${(c.fadeOut || 0).toFixed(1)}s</output></div>
       <div class="field"><label for="cFxIn">Start style</label><select id="cFxIn" data-cs="fxIn"><option value="fade">Fade</option><option value="filter">Filter sweep</option></select><span></span></div>
       <div class="field"><label for="cFxOut">End style</label><select id="cFxOut" data-cs="fxOut"><option value="fade">Fade</option><option value="filter">Filter sweep</option><option value="echo">Echo out</option></select><span></span></div>
-      <div class="btnrow"><button class="btn sm" data-act="split">Split at playhead</button><button class="btn sm" data-act="dup">Copy after</button><button class="btn sm" data-act="del">Delete part</button></div>
+      <p class="hint">Drag across the waveform to select a stretch: <b>Delete</b> removes it, <b>K</b> keeps only it, <b>Ctrl+E</b> splits it off, <b>Ctrl+D</b> repeats it. Double-click the part for the detailed editor.</p>
+      <div class="btnrow"><button class="btn sm" data-act="split">Split at playhead</button><button class="btn sm" data-act="dup">Copy after</button><button class="btn sm" data-act="mutepart">${c.mute ? 'Unmute part' : 'Mute part'}</button><button class="btn sm" data-act="del">Delete part</button></div>
       <div class="btnrow"><button class="btn sm primary" data-act="stems" ${t && t.stemOf ? 'disabled title="This part is already a stem"' : ''}>Split into vocals, drums, bass…</button></div>
       <div class="btnrow"><span class="hint" style="align-self:center">Repeat this part</span><button class="btn sm" data-act="loop" data-n="2">×2</button><button class="btn sm" data-act="loop" data-n="4">×4</button><button class="btn sm" data-act="loop" data-n="8">×8</button></div>
       <p class="sub">Speed and key</p>
@@ -768,7 +929,7 @@ function renderInspector() {
       <div class="btnrow"><button class="btn sm" data-act="matchtempo" ${P.bpm && songBpm ? '' : 'disabled'}>Match mix tempo${P.bpm ? ` (${P.bpm})` : ''}</button><button class="btn sm" data-act="matchkey" ${P.key && a && a.key != null ? '' : 'disabled'}>Match mix key</button></div>
     </div>`;
   } else {
-    html += `<div class="sec"><h3>Selected part</h3><p class="hint">Click a part on the timeline to change its volume, fades, speed and key, or to split or repeat it.</p></div>`;
+    html += `<div class="sec"><h3>Selected part</h3><p class="hint">Click a part to change its volume, speed and key. To cut, drag across a part's waveform and press Delete. Drag a part's name bar to move it.</p></div>`;
   }
   if (l) {
     const fx = l.fx, f = fx.filter;
@@ -789,10 +950,55 @@ function renderInspector() {
       <label class="chk"><input type="checkbox" data-pc="snap" ${P.snap ? 'checked' : ''}> Snap to the beat</label>
       <label class="chk"><input type="checkbox" data-pc="polish" ${P.polish ? 'checked' : ''}> Polish: make it louder and more even</label>
       <div class="btnrow"><button class="btn sm" data-act="evenout">Even out volume between parts</button></div></div>
-    <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start<br><kbd>S</kbd> split · <kbd>Del</kbd> delete part<br><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>Y</kbd> redo<br><kbd>+</kbd>/<kbd>−</kbd> zoom · <kbd>Ctrl</kbd>+wheel zoom</div></div>`;
-  const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; ins.scrollTop = st;
+    <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
+  const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; ins.scrollTop = st; applyTips();
   if (c) { $('#cFxIn').value = c.fxIn || 'fade'; $('#cFxOut').value = c.fxOut || 'fade'; }
 }
+function renderMixer() {
+  $('#mixer').hidden = !UI.mixer; if (!UI.mixer) return;
+  const anySolo = P.lanes.some(l => l.solo);
+  $('#strips').innerHTML = P.lanes.map(l => {
+    const fxOn = Object.values(l.fx).some(v => v), v = Math.round(l.gain * 100);
+    return `<div class="strip" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]};${anySolo && !l.solo || l.mute ? 'opacity:.55' : ''}" title="${esc(l.name)}">
+      <span class="nm">${esc(l.name)}</span>
+      <div class="fdr"><input class="vert" type="range" min="0" max="150" value="${v}" data-mx="gain" aria-label="${esc(l.name)} volume"><div class="meter"><i></i></div></div>
+      <output>${v}%</output>
+      <input class="pan" type="range" min="-100" max="100" value="${Math.round(l.pan * 100)}" data-mx="pan" aria-label="${esc(l.name)} left-right balance" title="Left-right balance">
+      <div class="ms"><button class="tg m${l.mute ? ' on' : ''}" data-mx="mute" title="Mute this track">M</button><button class="tg s${l.solo ? ' on' : ''}" data-mx="solo" title="Hear only this track">S</button></div>
+      <button class="fxb${fxOn ? ' on' : ''}" data-mx="fx" title="Bass, treble, filter, echo and reverb for this track">${fxOn ? 'Effects on' : 'Effects'}</button>
+    </div>`; }).join('') + `<div class="strip master" data-lane="master" title="Master: the volume of the whole mix">
+      <span class="nm">Master</span>
+      <div class="fdr"><input class="vert" type="range" min="0" max="150" value="${Math.round((P.master ?? 1) * 100)}" data-mx="master" aria-label="Master volume"><div class="meter"><i></i></div></div>
+      <output>${Math.round((P.master ?? 1) * 100)}%</output>
+      <span class="hint" style="font-size:10px;text-align:center">Whole mix</span></div>`;
+}
+const meterBuf = new Float32Array(512);
+function peakOf(an) { an.getFloatTimeDomainData(meterBuf); let p = 0; for (let i = 0; i < meterBuf.length; i++) { const a = Math.abs(meterBuf[i]); if (a > p) p = a; } return p; }
+function updateMeters() {
+  if (!graph) return;
+  $$('#strips .strip').forEach(st => {
+    const id = st.dataset.lane, an = id === 'master' ? graph.mmeter : graph.lanes.get(id)?.meter; if (!an) return;
+    const db = 20 * Math.log10(peakOf(an) + 1e-6), pct = clamp((db + 48) / 48, 0, 1) * 100;
+    st.querySelector('.meter i').style.height = pct + '%';
+  });
+}
+$('#strips').addEventListener('input', e => {
+  const st = e.target.closest('.strip'), k = e.target.dataset.mx; if (!st || !k) return;
+  if (k === 'master') { P.master = e.target.value / 100; st.querySelector('output').textContent = e.target.value + '%'; liveLanes(); return; }
+  const l = P.lanes.find(x => x.id === st.dataset.lane); if (!l) return;
+  if (k === 'gain') { l.gain = e.target.value / 100; st.querySelector('output').textContent = e.target.value + '%'; }
+  if (k === 'pan') l.pan = e.target.value / 100;
+  liveLanes();
+});
+$('#strips').addEventListener('change', e => { if (e.target.dataset.mx) { quietCommit(); renderLanes(); } });
+$('#strips').addEventListener('click', e => {
+  const b = e.target.closest('button[data-mx]'), st = e.target.closest('.strip'); if (!b || !st) return;
+  const l = P.lanes.find(x => x.id === st.dataset.lane); if (!l) return;
+  if (b.dataset.mx === 'mute') l.mute = !l.mute;
+  else if (b.dataset.mx === 'solo') l.solo = !l.solo;
+  else if (b.dataset.mx === 'fx') { selLane = l.id; selClip = null; if (!UI.insp) { UI.insp = true; applyUI(); } renderLanes(); renderInspector(); $('#insp').scrollTop = 0; return; }
+  liveLanes(); quietCommit(); renderLanes(); renderMixer();
+});
 function renderLibrary() {
   const q = $('#libQ').value.trim().toLowerCase();
   const list = lib.filter(t => !t.stemOf && (!q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q)));
@@ -808,12 +1014,16 @@ function renderTransport() {
   $('#playBtn').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   $('#undoBtn').disabled = !hist.length; $('#redoBtn').disabled = !fut.length;
   $('#saveBtn').disabled = !P.clips.length || !!rec;
+  $('#loopBtn').setAttribute('aria-pressed', !!(P.loopOn && P.loop));
+  $('#metroBtn').setAttribute('aria-pressed', !!P.metro); $('#mixBtn').setAttribute('aria-pressed', !!UI.mixer);
+  $('#libBtn').setAttribute('aria-pressed', UI.lib); $('#inspBtn').setAttribute('aria-pressed', UI.insp);
+  $$('.hsz button').forEach(b => b.setAttribute('aria-pressed', b.dataset.h === UI.h));
   $('#snapBtn').setAttribute('aria-pressed', P.snap);
   $('#tempoLbl').textContent = P.bpm ? `${P.bpm} BPM${P.key ? ' · ' + keyName(P.key.key, P.key.mode) : ''}` : '— BPM';
   $('#recBtn').classList.toggle('on', !!rec);
   $('#recLbl').textContent = rec ? `Stop recording ${fmtT((Date.now() - rec.began) / 1000).replace(/\.\d$/, '')}` : 'Record voice';
 }
-function renderAll() { $('#projName').value = P.name; renderLanes(); drawEditor(); renderInspector(); renderTransport(); }
+function renderAll() { $('#projName').value = P.name; renderLanes(); drawEditor(); renderInspector(); renderTransport(); renderMixer(); applyTips(); }
 
 /* ---------- interaction ---------- */
 const acts = {
@@ -830,7 +1040,19 @@ const acts = {
   closegaps: () => selLane && closeGaps(selLane),
   matchtempo: matchTempo, matchkey: matchKey, evenout: evenOut, stems: splitStems,
   import: () => $('#fileIn').click(),
-  edclose: () => { selClip = null; edSel = null; stopPreview(); renderLanes(); drawEditor(); renderInspector(); },
+  mutepart: toggleMutePart,
+  togglemixer: () => { UI.mixer = !UI.mixer; saveUI(); renderMixer(); renderTransport(); requestAnimationFrame(() => { renderLanes(); }); },
+  metro: () => { if (!P.bpm) return toast('Set the mix tempo first: add a song with a beat, or type a tempo under Mix on the right.', 5000); P.metro = !P.metro; quietCommit(); renderTransport(); restartIfPlaying(); toast(P.metro ? `Click on at ${P.bpm} BPM` : 'Click off'); },
+  rulermode: () => { if (!beatLen()) return toast('Bars need a tempo. Add a song with a beat, or type a tempo under Mix on the right.', 5000); UI.bars = !UI.bars; saveUI(); renderRuler(); drawPlayhead(); toast(UI.bars ? 'Showing bars and beats' : 'Showing minutes and seconds'); },
+  showlib: () => { if (!UI.lib) { UI.lib = true; applyUI(); } const f = $('.lib li[draggable]'); if (f) { f.animate([{ outline: '2px solid #F5A524' }, { outline: '2px solid transparent' }], { duration: 1400 }); } else toast('Your library is empty. Use “Import songs” first.'); },
+  togglelib: () => { UI.lib = !UI.lib; applyUI(); },
+  toggleinsp: () => { UI.insp = !UI.insp; applyUI(); },
+  lh: b => { UI.h = b.dataset.h; applyUI(); },
+  looptoggle: () => {
+    if (!P.loop) { if (tlSel) return setLoop(tlSel.a, tlSel.b, 'Looping the selected stretch'); return toast('Drag along the time ruler above the tracks to mark the section to loop.', 4500); }
+    P.loopOn = !P.loopOn; quietCommit(); renderLoop(); renderRuler(); renderTransport(); toast(P.loopOn ? 'Loop on' : 'Loop off');
+  },
+  edclose: () => { edOpen = false; edSel = null; stopPreview(); drawEditor(); },
   fxreset: () => { const l = P.lanes.find(x => x.id === selLane); if (l) { l.fx = FX0(); commit('Effects reset'); liveLanes(); } },
   newproj: async () => {
     if (P.clips.length && !(await ask({ title: 'Start a new mix?', text: 'This clears the timeline. Save your current mix as a song first if you want to keep it.', ok: 'Start new mix', danger: true }))) return;
@@ -842,6 +1064,20 @@ $('#lib').addEventListener('click', e => { const b = e.target.closest('[data-add
 $('#libQ').addEventListener('input', renderLibrary);
 $('#projName').addEventListener('change', e => { P.name = e.target.value.trim() || 'My mix'; commit(); });
 
+function applyUI() {
+  saveUI();
+  $('.work').classList.toggle('nolib', !UI.lib); $('.work').classList.toggle('noinsp', !UI.insp);
+  renderTransport(); requestAnimationFrame(() => { renderLanes(); drawEditor(); });
+}
+const TIPS = {
+  split: 'Split the part at the red playhead (S)', dup: 'Copy this part right after itself', del: 'Delete this part (Delete)', stems: 'Split into vocals, drums, bass and other instruments',
+  loop: 'Repeat this part', closegaps: 'Slide parts on this track together so there are no silences', fxreset: 'Set all effects on this track back to zero',
+  evenout: 'Make every part about as loud as the others', matchtempo: 'Speed this part up or down to the mix tempo', matchkey: 'Shift this part into the mix key',
+  selall: 'Select the whole part in the editor', prevsel: 'Hear the selection on its own', keep: 'Keep only the selected stretch (K)', remove: 'Remove the selected stretch and close the gap (Delete)',
+  selappend: 'Copy the selection to the end of this track', sellayer: 'Copy the selection onto a new track', addlane: 'Add an empty track', mutepart: 'Mute or unmute this part',
+  import: 'Pick music files from this computer', showlib: 'Show your library on the left', record: 'Record your voice over the mix, with a one-bar count-in',
+};
+function applyTips() { $$('[data-act]').forEach(b => { if (!b.title && TIPS[b.dataset.act]) b.title = TIPS[b.dataset.act]; }); }
 function zoom(f, anchorT) {
   const tl = $('#tl'); const t = anchorT ?? (tl.scrollLeft + (tl.clientWidth - headW()) / 2) / pps;
   pps = clamp(pps * f, 2, 600); renderLanes(); drawEditor();
@@ -852,9 +1088,20 @@ $('#tl').addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefau
 
 $('#ruler').addEventListener('pointerdown', e => {
   const cv = e.currentTarget; try { cv.setPointerCapture(e.pointerId); } catch (_) {}
-  const at = ev => (ev.clientX - cv.getBoundingClientRect().left) / pps;
-  seek(at(e)); const mv = ev => { playhead = clamp(at(ev), 0, projectEnd()); drawPlayhead(); drawEditor(); };
-  cv.addEventListener('pointermove', mv); cv.addEventListener('pointerup', () => { cv.removeEventListener('pointermove', mv); seek(playhead); }, { once: true });
+  const bl = beatLen();
+  const at = ev => { let t = Math.max(0, (ev.clientX - cv.getBoundingClientRect().left) / pps); if (P.snap && bl) t = Math.round(t / bl) * bl; return t; };
+  const x0 = e.clientX, a0 = at(e); let dragging = false;
+  const mv = ev => {
+    if (!dragging && Math.abs(ev.clientX - x0) > 4) dragging = true;
+    if (dragging) { P.loop = { a: Math.min(a0, at(ev)), b: Math.max(a0, at(ev)) }; P.loopOn = true; renderLoop(); renderRuler(); }
+  };
+  cv.addEventListener('pointermove', mv);
+  cv.addEventListener('pointerup', ev => {
+    cv.removeEventListener('pointermove', mv);
+    if (dragging && P.loop && P.loop.b - P.loop.a > 0.2) { quietCommit(); renderTransport(); restartIfPlaying(); toast(`Looping ${fmtT(P.loop.a)}–${fmtT(P.loop.b)}. Press L to turn the loop off.`, 3500); }
+    else if (dragging) { P.loop = null; P.loopOn = false; renderLoop(); renderRuler(); }
+    else seek((ev.clientX - cv.getBoundingClientRect().left) / pps);
+  }, { once: true });
 });
 
 $('#lanes').addEventListener('input', e => {
@@ -871,8 +1118,8 @@ $('#lanes').addEventListener('click', e => {
   const b = e.target.closest('[data-lf]'); const laneEl = e.target.closest('.lane'); if (!laneEl) return;
   const l = P.lanes.find(x => x.id === laneEl.dataset.lane);
   if (b && b.tagName === 'BUTTON') {
-    if (b.dataset.lf === 'mute') { l.mute = !l.mute; liveLanes(); quietCommit(); renderLanes(); }
-    else if (b.dataset.lf === 'solo') { l.solo = !l.solo; liveLanes(); quietCommit(); renderLanes(); }
+    if (b.dataset.lf === 'mute') { l.mute = !l.mute; liveLanes(); quietCommit(); renderLanes(); renderMixer(); }
+    else if (b.dataset.lf === 'solo') { l.solo = !l.solo; liveLanes(); quietCommit(); renderLanes(); renderMixer(); }
     else if (b.dataset.lf === 'del') deleteLane(l.id);
     return;
   }
@@ -887,8 +1134,10 @@ $('#lanes').addEventListener('pointerdown', e => {
     seek(clamp(t, 0, projectEnd())); renderLanes(); drawEditor(); renderInspector(); return;
   }
   const c = clipById(el.dataset.clip); if (!c) return;
-  const mode = e.target.dataset.h || 'move';
+  const mode = e.target.dataset.h || (e.target.dataset.fade ? 'fade-' + e.target.dataset.fade : e.target.classList.contains('cl') ? 'move' : 'select');
   if (selClip !== c.id) { selClip = c.id; edSel = null; }
+  if (mode === 'select') return selectStretch(e, el, c);
+  if (mode.startsWith('fade')) return dragFade(e, el, c, mode === 'fade-in');
   selLane = c.lane;
   $$('.clip.sel').forEach(x => x.classList.remove('sel')); el.classList.add('sel');
   $$('.lane.on').forEach(x => x.classList.remove('on')); el.closest('.lane').classList.add('on');
@@ -924,10 +1173,59 @@ $('#lanes').addEventListener('pointerdown', e => {
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', () => {
     el.removeEventListener('pointermove', mv); el.style.cursor = '';
-    if (moved) { selLane = c.lane; commit(); } else renderLanes();
+    if (moved) { selLane = c.lane; tlSel = null; commit(); } else { tlSel = null; el.querySelectorAll('.tlsel').forEach(x => x.remove()); }
   }, { once: true });
 });
 
+function markSelected(el, c) {
+  selLane = c.lane;
+  $$('.clip.sel').forEach(x => x.classList.remove('sel')); el.classList.add('sel');
+  $$('.lane.on').forEach(x => x.classList.remove('on')); el.closest('.lane').classList.add('on');
+}
+function selectStretch(e, el, c) {
+  markSelected(el, c);
+  ensureBuf(c.trackId).catch(err => toast(err.message, 5000));
+  try { el.setPointerCapture(e.pointerId); } catch (_) {}
+  const r0 = el.getBoundingClientRect(), bl = beatLen();
+  const tAt = ev => { let t = c.at + clamp((ev.clientX - r0.left) / pps, 0, dur(c)); if (P.snap && bl) t = clamp(Math.round(t / bl) * bl, c.at, c.at + dur(c)); return t; };
+  const a0 = tAt(e); let ov = null;
+  el.querySelectorAll('.tlsel').forEach(x => x.remove()); tlSel = null;
+  const mv = ev => {
+    const b = tAt(ev); const a = Math.min(a0, b), z = Math.max(a0, b);
+    if ((z - a) * pps < 3) return;
+    tlSel = { clipId: c.id, a, b: z };
+    if (!ov) { ov = document.createElement('span'); ov.className = 'tlsel'; el.appendChild(ov); }
+    ov.style.left = (a - c.at) * pps + 'px'; ov.style.width = (z - a) * pps + 'px';
+  };
+  el.addEventListener('pointermove', mv);
+  el.addEventListener('pointerup', () => {
+    el.removeEventListener('pointermove', mv);
+    if (!tlSel) { if (!playing) { playhead = a0; drawPlayhead(); } else seek(a0); }
+    else toast(`Selected ${(tlSel.b - tlSel.a).toFixed(1)}s. Delete removes it · K keeps only it · Ctrl+E splits · Ctrl+D repeats · right-click for more`, 4500);
+    if (edOpen && tlSel) { const s = selSource(); if (s) edSel = { a: s.a, b: s.b }; }
+    drawEditor(); renderInspector();
+  }, { once: true });
+}
+function dragFade(e, el, c, isIn) {
+  markSelected(el, c);
+  try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+  const h = e.target, x0 = e.clientX, o = isIn ? (c.fadeIn || 0) : (c.fadeOut || 0), cv = el.querySelector('canvas');
+  const mv = ev => {
+    const d = clamp(o + (isIn ? 1 : -1) * (ev.clientX - x0) / pps, 0, dur(c) - (isIn ? (c.fadeOut || 0) : (c.fadeIn || 0)));
+    if (isIn) { c.fadeIn = d; h.style.left = d * pps + 'px'; } else { c.fadeOut = d; h.style.right = d * pps + 'px'; }
+    drawClipCanvas(cv, c);
+  };
+  h.addEventListener('pointermove', mv);
+  h.addEventListener('pointerup', () => { h.removeEventListener('pointermove', mv); commit(`Fade ${isIn ? 'in' : 'out'}: ${(isIn ? c.fadeIn : c.fadeOut).toFixed(1)}s`); }, { once: true });
+}
+$('#lanes').addEventListener('dblclick', e => {
+  const el = e.target.closest('.clip'); if (!el || e.target.closest('.h,.fh')) return;
+  const c = clipById(el.dataset.clip); if (!c) return;
+  selClip = c.id; edOpen = true;
+  const s = selSource(); edSel = s && s.c.id === c.id ? { a: s.a, b: s.b } : null;
+  ensureBuf(c.trackId).then(() => drawEditor()).catch(() => {});
+  drawEditor(); renderInspector();
+});
 $('#edWrap').addEventListener('pointerdown', e => {
   const c = clipById(selClip); if (!c || !edView) return;
   const wrap = e.currentTarget; try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
@@ -970,18 +1268,30 @@ $('#insp').addEventListener('change', async e => {
 
 document.addEventListener('keydown', e => {
   if (!$('#modal').hidden) { if (e.key === 'Escape') closeModal(null); return; }
-  if (e.target.closest('input, select, textarea')) return;
+  if (e.target.closest && e.target.closest('input, select, textarea')) return;
   const k = e.key;
-  if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
-  else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'y') { e.preventDefault(); redo(); }
-  else if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const mod = e.ctrlKey || e.metaKey, kl = k.toLowerCase();
+  if (mod && kl === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if (mod && kl === 'y') { e.preventDefault(); redo(); }
+  else if (mod && kl === 'e') { e.preventDefault(); splitHere(); }
+  else if (mod && kl === 'd') { e.preventDefault(); repeatStretch(); }
+  else if (mod && kl === 'c') { if (tlSel || selClip) { e.preventDefault(); copySel(); } }
+  else if (mod && kl === 'v') { e.preventDefault(); pasteAtPlayhead(); }
+  else if (mod && kl === 'l') { e.preventDefault(); acts.looptoggle(); }
+  else if (mod || e.altKey) return;
   else if (k === ' ') { e.preventDefault(); acts.play(); }
   else if (k === 'Home') { e.preventDefault(); seek(0); }
-  else if (k === 'Delete' || k === 'Backspace') { if (selClip) { e.preventDefault(); deleteClip(); } }
-  else if (k === 's' || k === 'S') splitAtPlayhead();
+  else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); if (tlSel) removeStretch(); else if (selClip) deleteClip(); }
+  else if (kl === 'k') keepStretch();
+  else if (kl === 's') splitHere();
+  else if (kl === 'l') acts.looptoggle();
+  else if (kl === 'b') acts.togglelib();
+  else if (kl === 'x') acts.togglemixer();
+  else if (kl === 'c') acts.metro();
+  else if (kl === 'i') acts.toggleinsp();
   else if (k === '+' || k === '=') zoom(1.5);
   else if (k === '-' || k === '_') zoom(1 / 1.5);
-  else if (k === 'Escape') { edSel = null; drawEditor(); }
+  else if (k === 'Escape') { edSel = null; tlSel = null; $$('.tlsel').forEach(x => x.remove()); drawEditor(); }
 });
 window.addEventListener('resize', () => { renderLanes(); drawEditor(); });
 
@@ -1091,11 +1401,25 @@ $('#lanes').addEventListener('contextmenu', e => {
   const el = e.target.closest('.clip'); if (!el) return;
   e.preventDefault();
   const c = clipById(el.dataset.clip); if (!c) return;
+  const r0 = el.getBoundingClientRect(), tClick = c.at + (e.clientX - r0.left) / pps;
+  const inSel = tlSel && tlSel.clipId === c.id && tClick >= tlSel.a - 0.05 && tClick <= tlSel.b + 0.05;
+  if (!inSel) tlSel = null;
   selClip = c.id; selLane = c.lane; edSel = null;
   ensureBuf(c.trackId).then(() => drawEditor()).catch(() => {});
   renderLanes(); drawEditor(); renderInspector();
   const t = libTrack(c.trackId), a = ana[c.trackId];
+  if (inSel) return openMenu(e.clientX, e.clientY, [
+    { label: 'Remove this stretch   Del', act: removeStretch },
+    { label: 'Keep only this stretch   K', act: keepStretch },
+    { label: 'Split it off   Ctrl+E', act: splitHere },
+    { label: 'Repeat it   Ctrl+D', act: repeatStretch },
+    { label: 'Copy   Ctrl+C', act: copySel },
+    { label: 'Loop this stretch', act: () => setLoop(tlSel.a, tlSel.b, 'Looping the selected stretch') },
+    { sep: 1 },
+    { label: 'Play from here', act: () => { seek(tlSel.a); if (!playing) play(); } },
+  ]);
   openMenu(e.clientX, e.clientY, [
+    { label: 'Open the detailed editor', act: () => { edOpen = true; drawEditor(); } },
     { label: 'Play from here', act: () => { seek(c.at); if (!playing) play(); } },
     { label: 'Split at the red playhead', act: splitAtPlayhead, disabled: !(playhead > c.at && playhead < c.at + dur(c)) },
     { label: 'Copy after', act: dupClip },
@@ -1106,23 +1430,44 @@ $('#lanes').addEventListener('contextmenu', e => {
     { label: 'Match mix tempo', act: matchTempo, disabled: !(P.bpm && a && a.bpm) },
     { label: 'Match mix key', act: matchKey, disabled: !(P.key && a && a.key != null) },
     { sep: 1 },
+    { label: c.mute ? 'Unmute part' : 'Mute part', act: toggleMutePart },
+    { label: 'Paste at the playhead   Ctrl+V', act: pasteAtPlayhead, disabled: !clipboard },
     { label: 'Delete part', danger: 1, act: deleteClip },
   ]);
 });
 
 /* ---------- dialogs ---------- */
-let modalResolve = null; const mInput = $('#mInput');
-function ask({ title, text = '', input = null, ok = 'OK', danger = false }) {
+let modalResolve = null, modalRead = null; const mInput = $('#mInput');
+function ask({ title, text = '', input = null, ok = 'OK', danger = false, extra = '', read = null }) {
   return new Promise(res => {
     $('#mTitle').textContent = title; $('#mText').textContent = text; $('#mText').hidden = !text;
     mInput.hidden = input === null; mInput.value = input || '';
+    $('#mExtra').innerHTML = extra; modalRead = read;
     $('#mOk').textContent = ok; $('#mOk').className = 'btn ' + (danger ? 'danger' : 'primary');
     $('#modal').hidden = false; modalResolve = res;
     setTimeout(() => { if (input === null) $('#mOk').focus(); else { mInput.focus(); mInput.select(); } }, 0);
   });
 }
-function closeModal(v) { $('#modal').hidden = true; const r = modalResolve; modalResolve = null; if (r) r(v); }
-$('#modalForm').addEventListener('submit', e => { e.preventDefault(); if (mInput.hidden) return closeModal(true); const v = mInput.value.trim(); if (!v) return mInput.focus(); closeModal(v); });
+function closeModal(v) { $('#modal').hidden = true; $('#mExtra').innerHTML = ''; modalRead = null; const r = modalResolve; modalResolve = null; if (r) r(v); }
+$('#modalForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const v = mInput.value.trim();
+  if (!mInput.hidden && !v) return mInput.focus();
+  if (modalRead) { const r = modalRead($('#mExtra')); if (r === undefined) return; return closeModal({ ...r, input: v }); }
+  closeModal(mInput.hidden ? true : v);
+});
+function stemChoiceHTML() {
+  return `<fieldset class="opts"><legend>Which parts</legend>
+    ${Object.keys(STEMS).map(k => `<label><input type="checkbox" name="stem" value="${k}" checked> ${STEMS[k]}</label>`).join('')}</fieldset>
+    <fieldset class="opts"><legend>The original part</legend>
+    <label><input type="radio" name="orig" value="mute" checked> Keep it, muted, so you can compare</label>
+    <label><input type="radio" name="orig" value="replace"> Replace it with the new tracks</label></fieldset>`;
+}
+function readStemChoice(f) {
+  const stems = [...f.querySelectorAll('[name=stem]:checked')].map(x => x.value);
+  if (!stems.length) { toast('Tick at least one part.'); return undefined; }
+  return { stems, orig: f.querySelector('[name=orig]:checked').value };
+}
 $('#mCancel').addEventListener('click', () => closeModal(null));
 let toastT; function toast(m, ms = 2600) { const t = $('#toast'); t.textContent = m; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
 let busyCancel = null;
@@ -1140,6 +1485,8 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
   await loadLibrary(); renderLibrary();
   const missing = P.clips.filter(c => !libTrack(c.trackId));
   if (missing.length) { P.clips = P.clips.filter(c => libTrack(c.trackId)); last = JSON.stringify(P); persist(); toast(`${missing.length} part${missing.length === 1 ? ' was' : 's were'} removed because the song is no longer in your library.`, 5000); }
+  if (!P.clips.length) UI.lib = true;
+  $('.work').classList.toggle('nolib', !UI.lib); $('.work').classList.toggle('noinsp', !UI.insp);
   renderAll();
   for (const id of new Set(P.clips.map(c => c.trackId))) { try { await ensureBuf(id); renderLanes(); drawEditor(); } catch (e) {} }
   for (const c of P.clips) { try { await ensureProc(c); } catch (e) {} }
