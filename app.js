@@ -490,6 +490,7 @@ function trackMenu(id, anchor) {
     { label: favs.has(id) ? 'Remove from favorites' : 'Add to favorites', act: () => toggleFav(id) },
     { label: 'Add to playlist…', act: () => openMenu(anchor, [{ lbl: 'Add to playlist' }, ...lists.map(l => ({ label: l.name, act: () => addToList(l, id) })), ...(lists.length ? [{ sep: 1 }] : []), { label: 'New playlist…', act: () => newList(id) }]) }];
   const l = curList(); if (l && l.ids.includes(id)) items.push({ label: `Remove from ${l.name}`, act: () => removeFromList(l, id) });
+  if (matchMedia('(min-width: 900px) and (pointer: fine)').matches) items.push({ label: 'Open in Studio', act: () => { location.href = 'studio.html?add=' + encodeURIComponent(id); } });
   items.push({ sep: 1 }, { label: 'Remove from library', danger: 1, act: () => deleteTrack(id) });
   openMenu(anchor, items);
 }
@@ -599,6 +600,15 @@ document.addEventListener('keydown', e => {
   } else { S.queue = []; S.orig = []; S.qi = -1; S.lastId = null; render(); }
   updateStorage();
 })();
+
+/* songs saved in the Studio appear here straight away */
+try {
+  new BroadcastChannel('mixtape').onmessage = async e => {
+    if (!e.data || e.data.type !== 'library') return;
+    for (const t of await dbAll('tracks')) { if (tracks.has(t.id)) continue; if (!t.blob && t.buf) { t.blob = new Blob([t.buf], { type: t.type || '' }); delete t.buf; } if (t.blob) tracks.set(t.id, t); }
+    render(); updateStorage();
+  };
+} catch (e) {}
 
 /* offline app: cache the player so it opens with no internet, and offer to install it */
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mixtape Studio</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<meta name="theme-color" content="#1C1922">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a three-column workbench — library on the left, part editor over a multi-layer timeline in the middle, settings on the right */
+:root{
+  --bg:#ECEEE8; --surface:#F7F8F4; --raise:#FFFFFF; --ink:#1C1922; --muted:#67636F; --line:#D6D9D0;
+  --accent:#5A2C84; --accent-ink:#FFFFFF; --accent-soft:#E6DCEF; --danger:#B3261E; --danger-ink:#FFFFFF;
+  --sel:rgba(90,44,132,.18); --scrim:rgba(20,16,26,.45); --shadow:rgba(20,16,26,.28);
+  --wave-l:40%; --clip-l:55%; --head-w:200px;
+  --f-display:"Bricolage Grotesque","Segoe UI",system-ui,sans-serif;
+  --f-body:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#141218; --surface:#1C1922; --raise:#25202D; --ink:#EDE9F3; --muted:#9C96A7; --line:#2F2A38;
+  --accent:#C6A4EC; --accent-ink:#1B1024; --accent-soft:#2E2440; --danger:#F2867C; --danger-ink:#2A0D0A;
+  --sel:rgba(198,164,236,.20); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.55); --wave-l:72%; --clip-l:45%; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#141218; --surface:#1C1922; --raise:#25202D; --ink:#EDE9F3; --muted:#9C96A7; --line:#2F2A38;
+  --accent:#C6A4EC; --accent-ink:#1B1024; --accent-soft:#2E2440; --danger:#F2867C; --danger-ink:#2A0D0A;
+  --sel:rgba(198,164,236,.20); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.55); --wave-l:72%; --clip-l:45%; color-scheme:dark}
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--f-body);overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.i{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+#app{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr)}
+.top{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--surface)}
+.top .name{font:700 18px var(--f-display);border:1px solid transparent;background:transparent;border-radius:8px;padding:4px 8px;width:220px;min-width:0}
+.top .name:hover,.top .name:focus{border-color:var(--line);outline:0;background:var(--bg)}
+.grp{display:flex;align-items:center;gap:4px}
+.sp{flex:1}
+.clock{font:500 15px var(--f-mono);font-variant-numeric:tabular-nums;min-width:132px;text-align:center;padding:6px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line)}
+.clock span{color:var(--muted)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 12px;border-radius:9px;border:1px solid var(--line);background:var(--raise);color:var(--ink);font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap;text-decoration:none}
+.btn:hover{border-color:var(--muted)}
+.btn:disabled{opacity:.4;cursor:default}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.danger{background:var(--danger);color:var(--danger-ink);border-color:var(--danger)}
+.btn.sm{height:30px;padding:0 10px;font-size:12px}
+.ib{width:36px;height:36px;display:inline-grid;place-items:center;border:0;background:transparent;border-radius:9px;cursor:pointer;color:var(--ink);padding:0}
+.ib:hover{background:color-mix(in srgb,var(--ink) 9%,transparent)}
+.ib:disabled{opacity:.35;cursor:default}
+.ib.play{background:var(--accent);color:var(--accent-ink);border-radius:50%;width:40px;height:40px}
+
+.work{display:grid;grid-template-columns:250px minmax(0,1fr) 270px;min-height:0}
+.panel{min-height:0;overflow:auto;border-right:1px solid var(--line);background:var(--surface)}
+.panel.right{border-right:0;border-left:1px solid var(--line)}
+.ph{position:sticky;top:0;z-index:2;background:var(--surface);padding:12px 14px 8px;border-bottom:1px solid var(--line)}
+.ph h2,.sec h3{font:600 11px var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.ph input{width:100%;height:32px;border-radius:8px;border:1px solid var(--line);background:var(--bg);padding:0 10px;outline:0}
+.ph input:focus{border-color:var(--accent)}
+.lib{list-style:none;margin:0;padding:6px}
+.lib li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;padding:6px 8px;border-radius:8px}
+.lib li:hover{background:var(--bg)}
+.lib b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lib span{display:block;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lib .acts{display:flex;gap:2px}
+.lib .acts button{height:26px;padding:0 7px;border-radius:6px;border:1px solid var(--line);background:var(--raise);font-size:11px;font-weight:600;cursor:pointer}
+.lib .acts button:hover{border-color:var(--accent);color:var(--accent)}
+.empty-note{color:var(--muted);padding:14px;font-size:13px}
+
+.mid{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0}
+.editor{border-bottom:1px solid var(--line);padding:12px 16px;display:flex;flex-direction:column;gap:8px;background:var(--bg)}
+.ed-head{display:flex;align-items:baseline;gap:12px;min-width:0}
+.ed-head h2{font:700 17px var(--f-display);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ed-head .info{font:12px var(--f-mono);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.ed-wrap{position:relative;height:120px;border-radius:10px;background:var(--surface);border:1px solid var(--line);overflow:hidden;cursor:crosshair}
+#edCanvas{width:100%;height:100%;display:block}
+.ed-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);text-align:center;padding:0 24px;cursor:default}
+.ed-acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ed-acts .lbl{font:12px var(--f-mono);color:var(--muted);margin-right:4px}
+
+.tl{overflow:auto;position:relative;min-height:0}
+.tl-inner{position:relative;min-height:100%}
+.ruler-row{position:sticky;top:0;z-index:5;display:flex;height:28px;background:var(--surface);border-bottom:1px solid var(--line)}
+.corner{position:sticky;left:0;z-index:6;width:var(--head-w);flex:none;background:var(--surface);border-right:1px solid var(--line);display:flex;align-items:center;padding:0 10px;font:11px var(--f-mono);color:var(--muted)}
+#ruler{display:block;height:28px;cursor:pointer}
+.lane{display:flex;height:92px;border-bottom:1px solid var(--line)}
+.lane.on .lane-body{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+.lane-head{position:sticky;left:0;z-index:4;width:var(--head-w);flex:none;background:var(--surface);border-right:1px solid var(--line);padding:6px 8px;display:flex;flex-direction:column;gap:3px}
+.lane.on .lane-head{box-shadow:inset 3px 0 0 var(--accent)}
+.lh-top{display:flex;align-items:center;gap:2px}
+.lh-top input{flex:1;min-width:0;border:1px solid transparent;background:transparent;border-radius:6px;padding:2px 4px;font-weight:600;outline:0}
+.lh-top input:focus{border-color:var(--line);background:var(--bg)}
+.tg{width:24px;height:22px;border-radius:5px;border:1px solid var(--line);background:var(--raise);font:600 11px var(--f-mono);cursor:pointer;padding:0;color:var(--muted)}
+.tg.on.m{background:var(--danger);border-color:var(--danger);color:var(--danger-ink)}
+.tg.on.s{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.tg.x{border-color:transparent;background:transparent}
+.tg.x:hover{color:var(--danger)}
+.lh-row{display:grid;grid-template-columns:28px minmax(0,1fr) 34px;align-items:center;gap:4px;font:10px var(--f-mono);color:var(--muted)}
+.lh-row output{text-align:right;font-variant-numeric:tabular-nums}
+.lane-body{position:relative;flex:1}
+.clip{position:absolute;top:5px;bottom:5px;border-radius:7px;overflow:hidden;cursor:grab;touch-action:none;
+  background:hsl(var(--h) 45% var(--clip-l) / .22);border:1px solid hsl(var(--h) 45% var(--wave-l) / .7)}
+.clip.sel{border:2px solid var(--accent);box-shadow:0 0 0 3px var(--sel)}
+.clip canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.clip .cl{position:absolute;left:6px;top:3px;right:6px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;text-shadow:0 0 3px var(--bg)}
+.clip .h{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;z-index:2}
+.clip .h.l{left:0}.clip .h.r{right:0}
+.clip .h:hover{background:color-mix(in srgb,var(--accent) 35%,transparent)}
+.playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--danger);z-index:3;pointer-events:none;margin-left:-1px}
+.addlane{position:sticky;left:0;padding:10px;width:var(--head-w)}
+
+.sec{padding:14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
+.field{display:grid;grid-template-columns:86px minmax(0,1fr) 52px;align-items:center;gap:8px;font-size:13px}
+.field output{font:12px var(--f-mono);text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.field label{color:var(--muted)}
+.kv{display:grid;grid-template-columns:86px 1fr;gap:4px 8px;font-size:13px}
+.kv dt{color:var(--muted)}.kv dd{margin:0;font-family:var(--f-mono);font-size:12px;font-variant-numeric:tabular-nums}
+.btnrow{display:flex;flex-wrap:wrap;gap:6px}
+.hint{color:var(--muted);font-size:12px;margin:0}
+.keys{font:11px/1.7 var(--f-mono);color:var(--muted)}
+.keys kbd{font:inherit;border:1px solid var(--line);border-radius:4px;padding:0 4px;background:var(--raise);color:var(--ink)}
+input[type=range]{width:100%;accent-color:var(--accent);margin:0}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:80;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;max-width:calc(100vw - 32px);box-shadow:0 10px 30px -10px var(--shadow)}
+.modalwrap{position:fixed;inset:0;z-index:70;background:var(--scrim);display:grid;place-items:center;padding:16px}
+.modal{background:var(--raise);border-radius:14px;padding:20px;width:min(100%,400px);display:flex;flex-direction:column;gap:12px;box-shadow:0 24px 60px -20px var(--shadow)}
+.modal h3{font:700 20px var(--f-display);margin:0}
+.modal p{margin:0;color:var(--muted)}
+.modal input{height:42px;border-radius:10px;border:1px solid var(--line);background:var(--surface);padding:0 12px;outline:0}
+.modal input:focus{border-color:var(--accent)}
+.mact{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.busy{position:fixed;inset:0;z-index:75;background:var(--scrim);display:grid;place-items:center;color:var(--bg)}
+.busy div{background:var(--raise);color:var(--ink);padding:18px 22px;border-radius:12px;font-weight:600}
+
+.phone{height:100%;display:grid;place-items:center;padding:24px 16px;text-align:center}
+.phone div{max-width:40ch;display:flex;flex-direction:column;gap:12px;align-items:center}
+.phone h1{font:700 26px var(--f-display);margin:0}
+.phone p{margin:0;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.6v14.8a.8.8 0 0 0 1.2.7l12-7.4a.8.8 0 0 0 0-1.4l-12-7.4A.8.8 0 0 0 7 4.6z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></symbol>
+  <symbol id="i-zin" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4M8 11h6M11 8v6"/></symbol>
+  <symbol id="i-zout" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4M8 11h6"/></symbol>
+</svg>
+
+<div class="phone" id="phoneNote" hidden>
+  <div>
+    <h1>The Studio is on your laptop</h1>
+    <p>Cutting and mixing needs a bigger screen and a mouse. Open Mixtape on your laptop to use the Studio. Songs you save there show up in your laptop's library.</p>
+    <a class="btn primary" href="./">Back to the player</a>
+  </div>
+</div>
+
+<div id="app">
+  <header class="top">
+    <a class="btn" href="./" title="Back to the player"><svg class="i"><use href="#i-back"/></svg>Player</a>
+    <input class="name" id="projName" value="My mix" aria-label="Mix name" maxlength="60">
+    <div class="sp"></div>
+    <div class="grp">
+      <button class="ib" data-act="stop" aria-label="Back to start"><svg class="i"><use href="#i-stop"/></svg></button>
+      <button class="ib play" data-act="play" aria-label="Play" id="playBtn"><svg class="i"><use id="playIcon" href="#i-play"/></svg></button>
+      <div class="clock" id="clock">0:00.0 <span>/ 0:00.0</span></div>
+    </div>
+    <div class="grp">
+      <button class="ib" data-act="undo" id="undoBtn" aria-label="Undo"><svg class="i"><use href="#i-undo"/></svg></button>
+      <button class="ib" data-act="redo" id="redoBtn" aria-label="Redo"><svg class="i"><use href="#i-redo"/></svg></button>
+    </div>
+    <div class="grp">
+      <button class="ib" data-act="zout" aria-label="Zoom out"><svg class="i"><use href="#i-zout"/></svg></button>
+      <button class="btn sm" data-act="fit">Fit</button>
+      <button class="ib" data-act="zin" aria-label="Zoom in"><svg class="i"><use href="#i-zin"/></svg></button>
+    </div>
+    <div class="sp"></div>
+    <button class="btn" data-act="newproj">New mix</button>
+    <button class="btn primary" data-act="save" id="saveBtn">Save as song</button>
+  </header>
+
+  <div class="work">
+    <aside class="panel">
+      <div class="ph"><h2>Your songs</h2><input id="libQ" type="search" placeholder="Search" aria-label="Search your songs"></div>
+      <ul class="lib" id="lib"></ul>
+    </aside>
+
+    <section class="mid">
+      <div class="editor">
+        <div class="ed-head"><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span></div>
+        <div class="ed-wrap" id="edWrap">
+          <canvas id="edCanvas"></canvas>
+          <div class="ed-empty" id="edEmpty">Click a part on the timeline to edit it here. Drag across the waveform to select a section.</div>
+        </div>
+        <div class="ed-acts">
+          <span class="lbl" id="selInfo">No selection</span>
+          <button class="btn sm" data-act="selall">Select whole part</button>
+          <button class="btn sm" data-act="prevsel">Play selection</button>
+          <button class="btn sm primary" data-act="keep">Keep only this</button>
+          <button class="btn sm" data-act="remove">Remove this</button>
+          <button class="btn sm" data-act="selappend">Add selection to end of layer</button>
+          <button class="btn sm" data-act="sellayer">Add selection as new layer</button>
+        </div>
+      </div>
+      <div class="tl" id="tl">
+        <div class="tl-inner" id="tlInner">
+          <div class="ruler-row"><div class="corner">Layers</div><canvas id="ruler"></canvas></div>
+          <div id="lanes"></div>
+          <div class="addlane"><button class="btn sm" data-act="addlane">+ Add layer</button></div>
+          <div class="playhead" id="playhead"></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel right" id="insp"></aside>
+  </div>
+</div>
+
+<div class="modalwrap" id="modal" hidden>
+  <form class="modal" id="modalForm">
+    <h3 id="mTitle"></h3>
+    <p id="mText"></p>
+    <input id="mInput" type="text" autocomplete="off" maxlength="80">
+    <div class="mact"><button type="button" class="btn" id="mCancel">Cancel</button><button type="submit" class="btn primary" id="mOk">OK</button></div>
+  </form>
+</div>
+<div class="busy" id="busy" hidden><div id="busyText">Working…</div></div>
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="studio.js"></script>
+</body>
+</html>

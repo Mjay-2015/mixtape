@@ -111,6 +111,8 @@ select.sel{height:40px;border-radius:10px;border:1px solid var(--line);backgroun
 .foot{color:var(--muted);font-size:12px;margin-top:28px;display:flex;flex-direction:column;gap:4px}
 .keys{font-family:var(--f-mono);font-size:11px}
 @media (hover:none){.keys{display:none}}
+@media (max-width:899px),(pointer:coarse){#studioBtn{display:none}}
+.btn{text-decoration:none}
 
 /* icon buttons */
 .ib{width:40px;height:40px;display:inline-grid;place-items:center;border:0;background:transparent;color:var(--ink);border-radius:50%;cursor:pointer;position:relative;flex:none;padding:0}
@@ -249,6 +251,7 @@ select.sel{height:40px;border-radius:10px;border:1px solid var(--line);backgroun
     <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search songs, artists, albums" aria-label="Search your songs" autocomplete="off"></label>
     <div class="adds">
       <button class="btn" id="installBtn" hidden>Install app</button>
+      <a class="btn" id="studioBtn" href="studio.html" title="Cut and mix your songs">Studio</a>
       <button class="btn primary" data-act="add"><svg class="i"><use href="#i-plus"/></svg>Add songs</button>
       <button class="btn" id="folderBtn" data-act="folder" title="Add every song in a folder"><svg class="i"><use href="#i-folder"/></svg><span class="lbltxt">Add folder</span></button>
     </div>
