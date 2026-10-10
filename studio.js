@@ -142,6 +142,7 @@ function normalize(p) {
   p.xfade = p.xfade ?? 0.5; p.snap = !!p.snap; p.polish = !!p.polish; p.bpm = p.bpm || null; p.key = p.key || null;
   p.loop = p.loop && p.loop.b > p.loop.a ? p.loop : null; p.loopOn = !!p.loopOn && !!p.loop;
   p.metro = !!p.metro; p.master = p.master ?? 1;
+  p.tempoChanges = Array.isArray(p.tempoChanges) ? p.tempoChanges : [];
   p.video = p.video && p.video.id ? p.video : null; p.markers = Array.isArray(p.markers) ? p.markers : [];
   return p;
 }
@@ -164,6 +165,18 @@ const projectEnd = () => Math.max(P.clips.reduce((m, c) => Math.max(m, c.at + du
 const laneClips = id => P.clips.filter(c => c.lane === id).sort((a, b) => a.at - b.at);
 const laneLast = id => laneClips(id).reduce((m, c) => (!m || c.at + dur(c) > m.at + dur(m) ? c : m), null);
 const beatLen = () => P.bpm ? 60 / P.bpm : 0;
+/* ---------- tempo map: the mix tempo (P.bpm) from 0:00, plus tempo changes later in the cue ---------- */
+function tempoSegs() {
+  if (!P.bpm) return [];
+  const ch = (P.tempoChanges || []).filter(x => x.t > 0.001 && x.bpm >= 20 && x.bpm <= 400).sort((a, b) => a.t - b.t);
+  const segs = [{ t0: 0, bpm: P.bpm, b0: 0 }];
+  for (const c of ch) { const s = segs[segs.length - 1]; segs.push({ t0: c.t, bpm: c.bpm, b0: s.b0 + (c.t - s.t0) * s.bpm / 60 }); }
+  return segs;
+}
+function beatAt(t) { const S = tempoSegs(); if (!S.length) return 0; let s = S[0]; for (const x of S) if (x.t0 <= t) s = x; return s.b0 + (t - s.t0) * s.bpm / 60; }
+function timeAtBeat(b) { const S = tempoSegs(); if (!S.length) return 0; let s = S[0]; for (const x of S) if (x.b0 <= b) s = x; return s.t0 + (b - s.b0) * 60 / s.bpm; }
+function tempoAt(t) { const S = tempoSegs(); let s = S[0]; for (const x of S) if (x.t0 <= t) s = x; return s ? s.bpm : 0; }
+const snapBeat = t => P.bpm ? timeAtBeat(Math.round(beatAt(t))) : t;
 const effFo = c => c.fxOut === 'echo' && !(c.fadeOut > 0) ? Math.min(1, dur(c) / 3) : (c.fadeOut || 0);
 function fixFades(c) { const d = dur(c); c.fadeIn = clamp(c.fadeIn || 0, 0, d); c.fadeOut = clamp(c.fadeOut || 0, 0, d - c.fadeIn); }
 function fixSel() {
@@ -318,9 +331,10 @@ async function deleteLane(id) {
 }
 
 /* speed, key, beat */
-function nearestRate(songBpm) {
+function nearestRate(songBpm, atTime = 0) {
   if (!P.bpm || !songBpm) return 1;
-  return [0.5, 1, 2].map(m => P.bpm / (songBpm * m)).reduce((b, r) => Math.abs(Math.log(r)) < Math.abs(Math.log(b)) ? r : b);
+  const target = tempoAt(atTime);
+  return [0.5, 1, 2].map(m => target / (songBpm * m)).reduce((b, r) => Math.abs(Math.log(r)) < Math.abs(Math.log(b)) ? r : b);
 }
 async function setRate(c, r, msg) {
   const oldEnd = c.at + dur(c);
@@ -334,7 +348,7 @@ function matchTempo() {
   if (!a) return toast('Still working out this song’s tempo. Try again in a moment.');
   if (!a.bpm) return toast('This part has no steady beat, so there is no tempo to match.', 4500);
   if (!P.bpm) return toast('Set the mix tempo first (in Mix on the right).');
-  return setRate(c, nearestRate(a.bpm), `Now plays at ${P.bpm} BPM`);
+  const tgt = tempoAt(c.at); return setRate(c, nearestRate(a.bpm, c.at), `Now plays at ${Math.round(tgt * 10) / 10} BPM`);
 }
 function keyShiftTo(a, target) {
   const tonicMaj = x => x.mode === 'minor' ? (x.key + 3) % 12 : x.key;
@@ -474,9 +488,9 @@ function clickAt(ac, dest, when, accent) {
   o.start(when); o.stop(when + 0.06); return o;
 }
 function scheduleClicks(ac, dest, startPos, when0, until) {
-  const bl = beatLen(); if (!bl) return [];
-  const out = []; let b = Math.ceil((startPos - 1e-6) / bl);
-  for (; b * bl < until && out.length < 4000; b++) out.push(clickAt(ac, dest, when0 + (b * bl - startPos), b % 4 === 0));
+  if (!P.bpm) return [];
+  const out = []; let b = Math.ceil(beatAt(startPos) - 1e-6);
+  for (let t = timeAtBeat(b); t < until && out.length < 4000; b++, t = timeAtBeat(b)) out.push(clickAt(ac, dest, when0 + (t - startPos), b % 4 === 0));
   return out;
 }
 const hasTails = () => P.clips.some(c => c.fxOut === 'echo') || P.lanes.some(l => l.fx.echo > 0 || l.fx.reverb > 0);
@@ -525,7 +539,7 @@ function tick() {
   }
   const p = curPos();
   if (p >= projectEnd() && !rec && !loopActive()) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
-  drawPlayhead(p); followPlayhead(p); if (rec) renderTransport(); if (P.video) syncVideo();
+  drawPlayhead(p); followPlayhead(p); if (rec || (P.tempoChanges || []).length) renderTransport(); if (P.video) syncVideo();
   if (UI.mixer) updateMeters();
 }
 function liveLanes() {
@@ -570,7 +584,7 @@ async function toggleRecord() {
   const at = playhead;
   rec = { mr, stream, chunks, recWall, playWall: performance.now(), at, began: Date.now() };
   // one bar of count-in clicks; the recording is trimmed to start when the music starts
-  { const bl = beatLen() || 0.6; await ctx.resume(); const t = ctx.currentTime + 0.05;
+  { const bl = P.bpm ? 60 / tempoAt(playhead) : 0.6; await ctx.resume(); const t = ctx.currentTime + 0.05;
     for (let i = 0; i < 4; i++) clickAt(ctx, ctx.destination, t + i * bl, i === 0);
     toast('Count-in: 1, 2, 3, 4…', bl * 4 * 1000); await new Promise(r => setTimeout(r, (bl * 4 + 0.05) * 1000)); }
   if (P.clips.length) { const ok = await play(); if (ok) rec.playWall = performance.now() + Math.max(0, t0 - ctx.currentTime) * 1000; }
@@ -810,7 +824,7 @@ function clipBadge(c) {
 }
 function renderLanes() {
   const anySolo = P.lanes.some(l => l.solo), bl = beatLen();
-  const gridCls = P.snap && bl ? ' grid' : '', gridVars = P.snap && bl ? `--beat:${bl * pps}px;--bar:${bl * 4 * pps}px;` : '';
+  const gridCls = '', gridVars = '';
   $('#lanes').innerHTML = P.lanes.map(l => {
     const fxOn = Object.values(l.fx).some(v => v);
     return `
@@ -841,7 +855,7 @@ function renderLanes() {
     </div>`; }).join('');
   $('#tlInner').style.width = (headW() + timelineWidth()) + 'px';
   $('#tlEmpty').hidden = P.clips.length > 0 || !!P.video;
-  renderVideoRow(); renderMarkerLines(); renderVideoWindow();
+  renderVideoRow(); renderMarkerLines(); renderVideoWindow(); renderGrid();
   $('#lanes').dataset.h = UI.h;
   renderLoop();
   $$('.clip').forEach(el => drawClipCanvas(el.querySelector('canvas'), clipById(el.dataset.clip)));
@@ -852,13 +866,14 @@ function renderRuler() {
   cv.style.width = w + 'px'; cv.width = Math.min(32000, Math.round(w * r)); cv.height = h * r;
   const g = cv.getContext('2d'); g.setTransform(cv.width / w, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
   const bl = beatLen();
-  if (bl && bl * pps >= 5) { g.fillStyle = css('--line'); for (let b = 0; b * bl * pps < w; b++) g.fillRect(Math.round(b * bl * pps), b % 4 ? 23 : 19, 1, b % 4 ? 5 : 9); }
+  if (bl && bl * pps >= 5) { g.fillStyle = css('--line'); for (let b = 0, x = 0; x < w && b < 20000; b++, x = timeAtBeat(b) * pps) g.fillRect(Math.round(x), b % 4 ? 23 : 19, 1, b % 4 ? 5 : 9); }
+  for (const c of (P.tempoChanges || [])) { const x = c.t * pps; g.fillStyle = '#4FD1A5'; g.fillRect(Math.round(x), 0, 2, 30); g.font = `600 10px ${css('--f-mono')}`; g.textBaseline = 'middle'; g.fillText(`♩${Math.round(c.bpm * 10) / 10}`, x + 4, 22); }
   if (P.loop) { g.fillStyle = P.loopOn ? css('--accent') : css('--line-2'); g.fillRect(P.loop.a * pps, 0, (P.loop.b - P.loop.a) * pps, 5); }
   g.fillStyle = css('--muted'); g.strokeStyle = css('--line'); g.font = `11px ${css('--f-mono')}`; g.textBaseline = 'middle';
   const mode = clockMode();
   if (mode === 'bars') {
-    const barW = bl * 4 * pps, every = [1, 2, 4, 8, 16, 32].find(n => n * barW >= 44) || 64;
-    for (let b = 0; b * bl * 4 * pps < w; b += every) { const x = Math.round(b * barW) + .5; g.beginPath(); g.moveTo(x, 12); g.lineTo(x, h); g.stroke(); g.fillText(String(b + 1), x + 4, 8); }
+    const barW = 4 * 60 / Math.max(...tempoSegs().map(s => s.bpm)) * pps, every = [1, 2, 4, 8, 16, 32].find(n => n * barW >= 44) || 64;
+    for (let b = 0, x = 0; x < w && b < 5000; b += every, x = timeAtBeat(b * 4) * pps) { const xx = Math.round(x) + .5; g.beginPath(); g.moveTo(xx, 12); g.lineTo(xx, h); g.stroke(); g.fillText(String(b + 1), xx + 4, 8); }
   } else {
     const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120]; const step = steps.find(s => s * pps >= (mode === 'tc' ? 110 : 64)) || 300;
     for (let t = 0; t * pps < w; t += step) {
@@ -869,7 +884,7 @@ function renderRuler() {
   drawMarkersOnRuler(g, w);
 }
 function clockMode() { const m = UI.clock || (UI.bars ? 'bars' : 'time'); if (m === 'bars' && !beatLen()) return 'time'; return m; }
-function fmtBars(t) { const bl = beatLen(); const beats = Math.floor(t / bl + 1e-6); const frac = t / bl - beats; return `${Math.floor(beats / 4) + 1}.${(beats % 4) + 1}.${Math.floor(frac * 4) + 1}`; }
+function fmtBars(t) { const bt = beatAt(t); const beats = Math.floor(bt + 1e-6); const frac = bt - beats; return `${Math.floor(beats / 4) + 1}.${(beats % 4) + 1}.${Math.floor(frac * 4) + 1}`; }
 function renderLoop() {
   const b = $('#loopBand'); if (!P.loop) { b.hidden = true; return; }
   b.hidden = false; b.classList.toggle('off', !P.loopOn);
@@ -960,13 +975,14 @@ function renderInspector() {
   const keyOpts = ['<option value="">Not set</option>'].concat([0, 1].flatMap(mi => KEYS.map((k, i) => { const mode = mi ? 'minor' : 'major'; const sel = P.key && P.key.key === i && P.key.mode === mode; return `<option value="${i}|${mode}" ${sel ? 'selected' : ''}>${k} ${mode}</option>`; }))).join('');
   html += `<div class="sec"><h3>Mix</h3>
       <div class="field"><label for="pBpm">Tempo</label><input id="pBpm" type="number" min="40" max="240" step="0.1" value="${P.bpm || ''}" placeholder="auto" data-pf="bpm" style="height:30px;border-radius:7px;border:1px solid var(--line);background:var(--raise);padding:0 6px;width:100%"><output>BPM</output></div>
+      ${tempoMapHTML()}
       <div class="field"><label for="pKey">Key</label><select id="pKey" data-pf="key">${keyOpts}</select><span></span></div>
       <p class="hint">Tempo and key are set from the first song you add. “Match mix tempo” and “Match mix key” bring other parts in line so they fit together.</p>
       <div class="field"><label for="xf">Join fade</label><input id="xf" type="range" min="0" max="4" step="0.1" value="${P.xfade}" data-pf="xfade"><output>${P.xfade.toFixed(1)}s</output></div>
       <label class="chk"><input type="checkbox" data-pc="snap" ${P.snap ? 'checked' : ''}> Snap to the beat</label>
       <label class="chk"><input type="checkbox" data-pc="polish" ${P.polish ? 'checked' : ''}> Polish: make it louder and more even</label>
       <div class="btnrow"><button class="btn sm" data-act="evenout">Even out volume between parts</button></div></div>
-    <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>M</kbd> hit point · <kbd>V</kbd> video<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
+    <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>M</kbd> hit point · <kbd>V</kbd> video · <kbd>T</kbd> tempo change<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
   const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; ins.scrollTop = st; applyTips();
   if (c) { $('#cFxIn').value = c.fxIn || 'fade'; $('#cFxOut').value = c.fxOut || 'fade'; }
 }
@@ -1035,7 +1051,7 @@ function renderTransport() {
   $('#libBtn').setAttribute('aria-pressed', UI.lib); $('#inspBtn').setAttribute('aria-pressed', UI.insp);
   $$('.hsz button').forEach(b => b.setAttribute('aria-pressed', b.dataset.h === UI.h));
   $('#snapBtn').setAttribute('aria-pressed', P.snap);
-  $('#tempoLbl').textContent = P.bpm ? `${P.bpm} BPM${P.key ? ' · ' + keyName(P.key.key, P.key.mode) : ''}` : '— BPM';
+  $('#tempoLbl').textContent = P.bpm ? `${Math.round(tempoAt(curPos()) * 10) / 10} BPM${(P.tempoChanges || []).length ? ' (map)' : ''}${P.key ? ' · ' + keyName(P.key.key, P.key.mode) : ''}` : '— BPM';
   $('#recBtn').classList.toggle('on', !!rec);
   $('#recLbl').textContent = rec ? `Stop recording ${fmtT((Date.now() - rec.began) / 1000).replace(/\.\d$/, '')}` : 'Record voice';
 }
@@ -1057,6 +1073,7 @@ const acts = {
   matchtempo: matchTempo, matchkey: matchKey, evenout: evenOut, stems: splitStems,
   import: () => $('#fileIn').click(),
   mutepart: toggleMutePart,
+  addtempo: () => addTempoChange(curPos()), fittempo: fitTempoToHits,
   video: () => { if (!P.video) return $('#vidIn').click(); UI.vwin = !UI.vwin; saveUI(); renderVideoWindow(); renderTransport(); if (UI.vwin) { ensureVideoEl().then(() => scrubVideo(curPos())); } },
   vwclose: force => { UI.vwin = force === true ? !UI.vwin : false; saveUI(); renderVideoWindow(); renderTransport(); if (UI.vwin) ensureVideoEl().then(() => scrubVideo(curPos())); },
   vfull: () => { const w = $('#vwin'); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); else w.requestFullscreen?.().catch(() => toast('Full screen is not available here.')); },
@@ -1122,7 +1139,7 @@ $('#ruler').addEventListener('pointerdown', e => {
       return;
     } }
   const bl = beatLen();
-  const at = ev => { let t = Math.max(0, (ev.clientX - cv.getBoundingClientRect().left) / pps); if (P.snap && bl) t = Math.round(t / bl) * bl; return t; };
+  const at = ev => { let t = Math.max(0, (ev.clientX - cv.getBoundingClientRect().left) / pps); if (P.snap && bl) t = snapBeat(t); return t; };
   const x0 = e.clientX, a0 = at(e); let dragging = false;
   const mv = ev => {
     if (!dragging && Math.abs(ev.clientX - x0) > 4) dragging = true;
@@ -1201,7 +1218,7 @@ $('#lanes').addEventListener('pointerdown', e => {
       let at = Math.max(0, o.at + dt);
       const s1 = snapEdge(at), s2 = snapEdge(at + dur(c));
       if (s1 !== null) at = s1; else if (s2 !== null) at = s2 - dur(c);
-      else if (P.snap && bl) at = Math.round(at / bl) * bl;
+      else if (P.snap && bl) at = snapBeat(at);
       c.at = Math.max(0, at);
       const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.lane');
       if (under && under.dataset.lane !== c.lane) { c.lane = under.dataset.lane; under.querySelector('.lane-body').appendChild(el); }
@@ -1232,7 +1249,7 @@ function selectStretch(e, el, c) {
   ensureBuf(c.trackId).catch(err => toast(err.message, 5000));
   try { el.setPointerCapture(e.pointerId); } catch (_) {}
   const r0 = el.getBoundingClientRect(), bl = beatLen();
-  const tAt = ev => { let t = c.at + clamp((ev.clientX - r0.left) / pps, 0, dur(c)); if (P.snap && bl) t = clamp(Math.round(t / bl) * bl, c.at, c.at + dur(c)); return t; };
+  const tAt = ev => { let t = c.at + clamp((ev.clientX - r0.left) / pps, 0, dur(c)); if (P.snap && bl) t = clamp(snapBeat(t), c.at, c.at + dur(c)); return t; };
   const a0 = tAt(e); let ov = null;
   el.querySelectorAll('.tlsel').forEach(x => x.remove()); tlSel = null;
   const mv = ev => {
@@ -1333,6 +1350,7 @@ document.addEventListener('keydown', e => {
   else if (kl === 'b') acts.togglelib();
   else if (kl === 'x') acts.togglemixer();
   else if (kl === 'm') addMarker(curPos());
+  else if (kl === 't') addTempoChange(curPos());
   else if (kl === 'v') acts.video();
   else if (kl === 'c') acts.metro();
   else if (kl === 'i') acts.toggleinsp();
@@ -1351,7 +1369,7 @@ function dropTarget(e) {
   const laneEl = document.elementFromPoint(e.clientX, e.clientY)?.closest('.lane');
   const r = $('#tlInner').getBoundingClientRect();
   let at = Math.max(0, (e.clientX - r.left - headW()) / pps);
-  const bl = beatLen(); if (P.snap && bl) at = Math.round(at / bl) * bl;
+  const bl = beatLen(); if (P.snap && bl) at = snapBeat(at);
   return { lane: laneEl ? laneEl.dataset.lane : null, laneEl, at };
 }
 function showDrop(tg, len) {
@@ -1785,6 +1803,66 @@ $('#insp').addEventListener('change', e => {
 });
 $('#insp').addEventListener('input', e => {
   if (e.target.dataset.sf === 'vol' && P.video) { P.video.vol = e.target.value / 100; e.target.nextElementSibling.textContent = e.target.value + '%'; applySceneVol(); }
+});
+
+
+/* ---------- tempo changes ---------- */
+function tempoMapHTML() {
+  if (!P.bpm) return '';
+  const ch = [...(P.tempoChanges || [])].sort((a, b) => a.t - b.t);
+  const fmt = t => clockMode() === 'tc' ? tc(t) : clockMode() === 'bars' ? fmtBars(t) : fmtT(t);
+  return `<p class="sub">Tempo changes</p>
+    ${ch.length ? `<div class="hits">${ch.map(c => `<div class="hit" data-tc="${c.id}"><span class="tc" data-tcgo title="Jump here">${fmt(c.t)}</span>
+      <input type="number" min="20" max="400" step="0.1" value="${c.bpm}" data-tcbpm aria-label="Tempo from here"><span class="ana">BPM</span><button data-tcdel title="Remove this tempo change">✕</button></div>`).join('')}</div>`
+      : `<p class="hint">The whole cue runs at ${P.bpm} BPM. Press <b>T</b> to change tempo at the playhead.</p>`}
+    <div class="btnrow"><button class="btn sm" data-act="addtempo">+ Tempo change (T)</button><button class="btn sm" data-act="fittempo" ${visibleMarkers().length >= 2 ? '' : 'disabled'} title="Choose a tempo so a whole number of bars fits exactly between two hit points">Fit tempo to hit points…</button></div>`;
+}
+function addTempoChange(t, bpm) {
+  if (!P.bpm) return toast('Set the mix tempo first: add a song with a beat, or type a tempo under Mix.', 5000);
+  if (t < 0.05) return toast('Move the playhead later than 0:00. The mix tempo above sets the start.');
+  P.tempoChanges = (P.tempoChanges || []).filter(c => Math.abs(c.t - t) > 0.01);
+  const v = Math.round((bpm || tempoAt(t)) * 10) / 10;
+  P.tempoChanges.push({ id: uid(), t, bpm: v });
+  commit(`Tempo change at ${fmtT(t)}: ${v} BPM. Type the new tempo under Mix on the right.`);
+}
+async function fitTempoToHits() {
+  const ms = visibleMarkers(); if (ms.length < 2 || !P.bpm) return toast('Add two hit points and a mix tempo first.');
+  const opt = sel => ms.map((m, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(m.label)} · ${P.video ? tc(mT(m)) : fmtT(mT(m))}</option>`).join('');
+  const ch = await ask({ title: 'Fit tempo to hit points', ok: 'Set tempo',
+    text: 'Pick two hit points and how many bars of music should fit between them. The tempo changes at the first hit point so bar lines land exactly on both.',
+    extra: `<fieldset class="opts"><legend>From</legend><select name="a">${opt(0)}</select></fieldset><fieldset class="opts"><legend>To</legend><select name="b">${opt(1)}</select></fieldset>
+      <fieldset class="opts"><legend>Bars between them</legend><input name="bars" type="number" min="1" max="200" step="1" value="${Math.max(1, Math.round((mT(ms[1]) - mT(ms[0])) * tempoAt(mT(ms[0])) / 240))}"></fieldset>`,
+    read: f => { const a = +f.querySelector('[name=a]').value, b = +f.querySelector('[name=b]').value, bars = +f.querySelector('[name=bars]').value;
+      if (mT(ms[b]) <= mT(ms[a]) + 0.2) { toast('The second hit point must come after the first.'); return undefined; }
+      if (!(bars >= 1)) { toast('Enter at least one bar.'); return undefined; } return { a, b, bars }; } });
+  if (!ch) return;
+  const A = mT(ms[ch.a]), B = mT(ms[ch.b]), bpm = Math.round(ch.bars * 4 * 60 / (B - A) * 1000) / 1000;
+  if (bpm < 20 || bpm > 400) return toast(`That needs ${bpm.toFixed(1)} BPM, which is outside 20–400. Try a different number of bars.`, 5000);
+  P.tempoChanges = (P.tempoChanges || []).filter(c => c.t <= A - 0.01 || c.t >= B + 0.01);
+  if (A < 0.05) P.bpm = bpm; else P.tempoChanges.push({ id: uid(), t: A, bpm });
+  commit(`${ch.bars} bar${ch.bars === 1 ? '' : 's'} at ${Math.round(bpm * 100) / 100} BPM now fit exactly from “${ms[ch.a].label}” to “${ms[ch.b].label}”.`);
+}
+function renderGrid() {
+  let g = $('#gridlines'); if (!g) { g = document.createElement('div'); g.id = 'gridlines'; $('#tlInner').prepend(g); }
+  if (!P.snap || !P.bpm) { g.innerHTML = ''; return; }
+  const w = timelineWidth(), out = [];
+  for (let b = 0, t = 0; t * pps < w && b < 8000; b++, t = timeAtBeat(b)) {
+    const bar = b % 4 === 0; if (!bar && (timeAtBeat(b + 1) - t) * pps < 6) continue;
+    out.push(`<i class="${bar ? 'bar' : ''}" style="left:${headW() + t * pps}px"></i>`);
+  }
+  g.innerHTML = out.join('');
+}
+$('#insp').addEventListener('click', e => {
+  const row = e.target.closest('[data-tc]'); if (!row) return;
+  const c = (P.tempoChanges || []).find(x => x.id === row.dataset.tc); if (!c) return;
+  if (e.target.closest('[data-tcdel]')) { P.tempoChanges = P.tempoChanges.filter(x => x !== c); commit('Tempo change removed'); }
+  else if (e.target.closest('[data-tcgo]')) seek(c.t);
+});
+$('#insp').addEventListener('change', e => {
+  if (!e.target.matches('[data-tcbpm]')) return;
+  const c = (P.tempoChanges || []).find(x => x.id === e.target.closest('[data-tc]').dataset.tc); if (!c) return;
+  const v = parseFloat(e.target.value); if (!(v >= 20 && v <= 400)) return toast('Use a tempo between 20 and 400 BPM.');
+  c.bpm = Math.round(v * 10) / 10; commit(`From ${fmtT(c.t)} the tempo is ${c.bpm} BPM`);
 });
 
 /* ---------- dialogs ---------- */

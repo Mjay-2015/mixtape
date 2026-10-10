@@ -124,7 +124,7 @@ button,input,select{font:inherit;color:inherit}
 .corner{position:sticky;left:0;z-index:6;width:var(--head-w);flex:none;background:var(--panel);border-right:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 6px 0 12px}
 #ruler{display:block;height:30px;cursor:pointer}
 .lane{display:flex;height:96px;border-bottom:1px solid #1C2027;--c:#4F8EF7}
-.lane:nth-child(even) .lane-body{background-color:#101318}
+.lane:nth-child(even) .lane-body{background-color:rgba(255,255,255,.014)}
 .lane-head{position:sticky;left:0;z-index:4;width:var(--head-w);flex:none;background:var(--panel);border-right:1px solid var(--line);padding:8px 10px 8px 16px;display:flex;flex-direction:column;gap:4px}
 .lane-head::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--c)}
 .lane.on .lane-head{background:#1C2129}
@@ -224,6 +224,9 @@ button,input,select{font:inherit;color:inherit}
 .vclip .vcl{background-size:12px 100%;background-position:2px 0}
 .vclip .h{position:absolute;top:0;bottom:0;width:9px;cursor:ew-resize;z-index:2}.vclip .h.l{left:0}.vclip .h.r{right:0}.vclip .h:hover{background:rgba(255,255,255,.2)}
 #mklines{position:absolute;inset:0;pointer-events:none;z-index:2}
+#gridlines{position:absolute;inset:0;pointer-events:none;z-index:0}
+#gridlines i{position:absolute;top:30px;bottom:0;width:1px;background:rgba(255,255,255,.035)}
+#gridlines i.bar{background:rgba(255,255,255,.09)}
 .mk{position:absolute;top:30px;bottom:0;border-left:1px dashed rgba(167,139,250,.75)}
 .mk.sel{border-left:2px solid #C4B5FD}
 .vwin{position:fixed;right:316px;bottom:24px;width:420px;height:270px;min-width:220px;min-height:150px;resize:both;overflow:hidden;z-index:50;background:#000;border:1px solid var(--line-2);border-radius:10px;box-shadow:0 18px 40px -12px var(--shadow);display:flex;flex-direction:column}
