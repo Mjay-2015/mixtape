@@ -739,7 +739,8 @@ async function renderMix(opts = {}) {
   buildGraph(oc, from, 0, { lane: opts.lane });
   const out = await oc.startRendering();
   let peak = 0; for (let c = 0; c < out.numberOfChannels; c++) { const d = out.getChannelData(c); for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; } }
-  return { blob: encodeWav(out, peak > 0.98 ? 0.98 / peak : 1), duration: out.duration, buffer: out };
+  const scale = peak > 0.98 ? 0.98 / peak : 1;
+  return { blob: encodeWav(out, scale), duration: out.duration, buffer: out, scale };
 }
 function downloadBlob(blob, name) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
@@ -1946,7 +1947,7 @@ async function syncPackage(first) {
     // cues: carry delivery history, mark only the ones whose picture moved
     const moved = [];
     L.cues = (pkg.cues || []).map(c => {
-      const old = oldCues.get(c.ref), cue = { ref: String(c.ref), title: String(c.title || c.ref), origin: c.origin || 'WRITTEN', startSec: +c.startSec, endSec: +c.endSec, notes: c.notes || '', delivered: old ? old.delivered || 0 : 0, stale: old ? old.stale || [] : [] };
+      const old = oldCues.get(c.ref), cue = { ref: String(c.ref), title: String(c.title || c.ref), origin: c.origin || 'WRITTEN', startSec: +c.startSec, endSec: +c.endSec, notes: c.notes || '', delivered: old ? old.delivered || 0 : 0, lastLoudness: old ? old.lastLoudness : undefined, stale: old ? old.stale || [] : [] };
       if (old && newVersion) {
         const why = staleReasons(oldShots, pkg.shots || [], old);
         if (Math.abs(old.startSec - cue.startSec) > 1e-3 || Math.abs(old.endSec - cue.endSec) > 1e-3) why.unshift(`cue moved to ${fmtT(cue.startSec)}–${fmtT(cue.endSec)}`);
@@ -2000,6 +2001,8 @@ async function deliverCue(ref) {
   try {
     busy(`Delivering ${cue.ref}: mixing…`, { progress: 0 });
     const mix = await renderMix({ from: a, to: b }), loud = measureLoudness(mix.buffer);
+    // The file was turned down to stop it clipping, so state the loudness of the file, not of the mix before it
+    if (mix.scale !== 1) { const db = 20 * Math.log10(mix.scale); loud.lufs = Math.round((loud.lufs + db) * 10) / 10; loud.peakDb = Math.round((loud.peakDb + db) * 10) / 10; }
     const stems = [];
     for (const [i, l] of lanes.entries()) {
       busy(`Delivering ${cue.ref}: stem ${i + 1} of ${lanes.length} (${l.name})…`, { progress: (i + 1) / (lanes.length + 1) });
