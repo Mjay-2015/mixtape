@@ -143,6 +143,7 @@ function normalize(p) {
   p.loop = p.loop && p.loop.b > p.loop.a ? p.loop : null; p.loopOn = !!p.loopOn && !!p.loop;
   p.metro = !!p.metro; p.master = p.master ?? 1;
   p.tempoChanges = Array.isArray(p.tempoChanges) ? p.tempoChanges : [];
+  p.link = p.link && Array.isArray(p.link.cues) ? p.link : null;
   p.video = p.video && p.video.id ? p.video : null; p.markers = Array.isArray(p.markers) ? p.markers : [];
   return p;
 }
@@ -881,6 +882,7 @@ function renderRuler() {
       const m = Math.floor(t / 60), s = t % 60; g.fillText(mode === 'tc' ? tc(t) : `${m}:${String(Math.floor(s)).padStart(2, '0')}${step < 1 && s % 1 ? '.5' : ''}`, x + 4, 8);
     }
   }
+  drawCuesOnRuler(g, w);
   drawMarkersOnRuler(g, w);
 }
 function clockMode() { const m = UI.clock || (UI.bars ? 'bars' : 'time'); if (m === 'bars' && !beatLen()) return 'time'; return m; }
@@ -971,6 +973,7 @@ function renderInspector() {
       <div class="field"><label for="fRev">Reverb</label><input id="fRev" type="range" min="0" max="100" value="${fx.reverb}" data-lx="reverb"><output>${fx.reverb}%</output></div>
       <div class="btnrow"><button class="btn sm" data-act="fxreset">Reset effects</button><button class="btn sm" data-act="closegaps">Close gaps</button></div></div>`;
   }
+  html += linkSectionHTML();
   html += sceneSectionHTML();
   const keyOpts = ['<option value="">Not set</option>'].concat([0, 1].flatMap(mi => KEYS.map((k, i) => { const mode = mi ? 'minor' : 'major'; const sel = P.key && P.key.key === i && P.key.mode === mode; return `<option value="${i}|${mode}" ${sel ? 'selected' : ''}>${k} ${mode}</option>`; }))).join('');
   html += `<div class="sec"><h3>Mix</h3>
@@ -1073,6 +1076,7 @@ const acts = {
   matchtempo: matchTempo, matchkey: matchKey, evenout: evenOut, stems: splitStems,
   import: () => $('#fileIn').click(),
   mutepart: toggleMutePart,
+  linkfolder: linkFolder, relink: reconnectFolder, unlink: unlinkFolder, syncnow: () => syncPackage(true),
   addtempo: () => addTempoChange(curPos()), fittempo: fitTempoToHits,
   video: () => { if (!P.video) return $('#vidIn').click(); UI.vwin = !UI.vwin; saveUI(); renderVideoWindow(); renderTransport(); if (UI.vwin) { ensureVideoEl().then(() => scrubVideo(curPos())); } },
   vwclose: force => { UI.vwin = force === true ? !UI.vwin : false; saveUI(); renderVideoWindow(); renderTransport(); if (UI.vwin) ensureVideoEl().then(() => scrubVideo(curPos())); },
@@ -1560,8 +1564,8 @@ function scrubVideo(t) {
   if (!vid.paused) vid.pause();
   if (Math.abs(vid.currentTime - vt) > 0.5 / fpsOf()) vid.currentTime = vt;
 }
-async function importVideo(file) {
-  if (P.video && !(await ask({ title: 'Replace the scene video?', text: 'The new video takes the place of the current one. Hit points on the old video are removed. You can undo this.', ok: 'Replace video' }))) return;
+async function importVideo(file, opts = {}) {
+  if (P.video && !opts.silent && !(await ask({ title: 'Replace the scene video?', text: 'The new video takes the place of the current one. Hit points on the old video are removed. You can undo this.', ok: 'Replace video' }))) return;
   busy('Adding the scene video…');
   try {
     const probe = document.createElement('video'); probe.muted = true; probe.preload = 'metadata';
@@ -1570,11 +1574,11 @@ async function importVideo(file) {
     if (!d) { busy(null); return toast('This browser can’t open that video. MP4 (H.264) or WebM videos work best.', 6000); }
     const t = { id: uid(), kind: 'video', name: file.name, size: file.size, type: file.type || 'video/mp4', title: file.name.replace(/\.[^.]+$/, ''), artist: '', album: 'Scenes', track: 0, duration: d, added: Date.now(), blob: file, art: null };
     await req('tracks', 'readwrite', o => o.put(t)); await loadLibrary();
-    P.video = { id: t.id, at: 0, start: 0, end: d, dur: d, fps: 24, vol: 0.8 };
-    P.markers = (P.markers || []).filter(m => m.vt == null);
+    P.video = { id: t.id, at: 0, start: 0, end: d, dur: d, fps: +opts.fps || 24, vol: 0.8 };
+    P.markers = (P.markers || []).filter(m => m.vt == null || m.src === 'pkg');
     UI.vwin = true; saveUI();
     vidFor = null; await ensureVideoEl(); scrubVideo(playhead);
-    commit(`Added the scene “${t.title}” (${fmtT(d)}). Press M to mark a hit point at the playhead.`);
+    if (!opts.silent) commit(`Added the scene “${t.title}” (${fmtT(d)}). Press M to mark a hit point at the playhead.`);
     makeThumbs();
   } catch (err) { toast('Could not add the video: ' + (err.message || 'your browser may be out of storage space'), 6000); }
   finally { busy(null); }
@@ -1865,6 +1869,185 @@ $('#insp').addEventListener('change', e => {
   c.bpm = Math.round(v * 10) / 10; commit(`From ${fmtT(c.t)} the tempo is ${c.bpm} BPM`);
 });
 
+
+/* ---------- the production studio's score package ----------
+   Contract (format "mindcraft.score-package/1"), one folder per locked cut:
+     score-package.json  { format, production:{id,title,kind}, cut:{id,version,stage,lockedAt,runningTimeSec},
+                           fps, picture, scenes:[{index,title,startSec,endSec}],
+                           shots:[{id,sceneIndex,order,startSec,endSec,placeholder}],
+                           cues:[{ref,title,origin,startSec,endSec,notes}], hitPoints:[{label,seconds}] }
+     picture.mp4         the cut, optional
+     deliveries/<cue ref>/mix.wav, stems/<track>.wav, delivery.json   written by Mixtape
+   All times are seconds in the cut. Mixtape re-reads the package every few seconds while linked. */
+const LINK_DB = 'mixtape-studio-links';
+let linkDir = null, linkTimer = null, linkBusy = false;
+function linkStore(mode, fn) {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(LINK_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('handles');
+    r.onsuccess = () => { try { const t = r.result.transaction('handles', mode), q = fn(t.objectStore('handles')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); } catch (e) { rej(e); } };
+    r.onerror = () => rej(r.error);
+  });
+}
+const cutOffset = () => P.video ? P.video.at - P.video.start : 0;          // cut seconds -> timeline seconds
+const cueRange = c => ({ a: c.startSec + cutOffset(), b: c.endSec + cutOffset() });
+async function readPackage(dir) {
+  const fh = await dir.getFileHandle('score-package.json'), f = await fh.getFile();
+  const pkg = JSON.parse(await f.text());
+  if (!String(pkg.format || '').startsWith('mindcraft.score-package/')) throw new Error('This folder’s score-package.json is not a Mindcraft score package.');
+  return { pkg, modified: f.lastModified };
+}
+async function linkFolder() {
+  if (!window.showDirectoryPicker) return toast('Linking a folder needs Chrome or Edge on a laptop.', 5000);
+  let dir; try { dir = await window.showDirectoryPicker({ id: 'mixtape-score', mode: 'readwrite' }); } catch (e) { return; }
+  try { await readPackage(dir); } catch (e) { return toast(e.name === 'NotFoundError' ? 'That folder has no score-package.json in it. Pick the folder the production studio made for the cut.' : e.message, 6000); }
+  linkDir = dir; try { await linkStore('readwrite', s => s.put(dir, 'score')); } catch (e) {}
+  P.link = P.link && P.link.folder === dir.name ? { ...P.link, modified: 0 } : { folder: dir.name, modified: 0, cues: [], shots: [], scenes: [] };
+  await syncPackage(true); startWatch();
+}
+async function reconnectFolder() {
+  let dir = null; try { dir = await linkStore('readonly', s => s.get('score')); } catch (e) {}
+  if (!dir) return linkFolder();
+  try { if ((await dir.queryPermission({ mode: 'readwrite' })) !== 'granted' && (await dir.requestPermission({ mode: 'readwrite' })) !== 'granted') return toast('Mixtape needs permission to read and write that folder.'); } catch (e) { return linkFolder(); }
+  linkDir = dir; await syncPackage(true); startWatch();
+}
+function unlinkFolder() { stopWatch(); linkDir = null; P.link = null; P.markers = (P.markers || []).filter(m => m.src !== 'pkg'); commit('Unlinked from the production studio. Your music stays.'); }
+// Every 4 s while you are looking at Mixtape, every 15 s while it is hidden behind another tab, and at once when you come back
+let linkTicks = 0;
+function startWatch() { stopWatch(); linkTimer = setInterval(() => { linkTicks++; if (document.visibilityState === 'visible' || linkTicks % 4 === 0) syncPackage(false); }, 4000); }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && linkDir) syncPackage(false); });
+function stopWatch() { clearInterval(linkTimer); linkTimer = null; }
+/* Which cues does a new version of the cut actually move? Only those whose shots changed. */
+function staleReasons(oldShots, newShots, cue) {
+  const byId = new Map(newShots.map(s => [s.id, s])), frame = 1 / fpsOf() + 1e-6, out = [];
+  for (const s of oldShots) {
+    if (s.endSec <= cue.startSec || s.startSec >= cue.endSec) continue;
+    const n = byId.get(s.id);
+    if (!n) out.push(`shot ${s.order ?? s.id} was cut`);
+    else if (Math.abs(n.startSec - s.startSec) > frame || Math.abs(n.endSec - s.endSec) > frame) out.push(`shot ${s.order ?? s.id} moved ${(n.startSec - s.startSec >= 0 ? '+' : '') + (n.startSec - s.startSec).toFixed(2)}s, now ${(n.endSec - n.startSec).toFixed(2)}s long`);
+  }
+  return out;
+}
+async function syncPackage(first) {
+  if (!linkDir || linkBusy) return; linkBusy = true;
+  try {
+    const { pkg, modified } = await readPackage(linkDir);
+    if (!first && P.link && modified === P.link.modified) return;
+    const L = P.link || { cues: [], shots: [] }, oldShots = L.shots || [], oldCues = new Map((L.cues || []).map(c => [c.ref, c]));
+    const newVersion = L.cutVersion != null && pkg.cut && pkg.cut.version !== L.cutVersion;
+    // picture
+    if (pkg.picture) {
+      try {
+        const f = await (await linkDir.getFileHandle(pkg.picture)).getFile();
+        if (!P.video || L.picture !== f.name + '|' + f.size + '|' + f.lastModified) { await importVideo(f, { silent: true, fps: pkg.fps }); L.picture = f.name + '|' + f.size + '|' + f.lastModified; }
+      } catch (e) { toast(`The package names a picture file (${pkg.picture}) that is not in the folder.`, 5000); }
+    }
+    if (P.video && pkg.fps) P.video.fps = +pkg.fps;
+    // cues: carry delivery history, mark only the ones whose picture moved
+    const moved = [];
+    L.cues = (pkg.cues || []).map(c => {
+      const old = oldCues.get(c.ref), cue = { ref: String(c.ref), title: String(c.title || c.ref), origin: c.origin || 'WRITTEN', startSec: +c.startSec, endSec: +c.endSec, notes: c.notes || '', delivered: old ? old.delivered || 0 : 0, stale: old ? old.stale || [] : [] };
+      if (old && newVersion) {
+        const why = staleReasons(oldShots, pkg.shots || [], old);
+        if (Math.abs(old.startSec - cue.startSec) > 1e-3 || Math.abs(old.endSec - cue.endSec) > 1e-3) why.unshift(`cue moved to ${fmtT(cue.startSec)}–${fmtT(cue.endSec)}`);
+        if (why.length) { cue.stale = why; moved.push(cue.ref); }
+      }
+      return cue;
+    });
+    L.shots = (pkg.shots || []).map(s => ({ id: s.id, order: s.order, sceneIndex: s.sceneIndex, startSec: +s.startSec, endSec: +s.endSec, placeholder: !!s.placeholder }));
+    L.scenes = (pkg.scenes || []).map(s => ({ index: s.index, title: s.title || '', startSec: +s.startSec, endSec: +s.endSec }));
+    Object.assign(L, { folder: linkDir.name, modified, production: pkg.production || {}, cutId: pkg.cut && pkg.cut.id, cutVersion: pkg.cut && pkg.cut.version, stage: pkg.cut && pkg.cut.stage, lockedAt: pkg.cut && pkg.cut.lockedAt });
+    P.link = L;
+    // scene starts and the package's hit points become hit points that follow the picture
+    P.markers = (P.markers || []).filter(m => m.src !== 'pkg');
+    const mk = (sec, label) => P.markers.push(P.video ? { id: uid(), vt: sec + (P.video.start || 0) * 0, label, src: 'pkg' } : { id: uid(), t: sec, label, src: 'pkg' });
+    L.scenes.forEach(s => mk(s.startSec, `Sc ${s.index}${s.title ? ' · ' + s.title : ''}`));
+    (pkg.hitPoints || []).forEach(h => { const s = parseTime(h.seconds ?? h.timecode ?? h.time); if (s != null) mk(s, String(h.label || 'Hit')); });
+    const unlocked = L.stage && !/LOCK/i.test(L.stage) && !L.lockedAt;
+    commit(first ? `Linked to “${(L.production && L.production.title) || L.folder}”, cut v${L.cutVersion ?? '?'}: ${L.cues.length} cue${L.cues.length === 1 ? '' : 's'}, ${L.scenes.length} scene${L.scenes.length === 1 ? '' : 's'}.${unlocked ? ' This cut is not locked yet, so expect it to change.' : ''}`
+      : newVersion ? (moved.length ? `The cut changed to v${L.cutVersion}. Picture moved under ${moved.length} cue${moved.length === 1 ? '' : 's'}: ${moved.join(', ')}. The others still fit.` : `The cut changed to v${L.cutVersion}, but no cue’s picture moved.`)
+      : 'The score package was updated.');
+  } catch (e) { if (first) toast('Could not read the score package: ' + e.message, 6000); }
+  finally { linkBusy = false; }
+}
+/* EBU R128 / ITU-R BS.1770 integrated loudness and sample peak of a rendered buffer */
+function measureLoudness(buf) {
+  const sr = buf.sampleRate, chs = []; for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chs.push(buf.getChannelData(c));
+  const biq = (b0, b1, b2, a1, a2) => x => { const y = new Float64Array(x.length); let x1 = 0, x2 = 0, y1 = 0, y2 = 0; for (let i = 0; i < x.length; i++) { const v = x[i], o = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = v; y2 = y1; y1 = o; y[i] = o; } return y; };
+  let K = Math.tan(Math.PI * 1681.974450955533 / sr), Q = 0.7071752369554196, Vh = Math.pow(10, 3.999843853973347 / 20), Vb = Math.pow(Vh, 0.4996667741545416), a0 = 1 + K / Q + K * K;
+  const shelf = biq((Vh + Vb * K / Q + K * K) / a0, 2 * (K * K - Vh) / a0, (Vh - Vb * K / Q + K * K) / a0, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0);
+  K = Math.tan(Math.PI * 38.13547087602444 / sr); Q = 0.5003270373238773; a0 = 1 + K / Q + K * K;
+  const hp = biq(1, -2, 1, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0);
+  const w = chs.map(x => hp(shelf(x))), block = Math.round(0.4 * sr), hop = Math.round(0.1 * sr), z = [];
+  for (let s = 0; s + block <= w[0].length; s += hop) { let sum = 0; for (const y of w) { let e = 0; for (let i = s; i < s + block; i++) e += y[i] * y[i]; sum += e / block; } z.push(sum); }
+  const L = v => -0.691 + 10 * Math.log10(v + 1e-20);
+  const abs = z.filter(v => L(v) > -70); if (!abs.length) return { lufs: -Infinity, peakDb: -Infinity };
+  const rel = L(abs.reduce((a, b) => a + b, 0) / abs.length) - 10, gated = abs.filter(v => L(v) > rel);
+  let peak = 0; for (const x of chs) for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > peak) peak = a; }
+  return { lufs: Math.round(L(gated.reduce((a, b) => a + b, 0) / gated.length) * 10) / 10, peakDb: Math.round(20 * Math.log10(peak + 1e-12) * 10) / 10 };
+}
+async function writeFile(dir, path, blob) {
+  const parts = path.split('/'), name = parts.pop(); let d = dir;
+  for (const p of parts) d = await d.getDirectoryHandle(p, { create: true });
+  const fh = await d.getFileHandle(name, { create: true }), w = await fh.createWritable(); await w.write(blob); await w.close();
+}
+async function deliverCue(ref) {
+  const L = P.link, cue = L && L.cues.find(c => c.ref === ref); if (!cue) return;
+  if (!P.clips.some(c => !c.mute)) return toast('There is no music on the timeline to deliver yet.');
+  const { a, b } = cueRange(cue), folder = `deliveries/${safeName(cue.ref)}`;
+  const lanes = P.lanes.filter(l => P.clips.some(c => c.lane === l.id && !c.mute && c.at < b && c.at + dur(c) > a));
+  pause();
+  try {
+    busy(`Delivering ${cue.ref}: mixing…`, { progress: 0 });
+    const mix = await renderMix({ from: a, to: b }), loud = measureLoudness(mix.buffer);
+    const stems = [];
+    for (const [i, l] of lanes.entries()) {
+      busy(`Delivering ${cue.ref}: stem ${i + 1} of ${lanes.length} (${l.name})…`, { progress: (i + 1) / (lanes.length + 1) });
+      const s = await renderMix({ from: a, to: b, lane: l.id }); stems.push({ name: l.name, file: `stems/${safeName(l.name)}.wav`, blob: s.blob });
+    }
+    const manifest = { format: 'mindcraft.cue-delivery/1', cueRef: cue.ref, title: cue.title, origin: cue.origin, production: L.production, cutId: L.cutId, cutVersion: L.cutVersion,
+      startSec: cue.startSec, endSec: cue.endSec, durationSec: +(cue.endSec - cue.startSec).toFixed(3), sampleRate: mix.buffer.sampleRate,
+      mix: 'mix.wav', stems: stems.map(s => ({ name: s.name, file: s.file })), loudness: { integratedLUFS: loud.lufs, samplePeakDbFS: loud.peakDb, method: 'ITU-R BS.1770-4 integrated, gated; sample peak (not true peak)' },
+      tempo: P.bpm ? { startBpm: P.bpm, changes: (P.tempoChanges || []).map(c => ({ atSec: +(c.t - cutOffset()).toFixed(3), bpm: c.bpm })) } : null,
+      deliveredAt: new Date().toISOString(), deliveredBy: 'Mixtape Studio' };
+    if (linkDir) {
+      await writeFile(linkDir, `${folder}/mix.wav`, mix.blob);
+      for (const s of stems) await writeFile(linkDir, `${folder}/${s.file}`, s.blob);
+      await writeFile(linkDir, `${folder}/delivery.json`, new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }));
+    } else {
+      downloadBlob(mix.blob, `${safeName(cue.ref)} mix.wav`); for (const s of stems) downloadBlob(s.blob, `${safeName(cue.ref)} ${safeName(s.name)}.wav`);
+      downloadBlob(new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }), `${safeName(cue.ref)} delivery.json`);
+    }
+    cue.delivered = (cue.delivered || 0) + 1; cue.stale = []; cue.lastLoudness = loud.lufs;
+    commit(`Delivered ${cue.ref} with ${stems.length} stem${stems.length === 1 ? '' : 's'}: ${loud.lufs} LUFS, peak ${loud.peakDb} dBFS${linkDir ? ' — written to the score folder' : ' — downloaded'}.`);
+  } catch (e) { toast(`Could not deliver ${cue.ref}: ${e.message}`, 6000); }
+  finally { busy(null); }
+}
+function linkSectionHTML() {
+  const L = P.link;
+  if (!L) return `<div class="sec"><h3>Production studio</h3><p class="hint">Link the score folder the production studio makes for a locked cut. Mixtape loads the picture, scenes, hit points and cue placements, watches for re-cuts, and delivers each cue’s mix and stems back into the folder.</p>
+    <div class="btnrow"><button class="btn sm primary" data-act="linkfolder">Link a score folder</button>${(window.showDirectoryPicker && 'indexedDB' in window) ? '<button class="btn sm" data-act="relink">Reconnect last folder</button>' : ''}</div></div>`;
+  const fmt = t => P.video ? tc(t) : fmtT(t);
+  return `<div class="sec"><h3>Production studio</h3>
+    <dl class="kv"><dt>Production</dt><dd>${esc((L.production && L.production.title) || '—')}</dd><dt>Cut</dt><dd>v${esc(L.cutVersion ?? '?')} · ${esc(L.stage || '')}${L.lockedAt ? ' · locked' : ''}</dd><dt>Folder</dt><dd>${esc(L.folder)}${linkDir ? '' : ' (not connected)'}</dd></dl>
+    ${linkDir ? '' : '<div class="btnrow"><button class="btn sm primary" data-act="relink">Reconnect the folder</button></div>'}
+    <p class="sub">Cues</p>
+    ${L.cues.length ? `<div class="hits">${L.cues.map(c => `<div class="hit cuerow${c.stale && c.stale.length ? ' stale' : ''}" data-cue="${esc(c.ref)}" title="${esc(c.notes || '')}">
+      <span class="tc" data-cuego title="Loop this cue">${esc(c.ref)}</span><span class="cuetitle">${esc(c.title)} · ${fmt(c.startSec)}–${fmt(c.endSec)}${c.stale && c.stale.length ? `<b>Picture moved: ${esc(c.stale.join('; '))}</b>` : c.delivered ? `<em>Delivered${c.lastLoudness != null ? ' · ' + c.lastLoudness + ' LUFS' : ''}</em>` : ''}</span>
+      <button data-cuego title="Loop this cue">⟲</button><button data-cuedeliver title="Deliver this cue: mix, stems and loudness into the folder">⇪</button></div>`).join('')}</div>` : '<p class="hint">The package has no cue placements yet.</p>'}
+    <div class="btnrow"><button class="btn sm" data-act="syncnow">Check now</button><button class="btn sm" data-act="unlink">Unlink</button></div></div>`;
+}
+$('#insp').addEventListener('click', e => {
+  const row = e.target.closest('[data-cue]'); if (!row || !P.link) return;
+  const cue = P.link.cues.find(c => c.ref === row.dataset.cue); if (!cue) return;
+  if (e.target.closest('[data-cuedeliver]')) return deliverCue(cue.ref);
+  if (e.target.closest('[data-cuego]')) { const r = cueRange(cue); setLoop(r.a, r.b, `Looping ${cue.ref}`); seek(r.a); }
+});
+function drawCuesOnRuler(g, w) {
+  if (!P.link) return;
+  for (const c of P.link.cues) { const r = cueRange(c), x = r.a * pps, xe = r.b * pps; if (xe < 0 || x > w) continue; g.fillStyle = c.stale && c.stale.length ? '#FF5F5F' : '#2EC4B6'; g.fillRect(x, 27, Math.max(2, xe - x), 3); }
+}
+
 /* ---------- dialogs ---------- */
 let modalResolve = null, modalRead = null; const mInput = $('#mInput');
 function ask({ title, text = '', input = null, ok = 'OK', danger = false, extra = '', read = null }) {
@@ -1916,6 +2099,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
   if (missing.length) { P.clips = P.clips.filter(c => libTrack(c.trackId)); last = JSON.stringify(P); persist(); toast(`${missing.length} part${missing.length === 1 ? ' was' : 's were'} removed because the song is no longer in your library.`, 5000); }
   if (!P.clips.length && !P.video) UI.lib = true;
   if (P.video) { ensureVideoEl().then(() => { scrubVideo(playhead); makeThumbs(); }); }
+  if (P.link) { try { const d = await linkStore('readonly', s => s.get('score')); if (d && (await d.queryPermission({ mode: 'readwrite' })) === 'granted') { linkDir = d; startWatch(); syncPackage(false); renderInspector(); } } catch (e) {} }
   $('.work').classList.toggle('nolib', !UI.lib); $('.work').classList.toggle('noinsp', !UI.insp);
   renderAll();
   for (const id of new Set(P.clips.map(c => c.trackId))) { try { await ensureBuf(id); renderLanes(); drawEditor(); } catch (e) {} }

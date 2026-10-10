@@ -238,6 +238,12 @@ button,input,select{font:inherit;color:inherit}
 .vw-out{position:absolute;inset:0;display:grid;place-items:center;color:#8C94A3;font-size:13px;background:#000}
 .vwin:fullscreen{border:0;border-radius:0}
 .hits{display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto}
+.cuerow{grid-template-columns:auto minmax(0,1fr) auto auto;align-items:start}
+.cuerow .tc{color:#2EC4B6}
+.cuetitle{font-size:12px;min-width:0;overflow-wrap:anywhere}
+.cuetitle b{display:block;color:var(--danger);font-weight:600;font-size:11px}
+.cuetitle em{display:block;color:#4FD1A5;font-style:normal;font-size:11px}
+.cuerow.stale .tc{color:var(--danger)}
 .hit{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:6px;align-items:center;font-size:12px}
 .hit .tc{font:11px var(--f-mono);color:#C4B5FD;font-variant-numeric:tabular-nums;cursor:pointer}
 .hit input{height:24px;border:1px solid var(--line-2);border-radius:5px;background:var(--bg);padding:0 6px;min-width:0}
