@@ -60,7 +60,7 @@ function artHTML(t) {
 const curList = () => S.view.type === 'list' ? lists.find(l => l.id === S.view.id) : null;
 function viewName(v = S.view) { if (v.type === 'fav') return 'Favorites'; if (v.type === 'list') { const l = lists.find(x => x.id === v.id); return l ? l.name : 'Playlist'; } return 'All songs'; }
 /* Stems made in the Studio are working files: they stay out of the song list */
-const songIds = () => [...tracks.keys()].filter(id => !tracks.get(id).stemOf);
+const songIds = () => [...tracks.keys()].filter(id => !tracks.get(id).stemOf && tracks.get(id).kind !== 'video');
 function baseIds() {
   if (S.view.type === 'fav') return songIds().filter(id => favs.has(id));
   if (S.view.type === 'list') { const l = curList(); return l ? l.ids.filter(id => tracks.has(id)) : []; }

@@ -211,6 +211,36 @@ button,input,select{font:inherit;color:inherit}
 .strip .ms{display:flex;gap:3px}
 .strip .fxb{font-size:10px;height:22px;padding:0 6px;border-radius:5px;border:1px solid var(--line-2);background:var(--raise);color:var(--muted);cursor:pointer;width:100%}
 .strip .fxb.on{color:var(--accent);border-color:var(--accent)}
+/* scene video */
+.vlane{display:flex;height:72px;border-bottom:1px solid var(--line-2);background:#0B0D10;--c:#C9CED8}
+.vlane .lane-head{position:sticky;left:0;z-index:4}
+.vlane .lane-head::before{background:repeating-linear-gradient(to bottom,#C9CED8 0 6px,transparent 6px 10px)}
+.vname{flex:1;font-weight:600;font-size:13px;padding-left:4px}
+.vsub span{grid-column:1/4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.vclip{position:absolute;top:6px;bottom:6px;border-radius:6px;overflow:hidden;background:#000;border:1px solid #6A7280;cursor:default}
+.vclip canvas{position:absolute;left:0;right:0;top:var(--clip-head);bottom:0;width:100%;height:calc(100% - var(--clip-head));pointer-events:none}
+.vclip .vcl{position:absolute;left:0;top:0;right:0;height:var(--clip-head);padding:1px 8px 0 22px;font-size:11px;font-weight:600;color:#0D0F13;cursor:grab;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background:#C9CED8 radial-gradient(circle at 7px 50%,#0D0F13 2.2px,transparent 2.6px) 0 0/12px 100% repeat-x}
+.vclip .vcl{background-size:12px 100%;background-position:2px 0}
+.vclip .h{position:absolute;top:0;bottom:0;width:9px;cursor:ew-resize;z-index:2}.vclip .h.l{left:0}.vclip .h.r{right:0}.vclip .h:hover{background:rgba(255,255,255,.2)}
+#mklines{position:absolute;inset:0;pointer-events:none;z-index:2}
+.mk{position:absolute;top:30px;bottom:0;border-left:1px dashed rgba(167,139,250,.75)}
+.mk.sel{border-left:2px solid #C4B5FD}
+.vwin{position:fixed;right:316px;bottom:24px;width:420px;height:270px;min-width:220px;min-height:150px;resize:both;overflow:hidden;z-index:50;background:#000;border:1px solid var(--line-2);border-radius:10px;box-shadow:0 18px 40px -12px var(--shadow);display:flex;flex-direction:column}
+.vw-head{display:flex;align-items:center;gap:8px;padding:4px 6px 4px 10px;background:var(--panel-2);cursor:move;user-select:none;flex:none}
+.vw-head .sp{flex:1}.vw-name{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.vw-body{position:relative;flex:1;min-height:0;background:#000}
+.vw-body video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.vtc{position:absolute;left:8px;bottom:8px;font:500 12px var(--f-mono);color:#fff;background:rgba(0,0,0,.65);padding:2px 7px;border-radius:4px;font-variant-numeric:tabular-nums}
+.vw-out{position:absolute;inset:0;display:grid;place-items:center;color:#8C94A3;font-size:13px;background:#000}
+.vwin:fullscreen{border:0;border-radius:0}
+.hits{display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto}
+.hit{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:6px;align-items:center;font-size:12px}
+.hit .tc{font:11px var(--f-mono);color:#C4B5FD;font-variant-numeric:tabular-nums;cursor:pointer}
+.hit input{height:24px;border:1px solid var(--line-2);border-radius:5px;background:var(--bg);padding:0 6px;min-width:0}
+.hit.sel input{border-color:#C4B5FD}
+.hit button{height:24px;width:24px;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:5px}
+.hit button:hover{background:var(--raise);color:var(--ink)}
 .playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--ink);z-index:8;pointer-events:none;margin-left:-1px;box-shadow:0 0 6px rgba(255,255,255,.35)}
 .playhead::before{content:"";position:absolute;top:0;left:-6px;border:7px solid transparent;border-top:9px solid var(--accent)}
 .addlane{position:sticky;left:0;padding:12px;width:var(--head-w)}
@@ -296,6 +326,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4"/></symbol>
   <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M7.5 5v14M16.5 5v14M3.5 9.5h4M3.5 14.5h4M16.5 9.5h4M16.5 14.5h4"/></symbol>
   <symbol id="i-mixer" viewBox="0 0 24 24"><path d="M6 4v16M12 4v16M18 4v16"/><rect x="4" y="13" width="4" height="3" rx="1" fill="currentColor"/><rect x="10" y="7" width="4" height="3" rx="1" fill="currentColor"/><rect x="16" y="11" width="4" height="3" rx="1" fill="currentColor"/></symbol>
   <symbol id="i-pleft" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></symbol>
   <symbol id="i-pright" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15"/></symbol>
@@ -334,6 +365,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <button class="btn sm ghost" data-act="fit" title="Fit the whole mix on screen">Fit</button>
       <button class="ib" data-act="zin" aria-label="Zoom in" title="Zoom in (+)"><svg class="i"><use href="#i-zin"/></svg></button>
       <div class="sepv"></div>
+      <button class="ib tgl2" data-act="video" id="vidBtn" aria-pressed="false" aria-label="Scene video" title="Score a scene: add a video, or show and hide the video window (V)"><svg class="i"><use href="#i-film"/></svg></button>
       <button class="ib tgl2" data-act="togglemixer" id="mixBtn" aria-pressed="false" aria-label="Show or hide the mixer" title="Show or hide the mixer (X)"><svg class="i"><use href="#i-mixer"/></svg></button>
       <button class="ib tgl2" data-act="togglelib" id="libBtn" aria-pressed="true" aria-label="Show or hide the library" title="Show or hide the library (B)"><svg class="i"><use href="#i-pleft"/></svg></button>
       <button class="ib tgl2" data-act="toggleinsp" id="inspBtn" aria-pressed="true" aria-label="Show or hide the settings" title="Show or hide the settings (I)"><svg class="i"><use href="#i-pright"/></svg></button>
@@ -348,6 +380,8 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <div class="br-head">
         <div class="row"><h2 class="ptitle">Library</h2><span class="count" id="libCount"></span></div>
         <button class="btn primary block" data-act="import" title="Pick music files from this computer"><svg class="i"><use href="#i-import"/></svg>Import audio files</button>
+        <input id="vidIn" type="file" accept="video/*,.mp4,.webm,.mov,.m4v" hidden>
+        <input id="mkIn" type="file" accept=".json,.csv,.txt,application/json,text/csv" hidden>
         <input id="fileIn" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac,.aif,.aiff" multiple hidden>
         <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="libQ" type="search" placeholder="Search your songs" aria-label="Search your songs"></label>
         <p class="libhint"><b>Drag</b> a song onto a track, or press <b>Add</b> to put it at the end of the selected track.</p>
@@ -363,12 +397,15 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
           <div class="starts">
             <button class="start" data-act="import"><svg class="i"><use href="#i-import"/></svg><b>Import songs</b><span>From this computer</span></button>
             <button class="start" data-act="showlib"><svg class="i"><use href="#i-pleft"/></svg><b>Use my library</b><span>Drag a song from the list</span></button>
+            <button class="start" data-act="video"><svg class="i"><use href="#i-film"/></svg><b>Score a scene</b><span>Add a video to write music to</span></button>
             <button class="start" data-act="record"><span class="recdot"></span><b>Record my voice</b><span>With a one-bar count-in</span></button>
           </div>
         </div>
         <div class="tl-inner" id="tlInner">
           <div class="ruler-row"><div class="corner"><span class="ptitle">Tracks</span><span class="hsz" role="group" aria-label="Track height"><button data-act="lh" data-h="s" title="Small tracks">S</button><button data-act="lh" data-h="m" title="Medium tracks">M</button><button data-act="lh" data-h="l" title="Tall tracks">L</button></span></div><canvas id="ruler"></canvas></div>
+          <div id="vrow" hidden></div>
           <div id="lanes"></div>
+          <div id="mklines"></div>
           <div class="addlane"><button class="btn sm" data-act="addlane">+ Add track</button></div>
           <div class="loopband" id="loopBand" hidden></div>
           <div class="playhead" id="playhead"></div>
@@ -399,6 +436,12 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
   </div>
 </div>
 
+<div class="vwin" id="vwin" hidden aria-label="Video window">
+  <div class="vw-head" id="vwHead"><span class="ed-tag">Picture</span><span class="vw-name" id="vwName"></span><span class="sp"></span>
+    <button class="ib" data-act="vfull" aria-label="Full screen" title="Full screen (or double-click the picture)"><svg class="i"><use href="#i-pright"/></svg></button>
+    <button class="ib" data-act="vwclose" aria-label="Hide the video window" title="Hide the video window (V)"><svg class="i"><use href="#i-close"/></svg></button></div>
+  <div class="vw-body"><video id="vid" playsinline preload="auto"></video><div class="vtc" id="vtc">00:00:00:00</div><div class="vw-out" id="vwOut" hidden>Outside the scene</div></div>
+</div>
 <div class="menu" id="menu" role="menu" hidden></div>
 <div class="modalwrap" id="modal" hidden>
   <form class="modal" id="modalForm">

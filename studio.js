@@ -142,6 +142,7 @@ function normalize(p) {
   p.xfade = p.xfade ?? 0.5; p.snap = !!p.snap; p.polish = !!p.polish; p.bpm = p.bpm || null; p.key = p.key || null;
   p.loop = p.loop && p.loop.b > p.loop.a ? p.loop : null; p.loopOn = !!p.loopOn && !!p.loop;
   p.metro = !!p.metro; p.master = p.master ?? 1;
+  p.video = p.video && p.video.id ? p.video : null; p.markers = Array.isArray(p.markers) ? p.markers : [];
   return p;
 }
 let P; try { P = normalize(JSON.parse(localStorage.getItem(LSP))); } catch (e) { P = newProject(); }
@@ -149,7 +150,7 @@ let selClip = null, selLane = P.lanes[0].id, playhead = 0, pps = 24, edSel = nul
 let hist = [], fut = [], last = JSON.stringify(P);
 const persist = () => { try { localStorage.setItem(LSP, last); } catch (e) {} };
 const UI_KEY = 'mixtape-studio-ui';
-let UI = { lib: true, insp: true, h: 'm', mixer: false, bars: false }; try { UI = { ...UI, ...(JSON.parse(localStorage.getItem(UI_KEY)) || {}) }; } catch (e) {}
+let UI = { lib: true, insp: true, h: 'm', mixer: false, bars: false, clock: 'time', vwin: true }; try { UI = { ...UI, ...(JSON.parse(localStorage.getItem(UI_KEY)) || {}) }; } catch (e) {}
 const saveUI = () => { try { localStorage.setItem(UI_KEY, JSON.stringify(UI)); } catch (e) {} };
 let tlSel = null;      // a stretch selected right on the timeline: { clipId, a, b } in timeline seconds
 let edOpen = false;    // the detailed part editor is open (double-click a part)
@@ -159,7 +160,7 @@ const laneColor = id => { const l = P.lanes.find(x => x.id === id); return (l &&
 const withAlpha = (hex, a) => hex + Math.round(clamp(a, 0, 1) * 255).toString(16).padStart(2, '0');
 const dur = c => (c.end - c.start) / (c.rate || 1);
 const tlOf = (c, src) => c.at + (src - c.start) / (c.rate || 1);
-const projectEnd = () => P.clips.reduce((m, c) => Math.max(m, c.at + dur(c)), 0);
+const projectEnd = () => Math.max(P.clips.reduce((m, c) => Math.max(m, c.at + dur(c)), 0), P.video ? P.video.at + P.video.end - P.video.start : 0);
 const laneClips = id => P.clips.filter(c => c.lane === id).sort((a, b) => a.at - b.at);
 const laneLast = id => laneClips(id).reduce((m, c) => (!m || c.at + dur(c) > m.at + dur(m) ? c : m), null);
 const beatLen = () => P.bpm ? 60 / P.bpm : 0;
@@ -488,7 +489,7 @@ async function ensureAll() {
 }
 async function play() {
   stopPreview();
-  if (!P.clips.length) { toast('Add a song from the left to start.'); return false; }
+  if (!P.clips.length && !P.video) { toast('Add a song from the left to start.'); return false; }
   try { await ensureAll(); } catch (err) { toast(err.message, 5000); return false; }
   await ctx.resume();
   if (playhead >= projectEnd() - 0.02) playhead = 0;
@@ -496,13 +497,14 @@ async function play() {
   pendingLoop = null;
   pos0 = playhead; t0 = ctx.currentTime + 0.05;
   graph = buildGraph(ctx, pos0, t0, { metro: P.metro }); playing = true; renderTransport(); clearInterval(tickT); tickT = setInterval(tick, 33);
+  if (P.video) { await ensureVideoEl(); syncVideo(); }
   return true;
 }
 function pause() {
   if (!playing) return;
   playhead = curPos(); playing = false; clearInterval(tickT);
   for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr) { gr.srcs.forEach(s => { try { s.stop(); } catch (e) {} }); try { gr.out.disconnect(); gr.master.disconnect(); } catch (e) {} }
-  graph = null; pendingLoop = null; renderTransport(); drawPlayhead();
+  graph = null; pendingLoop = null; if (vidFor && !vid.paused) vid.pause(); renderTransport(); drawPlayhead();
 }
 const curPos = () => playing ? pos0 + Math.max(0, ctx.currentTime - t0) : playhead;
 function restartIfPlaying() { if (playing && !rec) { pause(); play(); } }
@@ -523,7 +525,7 @@ function tick() {
   }
   const p = curPos();
   if (p >= projectEnd() && !rec && !loopActive()) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
-  drawPlayhead(p); followPlayhead(p); if (rec) renderTransport();
+  drawPlayhead(p); followPlayhead(p); if (rec) renderTransport(); if (P.video) syncVideo();
   if (UI.mixer) updateMeters();
 }
 function liveLanes() {
@@ -731,25 +733,30 @@ function downloadBlob(blob, name) {
 const safeName = s => s.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'My mix';
 async function saveSong() {
   if (!P.clips.length) return toast('There is nothing to export yet. Add a song first.');
-  const hasLoop = !!P.loop;
-  const choice = await ask({ title: 'Export', text: 'Name it, choose what to export and where it goes. Your original songs stay as they are.', input: P.name || 'My mix', ok: 'Export',
-    extra: `<fieldset class="opts"><legend>What</legend>
+  const hasLoop = !!P.loop, v = P.video;
+  const sceneFrom = v ? v.at - v.start : 0, sceneTo = v ? v.at - v.start + v.dur : 0;
+  const choice = await ask({ title: 'Export', text: 'Name it, then choose the stretch, the files and where they go. Your original songs stay as they are.', input: P.name || 'My mix', ok: 'Export',
+    extra: `<fieldset class="opts"><legend>Stretch</legend>
       <label><input type="radio" name="what" value="mix" checked> The whole mix (${fmtT(projectEnd())})</label>
       <label class="${hasLoop ? '' : 'dis'}"><input type="radio" name="what" value="loop" ${hasLoop ? '' : 'disabled'}> Only the looped section${hasLoop ? ` (${fmtT(P.loop.a)}–${fmtT(P.loop.b)})` : ' (mark a loop on the ruler first)'}</label>
-      <label><input type="radio" name="what" value="tracks"> Each track as its own file</label></fieldset>
+      <label class="${v ? '' : 'dis'}"><input type="radio" name="what" value="scene" ${v ? '' : 'disabled'}> Exactly the scene${v ? ` (${tc(v.dur)}${v.start > 0.05 ? ', lead-in included' : ''})` : ' (add a scene video first)'}</label></fieldset>
+      <fieldset class="opts"><legend>Files</legend>
+      <label><input type="radio" name="files" value="one" checked> One mixed file</label>
+      <label><input type="radio" name="files" value="tracks"> One file per track (stems)</label></fieldset>
       <fieldset class="opts"><legend>Where</legend>
       <label><input type="checkbox" name="where" value="lib" checked> Add to my Mixtape library on this laptop</label>
       <label><input type="checkbox" name="where" value="file" checked> Download as a WAV file, to share or to add to Mixtape on your phone</label></fieldset>`,
     read: f => {
       const where = [...f.querySelectorAll('[name=where]:checked')].map(x => x.value);
       if (!where.length) { toast('Tick at least one place to export to.'); return undefined; }
-      return { what: f.querySelector('[name=what]:checked').value, where };
+      return { what: f.querySelector('[name=what]:checked').value, files: f.querySelector('[name=files]:checked').value, where };
     } });
   if (!choice) return;
   const name = choice.input || 'My mix';
-  const jobs = choice.what === 'tracks'
-    ? P.lanes.filter(l => P.clips.some(c => c.lane === l.id && !c.mute)).map(l => ({ title: `${name} - ${l.name}`, lane: l.id }))
-    : choice.what === 'loop' ? [{ title: `${name} (loop)`, from: P.loop.a, to: P.loop.b }] : [{ title: name }];
+  const range = choice.what === 'loop' ? { from: P.loop.a, to: P.loop.b, tag: ' (loop)' } : choice.what === 'scene' ? { from: sceneFrom, to: sceneTo, tag: ' (scene)' } : { from: 0, to: projectEnd(), tag: '' };
+  const jobs = choice.files === 'tracks'
+    ? P.lanes.filter(l => P.clips.some(c => c.lane === l.id && !c.mute)).map(l => ({ title: `${name}${range.tag} - ${l.name}`, lane: l.id, from: range.from, to: range.to }))
+    : [{ title: name + range.tag, from: range.from, to: range.to }];
   pause(); let done = 0;
   try {
     for (const j of jobs) {
@@ -833,7 +840,8 @@ function renderLanes() {
       </div>
     </div>`; }).join('');
   $('#tlInner').style.width = (headW() + timelineWidth()) + 'px';
-  $('#tlEmpty').hidden = P.clips.length > 0;
+  $('#tlEmpty').hidden = P.clips.length > 0 || !!P.video;
+  renderVideoRow(); renderMarkerLines(); renderVideoWindow();
   $('#lanes').dataset.h = UI.h;
   renderLoop();
   $$('.clip').forEach(el => drawClipCanvas(el.querySelector('canvas'), clipById(el.dataset.clip)));
@@ -847,17 +855,20 @@ function renderRuler() {
   if (bl && bl * pps >= 5) { g.fillStyle = css('--line'); for (let b = 0; b * bl * pps < w; b++) g.fillRect(Math.round(b * bl * pps), b % 4 ? 23 : 19, 1, b % 4 ? 5 : 9); }
   if (P.loop) { g.fillStyle = P.loopOn ? css('--accent') : css('--line-2'); g.fillRect(P.loop.a * pps, 0, (P.loop.b - P.loop.a) * pps, 5); }
   g.fillStyle = css('--muted'); g.strokeStyle = css('--line'); g.font = `11px ${css('--f-mono')}`; g.textBaseline = 'middle';
-  if (UI.bars && bl) {
+  const mode = clockMode();
+  if (mode === 'bars') {
     const barW = bl * 4 * pps, every = [1, 2, 4, 8, 16, 32].find(n => n * barW >= 44) || 64;
     for (let b = 0; b * bl * 4 * pps < w; b += every) { const x = Math.round(b * barW) + .5; g.beginPath(); g.moveTo(x, 12); g.lineTo(x, h); g.stroke(); g.fillText(String(b + 1), x + 4, 8); }
-    return;
+  } else {
+    const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120]; const step = steps.find(s => s * pps >= (mode === 'tc' ? 110 : 64)) || 300;
+    for (let t = 0; t * pps < w; t += step) {
+      const x = Math.round(t * pps) + .5; g.beginPath(); g.moveTo(x, 14); g.lineTo(x, h); g.stroke();
+      const m = Math.floor(t / 60), s = t % 60; g.fillText(mode === 'tc' ? tc(t) : `${m}:${String(Math.floor(s)).padStart(2, '0')}${step < 1 && s % 1 ? '.5' : ''}`, x + 4, 8);
+    }
   }
-  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120]; const step = steps.find(s => s * pps >= 64) || 300;
-  for (let t = 0; t * pps < w; t += step) {
-    const x = Math.round(t * pps) + .5; g.beginPath(); g.moveTo(x, 14); g.lineTo(x, h); g.stroke();
-    const m = Math.floor(t / 60), s = t % 60; g.fillText(`${m}:${String(Math.floor(s)).padStart(2, '0')}${step < 1 && s % 1 ? '.5' : ''}`, x + 4, 8);
-  }
+  drawMarkersOnRuler(g, w);
 }
+function clockMode() { const m = UI.clock || (UI.bars ? 'bars' : 'time'); if (m === 'bars' && !beatLen()) return 'time'; return m; }
 function fmtBars(t) { const bl = beatLen(); const beats = Math.floor(t / bl + 1e-6); const frac = t / bl - beats; return `${Math.floor(beats / 4) + 1}.${(beats % 4) + 1}.${Math.floor(frac * 4) + 1}`; }
 function renderLoop() {
   const b = $('#loopBand'); if (!P.loop) { b.hidden = true; return; }
@@ -866,7 +877,9 @@ function renderLoop() {
 }
 function drawPlayhead(p = curPos()) {
   $('#playhead').style.left = (headW() + p * pps) + 'px';
-  $('#clock').innerHTML = UI.bars && beatLen() ? `${fmtBars(p)} <span>/ ${fmtBars(projectEnd())}</span>` : `${fmtT(p)} <span>/ ${fmtT(projectEnd())}</span>`;
+  const fm = clockMode() === 'bars' ? fmtBars : clockMode() === 'tc' ? tc : fmtT;
+  $('#clock').innerHTML = `${fm(p)} <span>/ ${fm(projectEnd())}</span>`;
+  if (P.video) { $('#vtc').textContent = tc(p); if (!playing) scrubVideo(p); }
 }
 function followPlayhead(p) {
   const tl = $('#tl'), x = headW() + p * pps;
@@ -943,6 +956,7 @@ function renderInspector() {
       <div class="field"><label for="fRev">Reverb</label><input id="fRev" type="range" min="0" max="100" value="${fx.reverb}" data-lx="reverb"><output>${fx.reverb}%</output></div>
       <div class="btnrow"><button class="btn sm" data-act="fxreset">Reset effects</button><button class="btn sm" data-act="closegaps">Close gaps</button></div></div>`;
   }
+  html += sceneSectionHTML();
   const keyOpts = ['<option value="">Not set</option>'].concat([0, 1].flatMap(mi => KEYS.map((k, i) => { const mode = mi ? 'minor' : 'major'; const sel = P.key && P.key.key === i && P.key.mode === mode; return `<option value="${i}|${mode}" ${sel ? 'selected' : ''}>${k} ${mode}</option>`; }))).join('');
   html += `<div class="sec"><h3>Mix</h3>
       <div class="field"><label for="pBpm">Tempo</label><input id="pBpm" type="number" min="40" max="240" step="0.1" value="${P.bpm || ''}" placeholder="auto" data-pf="bpm" style="height:30px;border-radius:7px;border:1px solid var(--line);background:var(--raise);padding:0 6px;width:100%"><output>BPM</output></div>
@@ -952,7 +966,7 @@ function renderInspector() {
       <label class="chk"><input type="checkbox" data-pc="snap" ${P.snap ? 'checked' : ''}> Snap to the beat</label>
       <label class="chk"><input type="checkbox" data-pc="polish" ${P.polish ? 'checked' : ''}> Polish: make it louder and more even</label>
       <div class="btnrow"><button class="btn sm" data-act="evenout">Even out volume between parts</button></div></div>
-    <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
+    <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>M</kbd> hit point · <kbd>V</kbd> video<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
   const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; ins.scrollTop = st; applyTips();
   if (c) { $('#cFxIn').value = c.fxIn || 'fade'; $('#cFxOut').value = c.fxOut || 'fade'; }
 }
@@ -1003,13 +1017,13 @@ $('#strips').addEventListener('click', e => {
 });
 function renderLibrary() {
   const q = $('#libQ').value.trim().toLowerCase();
-  const list = lib.filter(t => !t.stemOf && (!q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q)));
+  const list = lib.filter(t => !t.stemOf && t.kind !== 'video' && (!q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q)));
   $('#lib').innerHTML = list.length ? list.map(t => { const a = ana[t.id];
     const info = a ? `<span class="bk">${a.bpm ? a.bpm + ' BPM' : 'no steady beat'} · ${esc(a.keyName)}</span>` : analyzing.has(t.id) ? '<span class="bk busy">finding tempo and key…</span>' : '';
     return `<li draggable="true" data-drag="${t.id}" title="Drag onto a track"><span class="grip" aria-hidden="true">⋮⋮</span><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span class="li-sub">${esc(t.artist || 'Unknown artist')} · ${fmtT(t.duration).replace(/\.\d$/, '')}</span>${info}</div>
       <div class="acts"><button data-add="append" data-id="${t.id}" title="Add to the end of the selected track">Add</button><button data-add="layer" data-id="${t.id}" title="Put it on a new track at the playhead">New track</button></div></li>`; }).join('')
     : `<li class="empty-note">${lib.length ? 'No songs match your search.' : 'No songs yet. Press “Import audio files” above, or drop music files onto the timeline.'}</li>`;
-  const n = lib.filter(t => !t.stemOf).length; $('#libCount').textContent = `${n} song${n === 1 ? '' : 's'}`;
+  const n = lib.filter(t => !t.stemOf && t.kind !== 'video').length; $('#libCount').textContent = `${n} song${n === 1 ? '' : 's'}`;
 }
 function renderTransport() {
   $('#playIcon').setAttribute('href', playing ? '#i-pause' : '#i-play');
@@ -1017,7 +1031,7 @@ function renderTransport() {
   $('#undoBtn').disabled = !hist.length; $('#redoBtn').disabled = !fut.length;
   $('#saveBtn').disabled = !P.clips.length || !!rec;
   $('#loopBtn').setAttribute('aria-pressed', !!(P.loopOn && P.loop));
-  $('#metroBtn').setAttribute('aria-pressed', !!P.metro); $('#mixBtn').setAttribute('aria-pressed', !!UI.mixer);
+  $('#metroBtn').setAttribute('aria-pressed', !!P.metro); $('#vidBtn').setAttribute('aria-pressed', !!(P.video && UI.vwin)); $('#mixBtn').setAttribute('aria-pressed', !!UI.mixer);
   $('#libBtn').setAttribute('aria-pressed', UI.lib); $('#inspBtn').setAttribute('aria-pressed', UI.insp);
   $$('.hsz button').forEach(b => b.setAttribute('aria-pressed', b.dataset.h === UI.h));
   $('#snapBtn').setAttribute('aria-pressed', P.snap);
@@ -1043,9 +1057,18 @@ const acts = {
   matchtempo: matchTempo, matchkey: matchKey, evenout: evenOut, stems: splitStems,
   import: () => $('#fileIn').click(),
   mutepart: toggleMutePart,
+  video: () => { if (!P.video) return $('#vidIn').click(); UI.vwin = !UI.vwin; saveUI(); renderVideoWindow(); renderTransport(); if (UI.vwin) { ensureVideoEl().then(() => scrubVideo(curPos())); } },
+  vwclose: force => { UI.vwin = force === true ? !UI.vwin : false; saveUI(); renderVideoWindow(); renderTransport(); if (UI.vwin) ensureVideoEl().then(() => scrubVideo(curPos())); },
+  vfull: () => { const w = $('#vwin'); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); else w.requestFullscreen?.().catch(() => toast('Full screen is not available here.')); },
+  addhit: () => addMarker(curPos()), findcuts: findCuts, savehits: exportMarkers, loadhits: () => $('#mkIn').click(), fit: fitBetween,
+  actionzero: () => { if (!P.video) return; const d = P.video.at; P.video.at = 0; P.clips.forEach(c => { c.at = Math.max(0, c.at - d); }); (P.markers || []).forEach(m => { if (m.vt == null) m.t = Math.max(0, m.t - d); }); commit('The action now starts at 0:00. Export can put the lead-in back.'); },
   togglemixer: () => { UI.mixer = !UI.mixer; saveUI(); renderMixer(); renderTransport(); requestAnimationFrame(() => { renderLanes(); }); },
   metro: () => { if (!P.bpm) return toast('Set the mix tempo first: add a song with a beat, or type a tempo under Mix on the right.', 5000); P.metro = !P.metro; quietCommit(); renderTransport(); restartIfPlaying(); toast(P.metro ? `Click on at ${P.bpm} BPM` : 'Click off'); },
-  rulermode: () => { if (!beatLen()) return toast('Bars need a tempo. Add a song with a beat, or type a tempo under Mix on the right.', 5000); UI.bars = !UI.bars; saveUI(); renderRuler(); drawPlayhead(); toast(UI.bars ? 'Showing bars and beats' : 'Showing minutes and seconds'); },
+  rulermode: () => {
+    const modes = ['time'].concat(beatLen() ? ['bars'] : [], ['tc']); const i = modes.indexOf(clockMode());
+    UI.clock = modes[(i + 1) % modes.length]; UI.bars = UI.clock === 'bars'; saveUI(); renderRuler(); drawPlayhead();
+    toast({ time: 'Showing minutes and seconds', bars: 'Showing bars and beats', tc: `Showing film time (hours:minutes:seconds:frames at ${fpsOf()} fps)` }[UI.clock]);
+  },
   showlib: () => { if (!UI.lib) { UI.lib = true; applyUI(); } const f = $('.lib li[draggable]'); if (f) { f.animate([{ outline: '2px solid #F5A524' }, { outline: '2px solid transparent' }], { duration: 1400 }); } else toast('Your library is empty. Use “Import songs” first.'); },
   togglelib: () => { UI.lib = !UI.lib; applyUI(); },
   toggleinsp: () => { UI.insp = !UI.insp; applyUI(); },
@@ -1090,6 +1113,14 @@ $('#tl').addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefau
 
 $('#ruler').addEventListener('pointerdown', e => {
   const cv = e.currentTarget; try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  { const x = e.clientX - cv.getBoundingClientRect().left, hit = visibleMarkers().find(m => Math.abs(mT(m) * pps - x) <= 6);
+    if (hit) {
+      selMarker = hit.id; let moved = false; const x0 = e.clientX; if (P.video && !UI.vwin) { UI.vwin = true; saveUI(); renderVideoWindow(); }
+      const mv = ev => { if (Math.abs(ev.clientX - x0) > 2) moved = true; if (!moved) return; const t = Math.max(0, (ev.clientX - cv.getBoundingClientRect().left) / pps); setMarkerTime(hit, t); renderMarkerLines(); renderRuler(); scrubVideo(t); $('#vtc').textContent = tc(t); };
+      cv.addEventListener('pointermove', mv);
+      cv.addEventListener('pointerup', () => { cv.removeEventListener('pointermove', mv); if (moved) commit(`Moved “${hit.label}” to ${P.video ? tc(mT(hit)) : fmtT(mT(hit))}`); else { seek(mT(hit)); renderMarkerLines(); renderRuler(); renderInspector(); } }, { once: true });
+      return;
+    } }
   const bl = beatLen();
   const at = ev => { let t = Math.max(0, (ev.clientX - cv.getBoundingClientRect().left) / pps); if (P.snap && bl) t = Math.round(t / bl) * bl; return t; };
   const x0 = e.clientX, a0 = at(e); let dragging = false;
@@ -1160,7 +1191,7 @@ $('#lanes').addEventListener('pointerdown', e => {
   try { el.setPointerCapture(e.pointerId); } catch (_) {}
   el.style.cursor = mode === 'move' ? 'grabbing' : 'ew-resize';
   const x0 = e.clientX, o = { at: c.at, start: c.start, end: c.end }, r = c.rate || 1, srcDur = bufs.get(c.trackId)?.buffer.duration ?? c.end;
-  const edges = P.clips.filter(x => x !== c).flatMap(x => [x.at, x.at + dur(x)]).concat([0, playhead]);
+  const edges = P.clips.filter(x => x !== c).flatMap(x => [x.at, x.at + dur(x)]).concat([0, playhead], visibleMarkers().map(mT));
   const snapEdge = t => { for (const s of edges) if (Math.abs(s - t) * pps < 8) return s; return null; };
   const bl = beatLen();
   let moved = false;
@@ -1295,12 +1326,14 @@ document.addEventListener('keydown', e => {
   else if (mod || e.altKey) return;
   else if (k === ' ') { e.preventDefault(); acts.play(); }
   else if (k === 'Home') { e.preventDefault(); seek(0); }
-  else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); if (tlSel) removeStretch(); else if (selClip) deleteClip(); }
+  else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); if (tlSel) removeStretch(); else if (selMarker && !selClip) deleteMarker(selMarker); else if (selClip) deleteClip(); }
   else if (kl === 'k') keepStretch();
   else if (kl === 's') splitHere();
   else if (kl === 'l') acts.looptoggle();
   else if (kl === 'b') acts.togglelib();
   else if (kl === 'x') acts.togglemixer();
+  else if (kl === 'm') addMarker(curPos());
+  else if (kl === 'v') acts.video();
   else if (kl === 'c') acts.metro();
   else if (kl === 'i') acts.toggleinsp();
   else if (k === '+' || k === '=') zoom(1.5);
@@ -1384,7 +1417,9 @@ $('#tl').addEventListener('drop', async e => {
   e.preventDefault(); hideDrop();
   const tg = dropTarget(e), id = dragTrack; dragTrack = null;
   if (id) return placeSongs([id], tg);
-  const ids = await importDropped([...e.dataTransfer.files]);
+  const all = [...e.dataTransfer.files], vf = all.find(f => (f.type || '').startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(f.name));
+  if (vf) { await importVideo(vf); if (all.length === 1) return; }
+  const ids = await importDropped(all.filter(f => f !== vf));
   if (ids.length) placeSongs(ids, tg);
 });
 $('#fileIn').addEventListener('change', async e => {
@@ -1440,6 +1475,7 @@ $('#lanes').addEventListener('contextmenu', e => {
     { label: 'Repeat ×2', act: () => loopClip(2) },
     { label: 'Repeat ×4', act: () => loopClip(4) },
     { sep: 1 },
+    { label: 'Fit between hit points…', act: fitBetween, disabled: visibleMarkers().length < 2 },
     { label: 'Split into vocals, drums, bass…', act: splitStems, disabled: !!(t && t.stemOf) },
     { label: 'Match mix tempo', act: matchTempo, disabled: !(P.bpm && a && a.bpm) },
     { label: 'Match mix key', act: matchKey, disabled: !(P.key && a && a.key != null) },
@@ -1448,6 +1484,307 @@ $('#lanes').addEventListener('contextmenu', e => {
     { label: 'Paste at the playhead   Ctrl+V', act: pasteAtPlayhead, disabled: !clipboard },
     { label: 'Delete part', danger: 1, act: deleteClip },
   ]);
+});
+
+
+/* ---------- scoring to picture: scene video, hit points, timecode ---------- */
+const vid = $('#vid');
+let vidFor = null, vidUrl = null, vidSrcNode = null, vidGain = null, selMarker = null;
+const thumbs = new Map();
+const once = (el, ev, ms = 8000) => new Promise(r => { let done = false; const f = () => { if (!done) { done = true; r(true); } }; el.addEventListener(ev, f, { once: true }); setTimeout(() => { if (!done) { done = true; r(false); } }, ms); });
+const vLen = () => P.video ? P.video.end - P.video.start : 0;
+const videoEnd = () => P.video ? P.video.at + vLen() : 0;
+function videoTimeAt(t) { const v = P.video; if (!v) return null; const u = t - v.at; return u < 0 || u > vLen() ? null : v.start + u; }
+const fpsOf = () => (P.video && P.video.fps) || 24;
+function tc(t) {
+  const fps = fpsOf(), nom = Math.round(fps), neg = t < 0; let f = Math.floor(Math.abs(t) * fps + 1e-6);
+  const ff = f % nom; f = Math.floor(f / nom); const ss = f % 60; f = Math.floor(f / 60); const mm = f % 60, hh = Math.floor(f / 60);
+  const p = n => String(n).padStart(2, '0'); return `${neg ? '-' : ''}${p(hh)}:${p(mm)}:${p(ss)}:${p(ff)}`;
+}
+function parseTime(s) {
+  if (typeof s === 'number') return s;
+  s = String(s || '').trim(); let m;
+  if ((m = s.match(/^(\d+):(\d+):(\d+)[:;.](\d+)$/)) && s.split(/[:;]/).length === 4) return (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4]) / Math.round(fpsOf());
+  if ((m = s.match(/^(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/))) return (+(m[1] || 0)) * 3600 + (+m[2]) * 60 + parseFloat(m[3]);
+  const n = parseFloat(s); return isFinite(n) ? n : null;
+}
+async function mediaDuration(el) {
+  if (!(await once(el, 'loadedmetadata'))) return 0;
+  if (isFinite(el.duration) && el.duration > 0) return el.duration;
+  el.currentTime = 1e9; await once(el, 'timeupdate', 4000); const d = el.duration; el.currentTime = 0; return isFinite(d) ? d : 0;
+}
+async function ensureVideoEl() {
+  const v = P.video;
+  if (!v) { if (vidFor) { vid.pause(); vid.removeAttribute('src'); vid.load(); vidFor = null; } return false; }
+  if (vidFor === v.id) return true;
+  const t = libTrack(v.id); if (!t) return false;
+  if (vidUrl) URL.revokeObjectURL(vidUrl);
+  vidUrl = URL.createObjectURL(t.blob); vid.src = vidUrl; vidFor = v.id;
+  await once(vid, 'loadedmetadata');
+  if (!vidSrcNode) { try { vidSrcNode = ctx.createMediaElementSource(vid); vidGain = ctx.createGain(); vidSrcNode.connect(vidGain); vidGain.connect(ctx.destination); } catch (e) {} }
+  applySceneVol(); return true;
+}
+function applySceneVol() { if (vidGain) vidGain.gain.value = P.video ? (P.video.vol ?? 0.8) : 0; }
+function syncVideo() {
+  if (!P.video || !vidFor) return;
+  const vt = videoTimeAt(curPos());
+  $('#vwOut').hidden = vt != null;
+  if (vt == null) { if (!vid.paused) vid.pause(); return; }
+  // show the frame you are hearing: allow for the delay before sound reaches the speakers
+  const target = vt - (ctx.outputLatency || ctx.baseLatency || 0), diff = vid.currentTime - target;
+  if (Math.abs(diff) > 0.25) { vid.currentTime = Math.max(0, target); vid.playbackRate = 1; }
+  else vid.playbackRate = Math.abs(diff) > 0.02 ? clamp(1 - diff * 0.8, 0.9, 1.1) : 1;   // nudge gently instead of jumping
+  if (vid.paused) vid.play().catch(() => {});
+}
+function scrubVideo(t) {
+  if (!P.video || !vidFor) return;
+  const vt = videoTimeAt(t); $('#vwOut').hidden = vt != null; if (vt == null) return;
+  if (!vid.paused) vid.pause();
+  if (Math.abs(vid.currentTime - vt) > 0.5 / fpsOf()) vid.currentTime = vt;
+}
+async function importVideo(file) {
+  if (P.video && !(await ask({ title: 'Replace the scene video?', text: 'The new video takes the place of the current one. Hit points on the old video are removed. You can undo this.', ok: 'Replace video' }))) return;
+  busy('Adding the scene video…');
+  try {
+    const probe = document.createElement('video'); probe.muted = true; probe.preload = 'metadata';
+    const url = URL.createObjectURL(file); probe.src = url;
+    const d = await mediaDuration(probe); URL.revokeObjectURL(url); probe.removeAttribute('src');
+    if (!d) { busy(null); return toast('This browser can’t open that video. MP4 (H.264) or WebM videos work best.', 6000); }
+    const t = { id: uid(), kind: 'video', name: file.name, size: file.size, type: file.type || 'video/mp4', title: file.name.replace(/\.[^.]+$/, ''), artist: '', album: 'Scenes', track: 0, duration: d, added: Date.now(), blob: file, art: null };
+    await req('tracks', 'readwrite', o => o.put(t)); await loadLibrary();
+    P.video = { id: t.id, at: 0, start: 0, end: d, dur: d, fps: 24, vol: 0.8 };
+    P.markers = (P.markers || []).filter(m => m.vt == null);
+    UI.vwin = true; saveUI();
+    vidFor = null; await ensureVideoEl(); scrubVideo(playhead);
+    commit(`Added the scene “${t.title}” (${fmtT(d)}). Press M to mark a hit point at the playhead.`);
+    makeThumbs();
+  } catch (err) { toast('Could not add the video: ' + (err.message || 'your browser may be out of storage space'), 6000); }
+  finally { busy(null); }
+}
+async function makeThumbs() {
+  const v = P.video; if (!v || thumbs.has(v.id)) return;
+  const t = libTrack(v.id); if (!t) return;
+  const el = document.createElement('video'); el.muted = true; el.preload = 'auto';
+  const url = URL.createObjectURL(t.blob); el.src = url; await once(el, 'loadedmetadata');
+  const step = Math.max(0.5, v.dur / 160), frames = [], entry = { step, frames }; thumbs.set(v.id, entry);
+  for (let s = 0; s < v.dur; s += step) {
+    el.currentTime = Math.min(s + 0.01, v.dur - 0.05); if (!(await once(el, 'seeked', 3000))) break;
+    const c = document.createElement('canvas'); c.width = 96; c.height = 54; c.getContext('2d').drawImage(el, 0, 0, 96, 54); frames.push(c);
+    if (frames.length % 20 === 0) drawFilmstrip();
+  }
+  URL.revokeObjectURL(url); el.removeAttribute('src'); drawFilmstrip();
+}
+function drawFilmstrip() {
+  const v = P.video, cv = $('#vrow canvas'); if (!v || !cv) return;
+  const r = dpr(), w = Math.max(1, vLen() * pps), h = cv.clientHeight || 48;
+  cv.width = Math.min(16000, Math.round(w * r)); cv.height = Math.round(h * r);
+  const g = cv.getContext('2d'); g.setTransform(cv.width / w, 0, 0, r, 0, 0); g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
+  const th = thumbs.get(v.id); if (!th || !th.frames.length) return;
+  const fw = h * 16 / 9;
+  for (let x = 0; x < w; x += fw) { const i = Math.min(th.frames.length - 1, Math.round((v.start + x / pps) / th.step)); g.drawImage(th.frames[i], x, 0, fw, h); }
+}
+function renderVideoRow() {
+  const row = $('#vrow'), v = P.video;
+  if (!v) { row.hidden = true; row.innerHTML = ''; return; }
+  const t = libTrack(v.id), name = t ? t.title : 'Missing video';
+  row.hidden = false;
+  row.innerHTML = `<div class="vlane"><div class="lane-head"><div class="lh-top"><span class="vname">Picture</span>
+      <button class="tg" data-vact="win" title="Show or hide the video window (V)">▣</button><button class="tg x" data-vact="remove" title="Remove the scene video">✕</button></div>
+      <div class="lh-row vsub"><span title="${esc(name)}">${esc(name)} · ${fpsOf()} fps</span></div></div>
+    <div class="lane-body" style="width:${timelineWidth()}px"><div class="vclip" style="left:${v.at * pps}px;width:${Math.max(4, vLen() * pps)}px">
+      <span class="vcl" title="Drag to move the scene · ${esc(name)}">${esc(name)}${v.start > 0.05 ? ` · lead-in trimmed ${v.start.toFixed(1)}s` : ''}</span><canvas></canvas>
+      <span class="h l" data-vh="l" title="Drag to trim the start (for example a countdown lead-in)"></span><span class="h r" data-vh="r" title="Drag to trim the end"></span></div></div></div>`;
+  drawFilmstrip();
+}
+$('#vrow').addEventListener('click', e => {
+  const b = e.target.closest('[data-vact]'); if (!b) return;
+  if (b.dataset.vact === 'win') acts.vwclose(true);
+  if (b.dataset.vact === 'remove') removeVideo();
+});
+$('#vrow').addEventListener('pointerdown', e => {
+  const v = P.video; if (!v || e.button !== 0) return;
+  const body = e.target.closest('.lane-body'); if (!body) return;
+  const vh = e.target.dataset.vh, isBar = e.target.classList.contains('vcl');
+  if (!vh && !isBar) { seek(clamp((e.clientX - body.getBoundingClientRect().left) / pps, 0, projectEnd())); return; }
+  const el = e.target.closest('.vclip'); try { el.setPointerCapture(e.pointerId); } catch (_) {}
+  const x0 = e.clientX, o = { at: v.at, start: v.start, end: v.end }; let moved = false;
+  const mv = ev => {
+    const dt = (ev.clientX - x0) / pps; if (Math.abs(ev.clientX - x0) > 3) moved = true; if (!moved) return;
+    if (isBar) v.at = Math.max(0, o.at + dt);
+    else if (vh === 'l') { const ns = clamp(o.start + dt, 0, o.end - 0.5); v.start = ns; v.at = Math.max(0, o.at + (ns - o.start)); }
+    else v.end = clamp(o.end + dt, o.start + 0.5, v.dur);
+    el.style.left = v.at * pps + 'px'; el.style.width = vLen() * pps + 'px';
+    renderMarkerLines(); scrubVideo(vh === 'r' ? videoEnd() - 0.01 : v.at + 0.001);
+  };
+  el.addEventListener('pointermove', mv);
+  el.addEventListener('pointerup', () => { el.removeEventListener('pointermove', mv); if (moved) commit(); }, { once: true });
+});
+async function removeVideo() {
+  if (!P.video) return;
+  if (!(await ask({ title: 'Remove the scene video?', text: 'The video leaves this mix, and so do its hit points. The music stays. You can undo this.', ok: 'Remove video', danger: true }))) return;
+  P.video = null; P.markers = (P.markers || []).filter(m => m.vt == null); UI.vwin = false; saveUI(); await ensureVideoEl(); commit('Scene video removed');
+}
+/* hit points (markers) */
+const mT = m => (m.vt != null && P.video) ? P.video.at + (m.vt - P.video.start) : m.t;
+const visibleMarkers = () => (P.markers || []).filter(m => m.vt == null || (P.video && m.vt >= P.video.start - 1e-3 && m.vt <= P.video.end + 1e-3)).sort((a, b) => mT(a) - mT(b));
+function addMarker(t = playhead, label) {
+  P.markers = P.markers || [];
+  const vt = videoTimeAt(t), n = P.markers.length + 1;
+  const m = vt != null ? { id: uid(), vt, label: label || `Hit ${n}` } : { id: uid(), t, label: label || `Marker ${n}` };
+  P.markers.push(m); selMarker = m.id; commit(`Added “${m.label}” at ${P.video ? tc(t) : fmtT(t)}. Drag it on the ruler, or rename it under Scene on the right.`);
+}
+function setMarkerTime(m, t) { const vt = videoTimeAt(t); if (m.vt != null && vt != null) m.vt = vt; else { delete m.vt; m.t = Math.max(0, t); } }
+function deleteMarker(id) { P.markers = (P.markers || []).filter(m => m.id !== id); if (selMarker === id) selMarker = null; commit('Hit point removed'); }
+function renderMarkerLines() {
+  $('#mklines').innerHTML = visibleMarkers().map(m => `<div class="mk${m.id === selMarker ? ' sel' : ''}" style="left:${headW() + mT(m) * pps}px"></div>`).join('');
+}
+function drawMarkersOnRuler(g, w) {
+  const ms = visibleMarkers(); let lastX = -1e9;
+  g.font = `600 10px ${css('--f-ui')}`; g.textBaseline = 'middle';
+  for (const m of ms) {
+    const x = mT(m) * pps; if (x < -10 || x > w + 10) continue;
+    g.fillStyle = m.id === selMarker ? '#E9E3FF' : '#A78BFA';
+    g.beginPath(); g.moveTo(x - 5, 0); g.lineTo(x + 5, 0); g.lineTo(x, 8); g.closePath(); g.fill();
+    if (x - lastX > 60) { g.fillText(m.label.slice(0, 18), x + 7, 22); lastX = x; }
+  }
+}
+async function findCuts() {
+  const v = P.video; if (!v) return toast('Add a scene video first.');
+  const t = libTrack(v.id); if (!t) return;
+  const el = document.createElement('video'); el.muted = true; el.preload = 'auto';
+  const url = URL.createObjectURL(t.blob); el.src = url; await once(el, 'loadedmetadata');
+  const W = 48, H = 27, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d', { willReadFrequently: true });
+  const grab = async s => { el.currentTime = s; if (!(await once(el, 'seeked', 3000))) return null; g.drawImage(el, 0, 0, W, H); const d = g.getImageData(0, 0, W, H).data, cur = new Float32Array(W * H); for (let i = 0; i < cur.length; i++) cur[i] = d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11; return cur; };
+  const diffOf = (a, b) => { let sum = 0; for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]); return sum / a.length; };
+  const step = 0.2, diffs = []; let prev = null, cancelled = false;
+  busy('Looking for cuts in the scene…', { progress: 0, onCancel: () => { cancelled = true; } });
+  for (let s = v.start; s < v.end && !cancelled; s += step) {
+    const cur = await grab(s); if (!cur) continue;
+    if (prev) diffs.push({ s0: s - step, s, diff: diffOf(cur, prev) });
+    prev = cur;
+    busy('Looking for cuts in the scene…', { progress: (s - v.start) / vLen() * 0.85, onCancel: () => { cancelled = true; } });
+  }
+  if (cancelled) { URL.revokeObjectURL(url); el.removeAttribute('src'); busy(null); return toast('Stopped looking for cuts.'); }
+  if (diffs.length < 3) { URL.revokeObjectURL(url); el.removeAttribute('src'); busy(null); return toast('The scene is too short to look for cuts.'); }
+  // A cut is a frame change much bigger than what is normal around it (camera moves, actors walking)
+  const med = a => { const b = [...a].sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : 0; };
+  const found = [];
+  diffs.forEach((x, i) => {
+    const around = diffs.slice(Math.max(0, i - 5), i + 6).filter((_, j) => j !== Math.min(i, 5)).map(y => y.diff);
+    const local = med(around);
+    if (x.diff >= Math.max(12, 3 * local + 4) && x.diff >= (diffs[i - 1]?.diff ?? 0) && x.diff >= (diffs[i + 1]?.diff ?? 0)) found.push(x);
+  });
+  // Narrow each cut down to the exact frame
+  const cuts = [], frame = 1 / fpsOf();
+  for (const [k, x] of found.entries()) {
+    busy(`Pinning cut ${k + 1} of ${found.length} to the exact frame…`, { progress: 0.85 + 0.15 * k / found.length });
+    let a = x.s0, b = x.s; const A = await grab(a), B = await grab(b);
+    if (A && B) for (let n = 0; n < 8 && b - a > frame; n++) { const m = (a + b) / 2, M = await grab(m); if (!M) break; if (diffOf(M, A) < diffOf(M, B)) a = m; else b = m; }
+    if (!cuts.length || b - cuts[cuts.length - 1] > 0.5) cuts.push(b);
+  }
+  URL.revokeObjectURL(url); el.removeAttribute('src'); busy(null);
+  P.markers = P.markers || [];
+  let added = 0;
+  for (const s of cuts) {
+    if (P.markers.some(m => m.vt != null && Math.abs(m.vt - s) < 0.25)) continue;
+    P.markers.push({ id: uid(), vt: s, label: `Cut ${++added}` });
+  }
+  commit(added ? `Found ${added} cut${added === 1 ? '' : 's'} and marked ${added === 1 ? 'it' : 'them'} as hit points.` : 'No clear cuts found in this scene.');
+}
+function exportMarkers() {
+  const ms = visibleMarkers(); if (!ms.length) return toast('There are no hit points to save yet. Press M to add one.');
+  const t = P.video && libTrack(P.video.id);
+  const data = { app: 'Mixtape Studio', scene: t ? t.title : P.name, fps: fpsOf(), hitPoints: ms.map(m => ({ label: m.label, seconds: +(m.vt != null ? m.vt : m.t).toFixed(3), timecode: tc(m.vt != null ? m.vt : m.t), relativeTo: m.vt != null ? 'video' : 'timeline' })) };
+  downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), safeName((t ? t.title : P.name) + ' hit points') + '.json');
+  toast(`Saved ${ms.length} hit point${ms.length === 1 ? '' : 's'} as a file.`);
+}
+async function importMarkers(file) {
+  const text = await file.text(); let rows = [];
+  try {
+    const j = JSON.parse(text), list = Array.isArray(j) ? j : (j.hitPoints || j.markers || j.cues || []);
+    if (j.fps && P.video) P.video.fps = +j.fps || P.video.fps;
+    rows = list.map(x => ({ time: x.seconds ?? x.time ?? x.t ?? x.timecode ?? x.tc, label: x.label ?? x.name ?? x.title }));
+  } catch (e) {
+    rows = text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !/^time\b/i.test(l)).map(l => { const i = l.search(/[,\t;]/); return i < 0 ? { time: l } : { time: l.slice(0, i), label: l.slice(i + 1).replace(/^["']|["']$/g, '').trim() }; });
+  }
+  P.markers = P.markers || []; let n = 0, skipped = 0;
+  for (const r of rows) {
+    const s = parseTime(r.time); if (s == null || s < 0) continue;
+    const label = String(r.label || `Hit ${P.markers.length + 1}`).slice(0, 60);
+    if (P.markers.some(m => Math.abs((P.video ? m.vt : m.t) - s) <= 1 / fpsOf() + 1e-6)) { skipped++; continue; }
+    P.markers.push(P.video ? { id: uid(), vt: s, label } : { id: uid(), t: s, label }); n++;
+  }
+  commit(n || skipped ? `Imported ${n} hit point${n === 1 ? '' : 's'}${skipped ? ` (${skipped} already there)` : ''}.` : 'No times found in that file. Use JSON, or CSV lines like “00:00:12:05, Door slams”.');
+}
+async function fitBetween() {
+  const c = clipById(selClip); if (!c) return;
+  const ms = visibleMarkers(); if (ms.length < 2) return toast('Add at least two hit points first (press M at the playhead).', 4500);
+  const startDef = ms.findIndex(m => mT(m) >= c.at - 0.3), i0 = startDef < 0 ? 0 : Math.min(startDef, ms.length - 2);
+  const opt = sel => ms.map((m, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(m.label)} · ${P.video ? tc(mT(m)) : fmtT(mT(m))}</option>`).join('');
+  const ch = await ask({ title: 'Fit between hit points', ok: 'Fit part', text: 'The part is moved to the first hit point and sped up or slowed down, keeping its pitch, so it ends exactly on the second.',
+    extra: `<fieldset class="opts"><legend>Start on</legend><select name="a">${opt(i0)}</select></fieldset><fieldset class="opts"><legend>End on</legend><select name="b">${opt(i0 + 1)}</select></fieldset>`,
+    read: f => { const a = +f.querySelector('[name=a]').value, b = +f.querySelector('[name=b]').value; if (mT(ms[b]) <= mT(ms[a]) + 0.1) { toast('The end hit point must come after the start.'); return undefined; } return { a, b }; } });
+  if (!ch) return;
+  const A = mT(ms[ch.a]), B = mT(ms[ch.b]), want = (c.end - c.start) / (B - A), r = clamp(want, 0.5, 2);
+  c.at = A; c.keepPitch = true; c.rate = r;
+  try { await ensureProc(c); } catch (e) { return toast('Could not change the speed: ' + e.message, 5000); }
+  commit(r === want ? `Fitted between “${ms[ch.a].label}” and “${ms[ch.b].label}” (speed ${Math.round(r * 100)}%)` : `That needed ${Math.round(want * 100)}% speed, so it was limited to ${Math.round(r * 100)}%. Trim the part first for an exact fit.`);
+}
+/* the floating video window: drag by its title bar, double-click for full screen */
+(() => {
+  const w = $('#vwin');
+  $('#vwHead').addEventListener('pointerdown', e => {
+    if (e.target.closest('button')) return;
+    const r = w.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY - r.top;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    const mv = ev => { w.style.left = clamp(ev.clientX - x0, 0, innerWidth - 120) + 'px'; w.style.top = clamp(ev.clientY - y0, 0, innerHeight - 60) + 'px'; w.style.right = 'auto'; w.style.bottom = 'auto'; };
+    e.currentTarget.addEventListener('pointermove', mv);
+    e.currentTarget.addEventListener('pointerup', () => e.currentTarget.removeEventListener('pointermove', mv), { once: true });
+  });
+  vid.addEventListener('dblclick', () => acts.vfull());
+})();
+function renderVideoWindow() {
+  const show = !!(P.video && UI.vwin); $('#vwin').hidden = !show;
+  const t = P.video && libTrack(P.video.id); $('#vwName').textContent = t ? t.title : '';
+}
+$('#vidIn').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) importVideo(f); });
+$('#mkIn').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) importMarkers(f); });
+
+
+function sceneSectionHTML() {
+  const v = P.video, ms = visibleMarkers();
+  const fpsOpts = [23.976, 24, 25, 29.97, 30].map(f => `<option value="${f}" ${v && +v.fps === f ? 'selected' : ''}>${f} fps</option>`).join('');
+  const hits = ms.length ? `<div class="hits">${ms.map(m => `<div class="hit${m.id === selMarker ? ' sel' : ''}" data-mk="${m.id}">
+      <span class="tc" data-mkgo title="Jump here">${v ? tc(mT(m)) : fmtT(mT(m))}</span><input value="${esc(m.label)}" data-mkname aria-label="Hit point name" maxlength="60">
+      <button data-mkgo title="Jump to this hit point">▶</button><button data-mkdel title="Remove this hit point">✕</button></div>`).join('')}</div>`
+    : `<p class="hint">No hit points yet. Press <b>M</b> at the moment the music should land, for example a cut or a door slam.</p>`;
+  if (!v) return `<div class="sec"><h3>Scene</h3><p class="hint">Score to picture: add the scene's video, then mark hit points the music must land on.</p>
+    <div class="btnrow"><button class="btn sm primary" data-act="video">Add a scene video</button><button class="btn sm" data-act="loadhits">Import hit points</button></div>${ms.length ? hits : ''}</div>`;
+  const t = libTrack(v.id);
+  return `<div class="sec"><h3>Scene</h3>
+    <dl class="kv"><dt>Video</dt><dd>${esc(t ? t.title : 'Missing')}</dd><dt>Length</dt><dd>${tc(vLen())}</dd>${v.start > 0.05 ? `<dt>Lead-in</dt><dd>${v.start.toFixed(2)}s trimmed</dd>` : ''}</dl>
+    <div class="field"><label for="sFps">Frame rate</label><select id="sFps" data-sf="fps">${fpsOpts}</select><span></span></div>
+    <div class="field"><label for="sVol">Scene sound</label><input id="sVol" type="range" min="0" max="100" value="${Math.round((v.vol ?? 0.8) * 100)}" data-sf="vol"><output>${Math.round((v.vol ?? 0.8) * 100)}%</output></div>
+    <div class="btnrow"><button class="btn sm" data-act="video">${UI.vwin ? 'Hide video' : 'Show video'}</button><button class="btn sm" data-act="actionzero" ${v.at > 0.01 ? '' : 'disabled'}>Start the action at 0:00</button></div>
+    <p class="sub">Hit points</p>${hits}
+    <div class="btnrow"><button class="btn sm primary" data-act="addhit">+ Hit point (M)</button><button class="btn sm" data-act="findcuts">Find cuts</button></div>
+    <div class="btnrow"><button class="btn sm" data-act="loadhits">Import hit points</button><button class="btn sm" data-act="savehits" ${ms.length ? '' : 'disabled'}>Save hit points</button></div>
+    <p class="hint">Right-click a part and choose “Fit between hit points” to make it start and end exactly on two of them. Scene sound plays while you work but is never mixed into exports.</p></div>`;
+}
+$('#insp').addEventListener('click', e => {
+  const row = e.target.closest('[data-mk]'); if (!row) return;
+  const m = (P.markers || []).find(x => x.id === row.dataset.mk); if (!m) return;
+  if (e.target.closest('[data-mkdel]')) return deleteMarker(m.id);
+  if (e.target.closest('[data-mkgo]')) { selMarker = m.id; seek(mT(m)); renderMarkerLines(); renderRuler(); renderInspector(); }
+});
+$('#insp').addEventListener('change', e => {
+  if (e.target.matches('[data-mkname]')) { const m = (P.markers || []).find(x => x.id === e.target.closest('[data-mk]').dataset.mk); if (m) { m.label = e.target.value.trim() || m.label; quietCommit(); renderRuler(); } return; }
+  if (e.target.dataset.sf === 'fps' && P.video) { P.video.fps = +e.target.value; commit(`Frame rate set to ${P.video.fps} fps`); }
+  if (e.target.dataset.sf === 'vol' && P.video) quietCommit();
+});
+$('#insp').addEventListener('input', e => {
+  if (e.target.dataset.sf === 'vol' && P.video) { P.video.vol = e.target.value / 100; e.target.nextElementSibling.textContent = e.target.value + '%'; applySceneVol(); }
 });
 
 /* ---------- dialogs ---------- */
@@ -1499,7 +1836,8 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
   await loadLibrary(); renderLibrary();
   const missing = P.clips.filter(c => !libTrack(c.trackId));
   if (missing.length) { P.clips = P.clips.filter(c => libTrack(c.trackId)); last = JSON.stringify(P); persist(); toast(`${missing.length} part${missing.length === 1 ? ' was' : 's were'} removed because the song is no longer in your library.`, 5000); }
-  if (!P.clips.length) UI.lib = true;
+  if (!P.clips.length && !P.video) UI.lib = true;
+  if (P.video) { ensureVideoEl().then(() => { scrubVideo(playhead); makeThumbs(); }); }
   $('.work').classList.toggle('nolib', !UI.lib); $('.work').classList.toggle('noinsp', !UI.insp);
   renderAll();
   for (const id of new Set(P.clips.map(c => c.trackId))) { try { await ensureBuf(id); renderLanes(); drawEditor(); } catch (e) {} }
