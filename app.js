@@ -405,6 +405,65 @@ function probeDuration(blob) {
     a.preload = 'metadata'; a.onloadedmetadata = () => fin(a.duration); a.onerror = () => fin(0); setTimeout(() => fin(0), 8000); a.src = u; });
 }
 let importing = false;
+/* ---------- moving songs between phone and laptop ----------
+   One file carries the songs, their details and artwork, favourites and playlists. Send it to the
+   other device however suits (USB cable, Google Drive, a message to yourself) and open it there.
+   Nothing goes through any server. */
+const PACK_MAGIC = 'MIXTAPE-PACK-1\n';
+function download(blob, name) { const u = URL.createObjectURL(blob), a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 60000); }
+function buildPack() {
+  const ids = songIds(), keep = new Set(ids);
+  const head = { format: 'mixtape-pack/1', exportedAt: new Date().toISOString(), tracks: [],
+    lists: lists.map(l => ({ name: l.name, ids: l.ids.filter(id => keep.has(id)) })), favs: [...favs].filter(id => keep.has(id)) };
+  const parts = []; let off = 0;
+  for (const id of ids) {
+    const { blob, art, buf, ...meta } = tracks.get(id);
+    head.tracks.push({ ...meta, offset: off, bytes: blob.size, artType: art ? art.type : null, artBytes: art ? art.size : 0 });
+    parts.push(blob); off += blob.size; if (art) { parts.push(art); off += art.size; }
+  }
+  const hb = new TextEncoder().encode(JSON.stringify(head)), len = new Uint8Array(4); new DataView(len.buffer).setUint32(0, hb.length);
+  return { blob: new Blob([PACK_MAGIC, len, hb, ...parts], { type: 'application/octet-stream' }), count: ids.length };
+}
+function exportPack() {
+  if (!songIds().length) return toast('There are no songs to move yet.');
+  const { blob, count } = buildPack();
+  download(blob, `Mixtape songs ${new Date().toISOString().slice(0, 10)}.mixtape`);
+  toast(`Put ${plural(count, 'song')} (${Math.max(1, Math.round(blob.size / 1048576))} MB) into one file. Send it to your other device and open it there with Move songs → Get songs from a file.`, 8000);
+}
+async function importPack(file) {
+  const ml = PACK_MAGIC.length;
+  if (await file.slice(0, ml).text() !== PACK_MAGIC) return toast('That file is not a Mixtape songs file.', 4000);
+  const hl = new DataView(await file.slice(ml, ml + 4).arrayBuffer()).getUint32(0), base = ml + 4 + hl;
+  let head; try { head = JSON.parse(await file.slice(ml + 4, base).text()); } catch (e) { return toast('That songs file is damaged.', 4000); }
+  if (head.format !== 'mixtape-pack/1') return toast('That songs file was made by a newer Mixtape. Update this one first.', 5000);
+  const have = new Map([...tracks.values()].map(t => [t.name + '|' + t.size, t.id])), idMap = new Map();
+  let added = 0, dup = 0, lost = 0;
+  for (const [i, m] of head.tracks.entries()) {
+    toast(`Getting ${i + 1} of ${head.tracks.length}: ${m.title}`, 0);
+    if (tracks.has(m.id)) { idMap.set(m.id, m.id); dup++; continue; }
+    const key = m.name + '|' + m.size; if (have.has(key)) { idMap.set(m.id, have.get(key)); dup++; continue; }
+    const s = base + m.offset;
+    // copied out of the file, so the songs stay after the file is deleted
+    const blob = new Blob([await file.slice(s, s + m.bytes).arrayBuffer()], { type: m.type || '' });
+    const art = m.artBytes ? new Blob([await file.slice(s + m.bytes, s + m.bytes + m.artBytes).arrayBuffer()], { type: m.artType || 'image/jpeg' }) : null;
+    const { offset, bytes, artType, artBytes, ...meta } = m; void offset; void bytes; void artType; void artBytes;
+    const t = { ...meta, blob, art };
+    tracks.set(t.id, t); idMap.set(m.id, t.id);
+    try { await saveTrack(t); added++; } catch (e) { lost++; }
+    if (i % 5 === 0) { renderNav(); renderList(); }
+  }
+  for (const pl of head.lists || []) { // playlists join up by name
+    let l = lists.find(x => x.name === pl.name); if (!l) { l = { id: uid(), name: pl.name, ids: [], created: Date.now() }; lists.push(l); }
+    for (const id of pl.ids.map(x => idMap.get(x)).filter(Boolean)) if (!l.ids.includes(id)) l.ids.push(id);
+    await dbPut('lists', l).catch(() => {});
+  }
+  for (const id of head.favs || []) { const n = idMap.get(id); if (n) favs.add(n); }
+  await dbPut('lists', { id: '__fav', ids: [...favs] }).catch(() => {});
+  render(); updateStorage();
+  try { new BroadcastChannel('mixtape').postMessage({ type: 'library' }); } catch (e) {}
+  const bits = [`Added ${plural(added, 'song')}`]; if (dup) bits.push(`${dup} you already had`); if ((head.lists || []).length) bits.push('playlists joined up'); if (lost) bits.push(`${lost} could not be saved on this device`);
+  toast(bits.join(' · '), lost ? 7000 : 4500);
+}
 async function importFiles(list) {
   const files = [...list].filter(isAudio);
   if (!files.length) { toast('No songs found there. Pick audio files such as MP3, M4A, WAV, OGG or FLAC.', 4500); return []; }
@@ -528,6 +587,7 @@ const acts = {
   sleep: b => openMenu(b, [{ lbl: 'Stop the music after' }, ...[15, 30, 45, 60].map(m => ({ label: `${m} minutes`, act: () => setSleep(m) })),
     { label: 'End of this song', act: () => setSleep('end') }, ...((sleepAt || sleepEnd) ? [{ sep: 1 }, { label: 'Turn off timer', act: () => { setSleep(0); toast('Sleep timer off'); } }] : [])]),
   add: () => $('#fileIn').click(), folder: () => $('#dirIn').click(),
+  move: b => openMenu(b, [{ lbl: 'Move songs to your other device' }, { label: 'Put all my songs into one file', act: exportPack }, { label: 'Get songs from a file…', act: () => $('#packIn').click() }]),
   demo: () => importFiles([new File([makeDemoWav()], 'Example - Demo tune.wav', { type: 'audio/wav' })]),
   playall: () => playFrom(visibleIds()), shuffleall: () => { if (!S.shuffle) { S.shuffle = true; renderTransport(); } playFrom(visibleIds()); },
   newlist: () => newList(), view: b => setView(b.dataset.type === 'list' ? { type: 'list', id: b.dataset.id } : { type: b.dataset.type }),
@@ -559,6 +619,7 @@ $$('.vol').forEach(r => r.addEventListener('input', () => setVol(+r.value)));
 $('#q').addEventListener('input', e => { query = e.target.value.trim(); renderList(); });
 $('#sort').addEventListener('change', e => { S.sort = e.target.value; save(); renderList(); });
 $('#fileIn').addEventListener('change', e => { const fs = [...e.target.files]; e.target.value = ''; importFiles(fs); });
+$('#packIn').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) importPack(f); });
 $('#dirIn').addEventListener('change', e => { const fs = [...e.target.files]; e.target.value = ''; importFiles(fs); });
 if (matchMedia('(pointer:coarse)').matches) $('#folderBtn').hidden = true;
 
@@ -567,7 +628,12 @@ const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
 window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; drop.hidden = false; });
 window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
 window.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) drop.hidden = true; });
-window.addEventListener('drop', async e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; drop.hidden = true; importFiles(await filesFromDrop(e.dataTransfer)); });
+window.addEventListener('drop', async e => {
+  if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; drop.hidden = true;
+  const fs = await filesFromDrop(e.dataTransfer), packs = fs.filter(f => /\.mixtape$/i.test(f.name));
+  for (const p of packs) await importPack(p);
+  const rest = fs.filter(f => !packs.includes(f)); if (rest.length) importFiles(rest);
+});
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { if (!modal.hidden) return closeModal(null); if (!menu.hidden) return closeMenu(); if (!$('#now').hidden) return closeNow(); }
@@ -617,6 +683,7 @@ try {
 
 /* "Open with Mixtape" from Windows: add the song(s) to the library if new, then play */
 let bootDone; const bootReady = new Promise(r => { bootDone = r; });
+if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__player = { buildPack, importPack, get tracks() { return tracks; }, get lists() { return lists; }, get favs() { return favs; }, songIds };
 async function openLaunched(files) {
   await bootReady;
   const audio = files.filter(isAudio);

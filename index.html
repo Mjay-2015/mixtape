@@ -254,9 +254,11 @@ select.sel{height:40px;border-radius:10px;border:1px solid var(--line);backgroun
       <a class="btn" id="studioBtn" href="studio.html" title="Cut and mix your songs">Studio</a>
       <button class="btn primary" data-act="add"><svg class="i"><use href="#i-plus"/></svg>Add songs</button>
       <button class="btn" id="folderBtn" data-act="folder" title="Add every song in a folder"><svg class="i"><use href="#i-folder"/></svg><span class="lbltxt">Add folder</span></button>
+      <button class="btn" data-act="move" title="Move your songs and playlists between your phone and laptop">Move songs</button>
     </div>
     <input id="fileIn" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac" multiple hidden>
     <input id="dirIn" type="file" webkitdirectory multiple hidden>
+    <input id="packIn" type="file" accept=".mixtape,application/octet-stream" hidden>
   </div>
   <nav class="wrap chips" id="nav" aria-label="Library views"></nav>
 </header>

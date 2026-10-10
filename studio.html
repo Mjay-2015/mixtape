@@ -137,6 +137,16 @@ button,input,select{font:inherit;color:inherit}
 .tg.on.m{background:#E8B931;border-color:#E8B931;color:#1A1405}
 .tg.on.s{background:#4F8EF7;border-color:#4F8EF7;color:#06101F}
 .tg.x{border-color:transparent;background:transparent}
+.tg.a.has{color:#4FD1A5;border-color:#4FD1A5}
+.tg.on.a{background:#4FD1A5;border-color:#4FD1A5;color:#05140F}
+.auto-row select{grid-column:2;min-width:0;background:var(--bg);color:var(--ink);border:1px solid var(--line-2);border-radius:4px;font:11px var(--f-mono);padding:1px 2px}
+.auto-row .mini{width:26px;height:20px;border:1px solid var(--line-2);border-radius:4px;background:var(--raise);color:var(--muted);cursor:pointer;padding:0}
+svg.auto{position:absolute;left:0;top:0;z-index:3;cursor:crosshair;background:rgba(6,9,12,.35);touch-action:none}
+svg.auto polyline{fill:none;stroke:#4FD1A5;stroke-width:2}
+svg.auto .unity{stroke:rgba(79,209,165,.25);stroke-dasharray:3 4}
+svg.auto circle{fill:#0D0F13;stroke:#4FD1A5;stroke-width:2;cursor:grab}
+svg.auto circle:hover{fill:#4FD1A5}
+svg.auto .aread{fill:#4FD1A5;font:600 11px var(--f-mono);pointer-events:none}
 .tg.x:hover{color:var(--danger)}
 .lh-row{display:grid;grid-template-columns:26px minmax(0,1fr) 34px;align-items:center;gap:6px;font:10px var(--f-mono);color:var(--dim)}
 .lh-row output{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
@@ -379,7 +389,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <button class="ib tgl2" data-act="togglelib" id="libBtn" aria-pressed="true" aria-label="Show or hide the library" title="Show or hide the library (B)"><svg class="i"><use href="#i-pleft"/></svg></button>
       <button class="ib tgl2" data-act="toggleinsp" id="inspBtn" aria-pressed="true" aria-label="Show or hide the settings" title="Show or hide the settings (I)"><svg class="i"><use href="#i-pright"/></svg></button>
       <div class="sepv"></div>
-      <button class="btn sm ghost" data-act="newproj" title="Clear the timeline and start a new mix">New mix</button>
+      <button class="btn sm ghost" data-act="projects" id="projBtn" title="Your mixes: open another, start a new one, duplicate or delete">Mixes ▾</button>
       <button class="btn primary" data-act="save" id="saveBtn" title="Save your mix as a song in your library or as a file"><svg class="i"><use href="#i-export"/></svg>Export</button>
     </div>
   </header>
@@ -391,7 +401,9 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
         <button class="btn primary block" data-act="import" title="Pick music files from this computer"><svg class="i"><use href="#i-import"/></svg>Import audio files</button>
         <input id="vidIn" type="file" accept="video/*,.mp4,.webm,.mov,.m4v" hidden>
         <input id="mkIn" type="file" accept=".json,.csv,.txt,application/json,text/csv" hidden>
+        <button class="btn block" data-act="instmenu" title="Write music with notes: import a MIDI file or start an instrument track">Instruments &amp; MIDI ▾</button>
         <input id="fileIn" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac,.aif,.aiff" multiple hidden>
+        <input id="midiIn" type="file" accept=".mid,.midi,audio/midi" hidden>
         <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="libQ" type="search" placeholder="Search your songs" aria-label="Search your songs"></label>
         <p class="libhint"><b>Drag</b> a song onto a track, or press <b>Add</b> to put it at the end of the selected track.</p>
       </div>
@@ -463,6 +475,8 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 </div>
 <div class="busy" id="busy" hidden><div class="busybox"><span id="busyText">Working…</span><div class="pbar" id="busyBar" hidden><i id="busyFill"></i></div><button class="btn sm" id="busyCancel" hidden>Cancel</button></div></div>
 <div class="toast" id="toast" role="status" hidden></div>
+<script src="dsp-shared.js"></script>
+<script src="midi.js"></script>
 <script src="studio.js"></script>
 </body>
 </html>

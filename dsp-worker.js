@@ -2,6 +2,7 @@
 // time-stretching (change speed without changing pitch). Runs off the main
 // thread so the Studio stays responsive. No outside code.
 'use strict';
+importScripts('dsp-shared.js');
 
 self.onmessage = e => {
   const m = e.data;
