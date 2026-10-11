@@ -345,6 +345,14 @@ function dupClip() {
   const c2 = { ...c, id: uid(), at: after }; P.clips.push(c2); selClip = c2.id; commit('Copied');
 }
 function deleteClip() { const c = clipById(selClip); if (!c) return; P.clips = P.clips.filter(x => x !== c); selClip = null; edSel = null; commit('Part deleted'); }
+/* Nothing you trim is lost: the whole song is still there behind the part, in the same place in time */
+function restoreWhole(c) {
+  const e = bufs.get(c.trackId); if (!e) return;
+  const r = c.rate || 1, songStartAt = c.at - c.start / r;
+  c.start = 0; c.end = e.buffer.duration; c.at = Math.max(0, songStartAt);
+  if (songStartAt < 0) c.start = -songStartAt * r;
+  commit('The whole song is back on this part. Ctrl + Z undoes it.');
+}
 function closeGaps(laneId) {
   let t = 0; for (const c of laneClips(laneId)) { if (c.at > t) c.at = t; t = Math.max(t, c.at + dur(c)); }
   commit('Gaps closed');
@@ -539,6 +547,26 @@ const midiName = c => c.name || MixtapeMIDI.INSTRUMENTS[c.inst] || 'Instrument';
 function newMidiClip(lane, at, notes, extra = {}) {
   const end = Math.max(notes.reduce((m, n) => Math.max(m, n.t + n.d), 0), P.bpm ? 16 * 60 / P.bpm : 8);
   return { id: uid(), kind: 'midi', trackId: null, lane, at, start: 0, end, gain: 1, fadeIn: 0, fadeOut: 0, rate: 1, semi: 0, keepPitch: true, fxIn: 'fade', fxOut: 'fade', inst: 'piano', notes, ...extra };
+}
+/* A short groove built from the built-in instruments, so there is something to play and try things on at once */
+function loadDemo() {
+  const bpm = 96, b = 60 / bpm, bars = 8, prog = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]], roots = [45, 41, 36, 43];
+  const notes = { drums: [], bass: [], piano: [] };
+  for (let bar = 0; bar < bars; bar++) {
+    const t0 = bar * 4 * b, ch = prog[bar % 4], root = roots[bar % 4];
+    for (let q = 0; q < 8; q++) notes.drums.push({ id: uid(), p: 42, t: t0 + q * b / 2, d: 0.05, v: q % 2 ? 70 : 95 });
+    [0, 2].forEach(q => notes.drums.push({ id: uid(), p: 36, t: t0 + q * b, d: 0.1, v: 120 }));
+    [1, 3].forEach(q => notes.drums.push({ id: uid(), p: 38, t: t0 + q * b, d: 0.1, v: 110 }));
+    [0, 1.5, 2, 3, 3.5].forEach((q, i) => notes.bass.push({ id: uid(), p: root + (i === 4 ? 12 : 0), t: t0 + q * b, d: b * 0.45, v: 100 }));
+    ch.forEach(p => notes.piano.push({ id: uid(), p, t: t0, d: b * 1.8, v: 78 }, { id: uid(), p, t: t0 + 2 * b, d: b * 1.8, v: 70 }));
+  }
+  const p = newProject(); p.name = 'Demo groove'; p.bpm = bpm; p.lanes = []; p.clips = [];
+  [['drums', 'Drums'], ['bass', 'Bass'], ['piano', 'Piano']].forEach(([inst, name], i) => {
+    const l = newLane(name, PALETTE[(i * 3) % PALETTE.length]); p.lanes.push(l);
+    p.clips.push({ ...newMidiClip(l.id, 0, notes[inst], { inst, name }), end: bars * 4 * b });
+  });
+  openProject(uid(), p);
+  toast('Demo loaded. Press Space to play it, then try dragging parts, zooming with Ctrl + scroll, or double-click a part to edit its notes.', 7000);
 }
 function newInstrumentTrack(inst = 'piano') {
   const l = newLane(MixtapeMIDI.INSTRUMENTS[inst]); P.lanes.push(l);
@@ -1067,12 +1095,13 @@ async function saveSong() {
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const dpr = () => Math.min(2, window.devicePixelRatio || 1);
 const waveColor = (h, alpha = 1) => `hsl(${h} 45% ${css('--wave-l')} / ${alpha})`;
-function drawWave(g, e, ta, tb, x0, w, h, color) {
+function drawWave(g, e, ta, tb, x0, w, h, color, amp = UI.amp || 1) {
   const { min, max, rate } = e.peaks, mid = h / 2; g.fillStyle = color;
   const span = tb - ta;
   for (let x = 0; x < w; x++) {
     const i0 = Math.floor((ta + span * x / w) * rate), i1 = Math.max(i0 + 1, Math.ceil((ta + span * (x + 1) / w) * rate));
     let lo = 0, hi = 0; for (let i = Math.max(0, i0); i < Math.min(min.length, i1); i++) { if (min[i] < lo) lo = min[i]; if (max[i] > hi) hi = max[i]; }
+    hi = Math.min(1, hi * amp); lo = Math.max(-1, lo * amp);
     g.fillRect(x0 + x, mid - hi * mid * 0.92, 1, Math.max(1, (hi - lo) * mid * 0.92));
   }
 }
@@ -1185,8 +1214,9 @@ function drawPlayhead(p = curPos()) {
   if (P.video) { $('#vtc').textContent = tc(p); if (!playing) scrubVideo(p); }
 }
 function followPlayhead(p) {
+  if (performance.now() - navAt < 4000) return;
   const tl = $('#tl'), x = headW() + p * pps;
-  if (x > tl.scrollLeft + tl.clientWidth - 40 || x < tl.scrollLeft + headW()) tl.scrollLeft = x - headW() - 40;
+  if (x > tl.scrollLeft + tl.clientWidth - 40 || x < tl.scrollLeft + headW()) { progScroll = true; tl.scrollLeft = x - headW() - 40; }
 }
 function scrollToTime(t) { const tl = $('#tl'); const x = t * pps; if (x < tl.scrollLeft || x > tl.scrollLeft + tl.clientWidth - headW() - 60) tl.scrollLeft = Math.max(0, x - 60); }
 
@@ -1249,7 +1279,7 @@ function drawEditor() {
   // overview strip: the whole song, the part in colour, a box round what is shown
   const O = s => s / D * w;
   g.fillStyle = css('--raise'); g.fillRect(0, 0, w, OV - 2);
-  drawWave(g, e, 0, D, 0, w, OV - 2, withAlpha(col, .45));
+  drawWave(g, e, 0, D, 0, w, OV - 2, withAlpha(col, .45), 1);
   g.fillStyle = withAlpha(col, .35); g.fillRect(O(c.start), 0, O(c.end) - O(c.start), OV - 2);
   g.strokeStyle = css('--ink'); g.lineWidth = 1; g.strokeRect(O(W.v0) + 0.5, 0.5, Math.max(3, O(W.v1) - O(W.v0)) - 1, OV - 3);
   $('#edZoomLbl').textContent = span >= D - 0.01 ? 'whole song' : `${span < 10 ? span.toFixed(2) : fmtT(span)} shown`;
@@ -1305,6 +1335,7 @@ function renderInspector() {
       <div class="field"><label for="pKey">Key</label><select id="pKey" data-pf="key">${keyOpts}</select><span></span></div>
       <p class="hint">Tempo and key are set from the first song you add. “Match mix tempo” and “Match mix key” bring other parts in line so they fit together.</p>
       <div class="field"><label for="xf">Join fade</label><input id="xf" type="range" min="0" max="4" step="0.1" value="${P.xfade}" data-pf="xfade"><output>${P.xfade.toFixed(1)}s</output></div>
+      <label class="chk"><input type="checkbox" data-uiset="wheelZoom" ${UI.wheelZoom !== false ? 'checked' : ''}> The mouse wheel zooms over waveforms (off: it scrolls; Ctrl + wheel always zooms)</label>
       <label class="chk"><input type="checkbox" data-pc="snap" ${P.snap ? 'checked' : ''}> Snap to the beat</label>
       <label class="chk"><input type="checkbox" data-pc="polish" ${P.polish ? 'checked' : ''}> Polish: make it louder and more even</label>
       <label class="chk"><input type="checkbox" data-pc="limit" ${P.limit.on ? 'checked' : ''}> Limiter: keep the true peak under</label>
@@ -1395,13 +1426,13 @@ function renderTransport() {
   $('#recBtn').classList.toggle('on', !!rec);
   $('#recLbl').textContent = rec ? `Stop recording ${fmtT((Date.now() - rec.began) / 1000).replace(/\.\d$/, '')}` : 'Record voice';
 }
-function renderAll() { $('#projName').value = P.name; renderLanes(); drawEditor(); renderInspector(); renderTransport(); renderMixer(); applyTips(); }
+function renderAll() { $('#projName').value = P.name; $('#ampBtn').textContent = `Wave ×${UI.amp || 1}`; renderLanes(); drawEditor(); renderInspector(); renderTransport(); renderMixer(); applyTips(); }
 
 /* ---------- interaction ---------- */
 const acts = {
   play: () => playing ? (rec ? stopRecord() : pause()) : play(), stop: () => { if (rec) return stopRecord(); pause(); seek(0); $('#tl').scrollLeft = 0; },
   undo, redo, save: saveSong, record: toggleRecord,
-  zin: () => zoom(1.5), zout: () => zoom(1 / 1.5), fit: fitZoom, zsel: zoomToSelection, shortcuts: showShortcuts, tour: () => startTour(true),
+  zin: () => { pushZoom(true); zoom(1.5); }, zout: () => { pushZoom(true); zoom(1 / 1.5); }, fit: fitZoom, zsel: zoomToSelection, zprev: prevZoom, amp: cycleAmp, demo: () => loadDemo(), shortcuts: showShortcuts, tour: () => startTour(true),
   edzin: () => edZoom(1 / 1.6), edzout: () => edZoom(1.6), edfit: () => edFit('part'), edall: () => edFit('all'),
   snap: () => { P.snap = !P.snap; if (P.snap && !P.bpm) toast('Add a song first so the Studio can find the beat.'); commit(P.snap ? 'Snapping to the beat' : 'Snap off'); },
   addlane: () => { const l = newLane(P.lanes.length + 1); P.lanes.push(l); selLane = l.id; commit('Track added'); },
@@ -1476,10 +1507,10 @@ document.addEventListener('mouseover', e => {
     else if (z.classList.contains('clip')) tip = 'Drag across the waveform to select a stretch, then Delete removes it or K keeps only it. Right-click for more.';
     else if (z.matches('svg.auto')) tip = 'Click to add a point, drag to move it, double-click to remove it.';
     else if (z.classList.contains('lane-grip')) tip = 'Drag to make this track taller or shorter.';
-    else if (z.id === 'ruler') tip = 'Click to move the playhead. Drag along the ruler to mark a loop.';
+    else if (z.id === 'ruler') tip = 'Click to move the playhead. Drag sideways to mark a loop; drag up or down to zoom.';
     else if (z.id === 'overview') tip = 'The whole mix. Drag the box to move around, drag its edges to zoom.';
-    else if (z.id === 'edWrap') tip = 'Drag to select. Ctrl + scroll (or pinch) zooms where the mouse is; scroll moves along the song. Click the strip at the top to jump.';
-    else if (z.classList.contains('lane-body')) tip = 'Click to move the playhead here. Ctrl + scroll (or pinch) zooms where the mouse is.';
+    else if (z.id === 'edWrap') tip = 'Drag to select. The wheel zooms where the mouse is; Shift + wheel moves along the song. Click the strip at the top to jump.';
+    else if (z.classList.contains('lane-body')) tip = 'Click to move the playhead here. The wheel zooms where the mouse is; Shift + wheel moves sideways; Alt + wheel makes waveforms taller.';
     else tip = z.getAttribute('title') || z.getAttribute('aria-label') || '';
   }
   bar.textContent = tip || 'Press ? to see every shortcut.';
@@ -1488,7 +1519,7 @@ function showShortcuts() {
   const g = (h, rows) => `<div class="kgroup"><h4>${h}</h4>${rows.map(([k, d]) => `<div class="krow"><span class="keys">${k.split(' ').map(x => `<kbd>${x}</kbd>`).join(' ')}</span><span>${d}</span></div>`).join('')}</div>`;
   ask({ title: 'Shortcuts', ok: 'Close', extra: `<div class="ksheet">
     ${g('Play', [['Space', 'Play or pause'], ['Home', 'Back to the start'], ['L', 'Loop on or off'], ['C', 'Click track']])}
-    ${g('See', [['Ctrl scroll', 'Zoom where the mouse is (or pinch)'], ['Shift scroll', 'Move along the timeline'], ['+ −', 'Zoom in and out'], ['Z', 'Zoom to the selection'], ['B', 'Library'], ['I', 'Settings'], ['X', 'Mixer'], ['V', 'Video window']])}
+    ${g('See', [['Wheel', 'Zoom where the mouse is, over a waveform (or pinch)'], ['Shift wheel', 'Move along the timeline'], ['Wheel on names', 'Scroll up and down the tracks'], ['+ −', 'Zoom in and out'], ['Z', 'Zoom to the selection'], ['Shift Z', 'Back to the previous zoom'], ['Alt wheel', 'Taller or shorter waveforms'], ['B', 'Library'], ['I', 'Settings'], ['X', 'Mixer'], ['V', 'Video window']])}
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>` });
@@ -1498,7 +1529,7 @@ function startTour(force) {
   if (!force && UI.toured) return;
   const steps = [
     { el: '#lib', text: 'Your songs. Press ▶ to listen, then drag one onto a track, or press Add.' },
-    { el: '#tl', text: 'The timeline. Hold Ctrl and scroll (or pinch) to zoom where the mouse is. Drag a part’s name bar to move it; drag across its waveform to select a stretch.' },
+    { el: '#tl', text: 'The timeline. Turn the mouse wheel over a waveform to zoom in and out where the mouse is; Shift + wheel moves sideways. Drag a part’s name bar to move it; drag across its waveform to select a stretch.' },
     { el: '#playBtn', text: 'Space plays and pauses. Everything you do is saved as you go, and Ctrl + Z undoes it. Press ? any time for the shortcuts.' },
   ];
   let i = 0; const tip = document.getElementById('coach');
@@ -1525,6 +1556,20 @@ function startTour(force) {
 function applyTips() { $$('[data-act]').forEach(b => { if (!b.title && TIPS[b.dataset.act]) b.title = TIPS[b.dataset.act]; }); }
 /* Zoom keeps the moment under the pointer (or the middle of the view) where it is, like Audacity */
 const PPS_MIN = 2, PPS_MAX = 800;
+const zoomHist = []; let zoomHistAt = 0;
+function pushZoom(force) {
+  const now = performance.now(); if (!force && now - zoomHistAt < 700) return; zoomHistAt = now;
+  const tl = $('#tl'), top = zoomHist[zoomHist.length - 1];
+  if (top && Math.abs(top.pps - pps) < 1e-6 && Math.abs(top.sl - tl.scrollLeft) < 2) return;
+  zoomHist.push({ pps, sl: tl.scrollLeft }); if (zoomHist.length > 40) zoomHist.shift();
+}
+function prevZoom() {
+  const z = zoomHist.pop(); if (!z) return toast('No earlier zoom to go back to.');
+  pps = z.pps; renderLanes(); drawEditor(); $('#tl').scrollLeft = z.sl; zoomHistAt = 0; syncZoomUI();
+}
+// when you are working in the timeline, playback stops dragging the view away from you for a few seconds
+let navAt = 0, progScroll = false;
+const userNav = () => { navAt = performance.now(); };
 function zoom(f, anchorT, anchorX) {
   const tl = $('#tl'), viewW = tl.clientWidth - headW(), ax = anchorX ?? viewW / 2;
   const t = anchorT ?? (tl.scrollLeft + ax) / pps;
@@ -1533,8 +1578,15 @@ function zoom(f, anchorT, anchorX) {
   tl.scrollLeft = Math.max(0, t * pps - ax);
   syncZoomUI();
 }
-function fitZoom() { const end = Math.max(projectEnd(), 20); pps = clamp(($('#tl').clientWidth - headW() - 40) / end, PPS_MIN, PPS_MAX); renderLanes(); $('#tl').scrollLeft = 0; syncZoomUI(); }
+const AMPS = [1, 2, 4, 8];
+function setAmp(a) {
+  UI.amp = clamp(a, 1, 8); saveUI(); renderLanes(); drawEditor();
+  const b = $('#ampBtn'); if (b) b.textContent = `Wave ×${UI.amp}`;
+}
+function cycleAmp() { const i = AMPS.indexOf(UI.amp || 1); setAmp(AMPS[(i + 1) % AMPS.length]); toast(UI.amp === 1 ? 'Waveforms at true size' : `Waveforms drawn ${UI.amp}× taller. The sound is unchanged.`); }
+function fitZoom() { pushZoom(true); const end = Math.max(projectEnd(), 20); pps = clamp(($('#tl').clientWidth - headW() - 40) / end, PPS_MIN, PPS_MAX); renderLanes(); $('#tl').scrollLeft = 0; syncZoomUI(); }
 function zoomToRange(a, b) {
+  pushZoom(true); userNav();
   const tl = $('#tl'), viewW = tl.clientWidth - headW();
   pps = clamp((viewW - 60) / Math.max(0.05, b - a), PPS_MIN, PPS_MAX); renderLanes(); drawEditor();
   tl.scrollLeft = Math.max(0, a * pps - 30); syncZoomUI();
@@ -1548,15 +1600,22 @@ function zoomToSelection() {
 const ppsToSlider = v => Math.round(1000 * Math.log(v / PPS_MIN) / Math.log(PPS_MAX / PPS_MIN));
 const sliderToPps = s => PPS_MIN * Math.pow(PPS_MAX / PPS_MIN, s / 1000);
 function syncZoomUI() { const s = $('#zoomSlider'); if (s) s.value = ppsToSlider(pps); drawOverview(); }
-$('#zoomSlider').addEventListener('input', e => zoom(sliderToPps(+e.target.value) / pps));
+$('#zoomSlider').addEventListener('pointerdown', () => pushZoom(true));
+$('#zoomSlider').addEventListener('input', e => { userNav(); zoom(sliderToPps(+e.target.value) / pps); });
 // Ctrl/Cmd + scroll or a trackpad pinch zooms at the pointer; Shift + scroll moves along the timeline; plain scroll moves up and down
 $('#tl').addEventListener('wheel', e => {
-  if (!(e.ctrlKey || e.metaKey)) return;
-  e.preventDefault();
+  userNav();
+  if (e.altKey && !(e.ctrlKey || e.metaKey)) { e.preventDefault(); return setAmp((UI.amp || 1) * (e.deltaY < 0 ? 2 : 0.5)); } // Alt + scroll: taller or shorter waveforms
+  // The wheel zooms over the waveforms (unless switched off in Settings); over the track names it scrolls up and down; Shift moves sideways
+  const overWave = e.target.closest && e.target.closest('.lane-body,#ruler,.vlane,#vrow') && !e.target.closest('.lane-head');
+  const zoomIt = e.ctrlKey || e.metaKey || (UI.wheelZoom !== false && overWave && !e.shiftKey && Math.abs(e.deltaY) >= Math.abs(e.deltaX));
+  if (!zoomIt) return;
+  e.preventDefault(); pushZoom();
   const r = $('#tl').getBoundingClientRect(), ax = clamp(e.clientX - r.left - headW(), 0, r.width);
   zoom(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025)), undefined, ax);
 }, { passive: false });
-$('#tl').addEventListener('scroll', () => drawOverview(), { passive: true });
+$('#tl').addEventListener('scroll', () => { if (progScroll) progScroll = false; else userNav(); drawOverview(); }, { passive: true });
+$('#lanes').addEventListener('pointerdown', userNav, true);
 /* The overview: the whole mix in one thin strip, with a box showing the part you are looking at. Drag the box to move, drag its edges to zoom. */
 function drawOverview() {
   const box = $('#overview'); if (!box) return;
@@ -1577,6 +1636,7 @@ function drawOverview() {
   box.dataset.x0 = x0; box.dataset.x1 = x1; box.dataset.end = end;
 }
 $('#overview').addEventListener('pointerdown', e => {
+  pushZoom(true); userNav();
   const box = e.currentTarget, rect = box.getBoundingClientRect(), w = rect.width, end = +box.dataset.end;
   const x0 = +box.dataset.x0, x1 = +box.dataset.x1, x = e.clientX - rect.left, tl = $('#tl');
   const mode = Math.abs(x - x0) < 6 ? 'l' : Math.abs(x - x1) < 6 ? 'r' : (x > x0 && x < x1) ? 'move' : 'jump';
@@ -1610,14 +1670,19 @@ $('#ruler').addEventListener('pointerdown', e => {
     } }
   const bl = beatLen();
   const at = ev => { let t = Math.max(0, (ev.clientX - cv.getBoundingClientRect().left) / pps); if (P.snap && bl) t = snapBeat(t); return t; };
-  const x0 = e.clientX, a0 = at(e); let dragging = false;
+  const x0 = e.clientX, y0 = e.clientY, a0 = at(e); let dragging = false, zooming = false, lastY = y0;
+  const tAt0 = (e.clientX - cv.getBoundingClientRect().left) / pps, viewX = e.clientX - $('#tl').getBoundingClientRect().left - headW();
   const mv = ev => {
+    // up or down zooms around where you grabbed; sideways marks a loop
+    if (!dragging && !zooming && Math.abs(ev.clientY - y0) > 6 && Math.abs(ev.clientY - y0) > Math.abs(ev.clientX - x0)) { zooming = true; pushZoom(true); userNav(); }
+    if (zooming) { zoom(Math.exp((ev.clientY - lastY) * 0.012), tAt0, viewX); lastY = ev.clientY; return; }
     if (!dragging && Math.abs(ev.clientX - x0) > 4) dragging = true;
     if (dragging) { P.loop = { a: Math.min(a0, at(ev)), b: Math.max(a0, at(ev)) }; P.loopOn = true; renderLoop(); renderRuler(); }
   };
   cv.addEventListener('pointermove', mv);
   cv.addEventListener('pointerup', ev => {
     cv.removeEventListener('pointermove', mv);
+    if (zooming) return;
     if (dragging && P.loop && P.loop.b - P.loop.a > 0.2) { quietCommit(); renderTransport(); restartIfPlaying(); toast(`Looping ${fmtT(P.loop.a)}–${fmtT(P.loop.b)}. Press L to turn the loop off.`, 3500); }
     else if (dragging) { P.loop = null; P.loopOn = false; renderLoop(); renderRuler(); }
     else seek((ev.clientX - cv.getBoundingClientRect().left) / pps);
@@ -1768,8 +1833,10 @@ $('#edWrap').addEventListener('wheel', e => {
   const c = clipById(selClip); if (!c || !edView || edView.midi) return;
   e.preventDefault();
   const r = e.currentTarget.getBoundingClientRect(), frac = clamp((e.clientX - r.left) / r.width, 0, 1);
-  if (e.ctrlKey || e.metaKey) return edZoom(Math.exp(e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025)), frac);
-  // plain or Shift + scroll moves along the song
+  if (e.altKey) return setAmp((UI.amp || 1) * (e.deltaY < 0 ? 2 : 0.5));
+  const sideways = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY);
+  if (e.ctrlKey || e.metaKey || (UI.wheelZoom !== false && !sideways)) return edZoom(Math.exp(e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025)), frac);
+  // Shift + scroll (or the wheel, when wheel zoom is off) moves along the song
   const span = edWin.v1 - edWin.v0, d = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * (e.deltaMode === 1 ? 16 : 1) / r.width * span;
   const v0 = clamp(edWin.v0 + d, 0, edView.D - span); edWin.v0 = v0; edWin.v1 = v0 + span; drawEditor();
 }, { passive: false });
@@ -1811,6 +1878,7 @@ $('#insp').addEventListener('change', async e => {
   if (d.pf === 'xfade') return commit();
   if (d.pf === 'bpm') { const v = parseFloat(e.target.value); P.bpm = v >= 40 && v <= 240 ? Math.round(v * 10) / 10 : null; commit(P.bpm ? `Mix tempo set to ${P.bpm} BPM` : 'Mix tempo cleared'); liveLanes(); return; }
   if (d.pf === 'key') { const [k, m] = e.target.value.split('|'); P.key = e.target.value ? { key: +k, mode: m } : null; return commit(P.key ? `Mix key set to ${keyName(P.key.key, P.key.mode)}` : 'Mix key cleared'); }
+  if (d.uiset) { UI[d.uiset] = e.target.checked; saveUI(); return toast(e.target.checked ? 'The mouse wheel now zooms over waveforms. Shift + wheel moves sideways.' : 'The mouse wheel now scrolls. Hold Ctrl to zoom.'); }
   if (d.linkset && P.link) {
     if (d.linkset === 'profile') { P.link.profileChoice = e.target.value; return commit(`Deliveries now aim at ${PROFILES[e.target.value].name}.`); }
     if (d.linkset === 'tc') { if (tcToSec(e.target.value) == null) { e.target.value = startTC(); return toast('Write the start as hh:mm:ss:ff, for example 10:00:00:00.'); } P.link.tcChoice = e.target.value.trim(); return commit(`Programme starts at ${P.link.tcChoice}.`); }
@@ -1847,7 +1915,7 @@ document.addEventListener('keydown', e => {
   else if ((k === 'Delete' || k === 'Backspace') && edOpen && edNote && clipById(selClip)?.kind === 'midi') { e.preventDefault(); const c = clipById(selClip); c.notes = c.notes.filter(n => n.id !== edNote); edNote = null; commit('Note removed'); }
   else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); if (tlSel) removeStretch(); else if (selMarker && !selClip) deleteMarker(selMarker); else if (selClip) deleteClip(); }
   else if (kl === 'k') keepStretch();
-  else if (kl === 'z' && !(e.ctrlKey || e.metaKey)) zoomToSelection();
+  else if (kl === 'z' && !(e.ctrlKey || e.metaKey)) { if (e.shiftKey) prevZoom(); else zoomToSelection(); }
   else if (kl === 's') splitHere();
   else if (kl === 'l') acts.looptoggle();
   else if (kl === 'b') acts.togglelib();
@@ -2000,6 +2068,7 @@ $('#lanes').addEventListener('contextmenu', e => {
     { label: 'Repeat ×4', act: () => loopClip(4) },
     { sep: 1 },
     { label: 'Fit between hit points…', act: fitBetween, disabled: visibleMarkers().length < 2 },
+    ...(c.kind !== 'midi' ? [{ label: 'Bring back the whole song', act: () => restoreWhole(c), disabled: !(c.start > 0.01 || c.end < ((bufs.get(c.trackId) && bufs.get(c.trackId).buffer.duration) || c.end) - 0.01) }] : []),
     { label: 'Split into vocals, drums, bass…', act: splitStems, disabled: c.kind === 'midi' || !!(t && t.stemOf) },
     ...(c.kind === 'midi' ? [{ label: 'Snap notes to 1/16', act: quantize }, { label: 'Export MIDI', act: exportMidi }] : []),
     { label: 'Match mix tempo', act: matchTempo, disabled: !(P.bpm && a && a.bpm) },
@@ -2858,7 +2927,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,

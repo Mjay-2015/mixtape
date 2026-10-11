@@ -123,6 +123,8 @@ button,input,select{font:inherit;color:inherit}
 .overview{height:26px;flex:none;background:var(--panel);border-bottom:1px solid var(--line);cursor:pointer;touch-action:none}
 .overview canvas{display:block;width:100%;height:100%}
 .zoomslider{width:110px;accent-color:var(--accent)}
+.ampbtn{margin-left:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--line-2);background:var(--raise);color:var(--muted);font:600 10px var(--f-mono);cursor:pointer;white-space:nowrap}
+.ampbtn:hover{color:var(--ink)}
 .edzoom{display:flex;align-items:center;gap:4px}
 .edzoom .zl{font:11px var(--f-mono);color:var(--muted);min-width:78px;text-align:center}
 .ruler-row{position:sticky;top:0;z-index:5;display:flex;height:30px;background:var(--panel);border-bottom:1px solid var(--line)}
@@ -409,9 +411,10 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <div class="sepv"></div>
       <button class="ib" data-act="zout" aria-label="Zoom out" title="Zoom out (−)"><svg class="i"><use href="#i-zout"/></svg></button>
       <button class="btn sm ghost" data-act="fit" title="Fit the whole mix on screen">Fit</button>
-      <input type="range" id="zoomSlider" class="zoomslider" min="0" max="1000" value="400" aria-label="Zoom" title="Zoom. Tip: hold Ctrl and scroll (or pinch) over the tracks to zoom where the mouse is.">
-      <button class="ib" data-act="zin" aria-label="Zoom in" title="Zoom in (+). Ctrl + scroll zooms where the mouse is"><svg class="i"><use href="#i-zin"/></svg></button>
+      <input type="range" id="zoomSlider" class="zoomslider" min="0" max="1000" value="400" aria-label="Zoom" title="Zoom. Tip: turn the mouse wheel over a waveform to zoom where the mouse is.">
+      <button class="ib" data-act="zin" aria-label="Zoom in" title="Zoom in (+). The mouse wheel over a waveform zooms where the mouse is"><svg class="i"><use href="#i-zin"/></svg></button>
       <button class="btn sm ghost" data-act="zsel" title="Zoom to the selected part or stretch (Z)">Zoom to selection</button>
+      <button class="ib" data-act="zprev" aria-label="Previous zoom" title="Back to the previous zoom (Shift + Z)"><svg class="i"><use href="#i-undo"/></svg></button>
       <div class="sepv"></div>
       <button class="ib tgl2" data-act="video" id="vidBtn" aria-pressed="false" aria-label="Scene video" title="Score a scene: add a video, or show and hide the video window (V)"><svg class="i"><use href="#i-film"/></svg></button>
       <button class="ib tgl2" data-act="togglemixer" id="mixBtn" aria-pressed="false" aria-label="Show or hide the mixer" title="Show or hide the mixer (X)"><svg class="i"><use href="#i-mixer"/></svg></button>
@@ -448,13 +451,14 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
           <span>Drag a song here from your library, or drop music files from your computer. Drop it where you want it to play.</span>
           <div class="starts">
             <button class="start" data-act="import"><svg class="i"><use href="#i-import"/></svg><b>Import songs</b><span>From this computer</span></button>
+            <button class="start" data-act="demo"><svg class="i"><use href="#i-play"/></svg><b>Try a demo</b><span>A short groove to play with</span></button>
             <button class="start" data-act="showlib"><svg class="i"><use href="#i-pleft"/></svg><b>Use my library</b><span>Drag a song from the list</span></button>
             <button class="start" data-act="video"><svg class="i"><use href="#i-film"/></svg><b>Score a scene</b><span>Add a video to write music to</span></button>
             <button class="start" data-act="record"><span class="recdot"></span><b>Record my voice</b><span>With a one-bar count-in</span></button>
           </div>
         </div>
         <div class="tl-inner" id="tlInner">
-          <div class="ruler-row"><div class="corner"><span class="ptitle">Tracks</span><span class="hsz" role="group" aria-label="Track height"><button data-act="lh" data-h="s" title="Small tracks">S</button><button data-act="lh" data-h="m" title="Medium tracks">M</button><button data-act="lh" data-h="l" title="Tall tracks">L</button></span></div><canvas id="ruler"></canvas></div>
+          <div class="ruler-row"><div class="corner"><span class="ptitle">Tracks</span><span class="hsz" role="group" aria-label="Track height"><button data-act="lh" data-h="s" title="Small tracks">S</button><button data-act="lh" data-h="m" title="Medium tracks">M</button><button data-act="lh" data-h="l" title="Tall tracks">L</button></span><button class="ampbtn" id="ampBtn" data-act="amp" title="Draw quiet waveforms taller (or Alt + scroll). The sound does not change.">Wave ×1</button></div><canvas id="ruler"></canvas></div>
           <div id="vrow" hidden></div>
           <div id="lanes"></div>
           <div id="mklines"></div>
@@ -467,7 +471,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 
       <div class="mixer" id="mixer" hidden aria-label="Mixer"><div class="mx-head"><span class="ed-tag">Mixer</span><span class="sp"></span><button class="ib" data-act="togglemixer" aria-label="Close the mixer" title="Close the mixer (X)"><svg class="i"><use href="#i-close"/></svg></button></div><div class="strips" id="strips"></div></div>
       <div class="editor" hidden>
-        <div class="ed-head"><span class="ed-tag">Part editor</span><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span><span class="sp"></span><span class="edzoom" role="group" aria-label="Part editor zoom"><button class="ib" data-act="edzout" aria-label="Zoom out" title="Zoom out (Ctrl + scroll)"><svg class="i"><use href="#i-zout"/></svg></button><span class="zl" id="edZoomLbl"></span><button class="ib" data-act="edzin" aria-label="Zoom in" title="Zoom in (Ctrl + scroll)"><svg class="i"><use href="#i-zin"/></svg></button><button class="btn sm ghost" data-act="edfit" title="Show just this part">Part</button><button class="btn sm ghost" data-act="edall" title="Show the whole song">Whole song</button></span><button class="ib" data-act="edclose" aria-label="Close the part editor" title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
+        <div class="ed-head"><span class="ed-tag">Part editor</span><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span><span class="sp"></span><span class="edzoom" role="group" aria-label="Part editor zoom"><button class="ib" data-act="edzout" aria-label="Zoom out" title="Zoom out (or turn the wheel over the waveform)"><svg class="i"><use href="#i-zout"/></svg></button><span class="zl" id="edZoomLbl"></span><button class="ib" data-act="edzin" aria-label="Zoom in" title="Zoom in (or turn the wheel over the waveform)"><svg class="i"><use href="#i-zin"/></svg></button><button class="btn sm ghost" data-act="edfit" title="Show just this part">Part</button><button class="btn sm ghost" data-act="edall" title="Show the whole song">Whole song</button></span><button class="ib" data-act="edclose" aria-label="Close the part editor" title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
         <div class="ed-wrap" id="edWrap">
           <canvas id="edCanvas"></canvas>
           <div class="ed-empty" id="edEmpty">Click a part on the timeline to edit it here.</div>
