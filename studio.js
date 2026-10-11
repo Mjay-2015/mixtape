@@ -836,6 +836,7 @@ function liveLanes() {
 }
 /* A click on the timeline: outside a running loop, the loop switches off so playback goes where you clicked */
 function seekClick(t) {
+  if (loopActive() && P.loopLock && (t < P.loop.a - 1e-3 || t >= P.loop.b)) { if (performance.now() - (seekClick.told || 0) > 3000) { seekClick.told = performance.now(); toast('The loop is locked, so playback stays in it. Click inside the loop, or press Lock to unlock.', 3500); } return; }
   if (loopActive() && (t < P.loop.a - 1e-3 || t >= P.loop.b)) { P.loopOn = false; quietCommit(); renderLoop(); renderRuler(); renderTransport(); toast('Loop off. Press L to turn it back on.', 2500); }
   seek(t);
 }
@@ -1356,6 +1357,7 @@ function renderInspector() {
       <div class="field"><label for="pCeil">Ceiling</label><input id="pCeil" type="range" min="-6" max="0" step="0.1" value="${P.limit.ceiling}" data-pf="ceiling" ${P.limit.on ? '' : 'disabled'}><output>${P.limit.ceiling.toFixed(1)} dBTP</output></div>
       <div class="btnrow"><button class="btn sm" data-act="evenout">Even out volume between parts</button></div></div>
     <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>M</kbd> hit point · <kbd>V</kbd> video · <kbd>T</kbd> tempo change<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
+  html = `<button class="rail" data-act="toggleinsp" title="Show the settings (I)"><span>◂</span><span class="rl">Settings</span></button><div class="insp-top"><button class="headbtn" data-act="toggleinsp" title="Fold the settings away for more room (I)">▸</button></div>` + html;
   const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; ins.scrollTop = st; applyTips();
   if (c && c.kind !== 'midi') { $('#cFxIn').value = c.fxIn || 'fade'; $('#cFxOut').value = c.fxOut || 'fade'; }
 }
@@ -1432,6 +1434,7 @@ function renderTransport() {
   $('#undoBtn').disabled = !hist.length; $('#redoBtn').disabled = !fut.length;
   $('#saveBtn').disabled = !P.clips.length || !!rec;
   $('#loopBtn').setAttribute('aria-pressed', !!(P.loopOn && P.loop));
+  $('#loopLockBtn').setAttribute('aria-pressed', !!(P.loopLock && P.loopOn && P.loop)); $('#loopLockBtn').classList.toggle('dim', !P.loop);
   $('#metroBtn').setAttribute('aria-pressed', !!P.metro); $('#vidBtn').setAttribute('aria-pressed', !!(P.video && UI.vwin)); $('#mixBtn').setAttribute('aria-pressed', !!UI.mixer);
   $('#libBtn').setAttribute('aria-pressed', UI.lib); $('#inspBtn').setAttribute('aria-pressed', UI.insp);
   $$('.hsz button').forEach(b => b.setAttribute('aria-pressed', b.dataset.h === UI.h));
@@ -1479,6 +1482,12 @@ const acts = {
   togglelib: () => { UI.lib = !UI.lib; applyUI(); },
   toggleinsp: () => { UI.insp = !UI.insp; applyUI(); },
   lh: b => { UI.h = b.dataset.h; P.lanes.forEach(l => { l.h = null; l.folded = false; }); quietCommit(); applyUI(); },
+  looplock: () => {
+    if (!P.loop) return toast('Mark a loop first: drag along the time ruler above the tracks.', 4500);
+    P.loopLock = !P.loopLock; if (P.loopLock) P.loopOn = true;
+    quietCommit(); renderLoop(); renderRuler(); renderTransport(); restartIfPlaying();
+    toast(P.loopLock ? 'Loop locked: playback stays in it wherever you click.' : 'Loop unlocked: a click outside it turns the loop off and plays from there.', 4000);
+  },
   looptoggle: () => {
     if (!P.loop) { if (tlSel) return setLoop(tlSel.a, tlSel.b, 'Looping the selected stretch'); return toast('Drag along the time ruler above the tracks to mark the section to loop.', 4500); }
     P.loopOn = !P.loopOn; quietCommit(); renderLoop(); renderRuler(); renderTransport(); toast(P.loopOn ? 'Loop on' : 'Loop off');
