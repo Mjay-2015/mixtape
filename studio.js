@@ -134,12 +134,15 @@ const LSP = 'mixtape-studio-project-v1';
 const FX0 = () => ({ bass: 0, treble: 0, filter: 0, echo: 0, reverb: 0 });
 const PALETTE = ['#4F8EF7', '#F5A524', '#2EC4B6', '#E5649A', '#8B7CF6', '#7BC96F', '#F2734B', '#46B8E8'];
 const NAME_COLORS = { Vocals: '#E5649A', Drums: '#F5A524', Bass: '#4F8EF7', 'Other instruments': '#2EC4B6', Voice: '#8B7CF6' };
-const newLane = (n, color) => ({ id: uid(), name: typeof n === 'string' ? n : `Track ${n}`, gain: 1, pan: 0, mute: false, solo: false, fx: FX0(), auto: { show: null, vol: [], pan: [] },
+const newLane = (n, color) => ({ id: uid(), name: typeof n === 'string' ? n : `Track ${n}`, gain: 1, pan: 0, mute: false, solo: false, fx: FX0(), auto: { show: null, vol: [], pan: [] }, chain: [], type: 'track', sends: {}, out: null,
   color: color || (typeof n === 'string' ? (NAME_COLORS[n] || PALETTE[4]) : PALETTE[(n - 1) % PALETTE.length]) });
 const newProject = () => ({ name: 'My mix', lanes: [newLane(1)], clips: [], xfade: 0.5, bpm: null, key: null, snap: false, polish: false, loop: null, loopOn: false });
 function normalize(p) {
   if (!p || !p.lanes || !p.lanes.length) return newProject();
-  p.lanes.forEach((l, i) => { l.fx = { ...FX0(), ...(l.fx || {}) }; l.auto = { show: null, vol: [], pan: [], ...(l.auto || {}) }; if (!l.color) l.color = NAME_COLORS[l.name] || PALETTE[i % PALETTE.length]; });
+  p.lanes.forEach((l, i) => { l.fx = { ...FX0(), ...(l.fx || {}) }; l.auto = { show: null, vol: [], pan: [], ...(l.auto || {}) };
+    // one effect per track became a chain of effects; an older single effect moves into the chain
+    if (!Array.isArray(l.chain)) l.chain = l.tfx && l.tfx.type && l.tfx.type !== 'none' ? [{ id: uid(), on: true, amt: 0.5, mix: 0.5, ...l.tfx }] : [];
+    delete l.tfx; l.type = l.type || 'track'; l.sends = l.sends || {}; l.out = l.out || null; if (!l.color) l.color = NAME_COLORS[l.name] || PALETTE[i % PALETTE.length]; });
   p.clips.forEach(c => { if (c.rate == null) c.rate = 1; if (c.semi == null) c.semi = 0; if (c.keepPitch == null) c.keepPitch = true; c.fxIn = c.fxIn || 'fade'; c.fxOut = c.fxOut || 'fade'; });
   p.xfade = p.xfade ?? 0.5; p.snap = !!p.snap; p.polish = !!p.polish; p.bpm = p.bpm || null; p.key = p.key || null;
   p.loop = p.loop && p.loop.b > p.loop.a ? p.loop : null; p.loopOn = !!p.loopOn && !!p.loop;
@@ -391,6 +394,30 @@ function togglePin(c) {
   if (c.pin) { delete c.pin; commit('Unpinned: the part moves freely again.'); }
   else { c.pin = pinAnchor(c); commit(P.video ? `Pinned at ${tc(c.pin.vt)} on the picture. Cuts, gap-closing and repeats around it leave it there, and it moves with the picture.` : 'Pinned: edits around it leave it where it is.'); }
 }
+$('#insp').addEventListener('click', e => {
+  const dvb = e.target.closest('[data-dv]');
+  if (dvb) {
+    const box = dvb.closest('[data-dev]'), hit = box && findDev(box.dataset.dev); if (!hit) return; const { l, d } = hit, ch = l.chain, i = ch.indexOf(d), a = dvb.dataset.dv;
+    if (a === 'on') { d.on = !d.on; commit(`${FX_TYPES[d.type]} ${d.on ? 'on' : 'bypassed'}`); }
+    else if (a === 'up' && i > 0) { ch.splice(i - 1, 0, ch.splice(i, 1)[0]); commit(); }
+    else if (a === 'down' && i < ch.length - 1) { ch.splice(i + 1, 0, ch.splice(i, 1)[0]); commit(); }
+    else if (a === 'del') { l.chain = ch.filter(x => x !== d); commit(`${FX_TYPES[d.type]} removed`); }
+    renderInspector(); return;
+  }
+});
+function addGroup() {
+  const n = P.lanes.filter(x => x.type === 'group').length + 1, g = newLane(`Group ${n}`, '#9AA4B2'); g.type = 'group';
+  const sel = P.lanes.find(x => x.id === selLane && x.type === 'track'); if (sel) sel.out = g.id;
+  P.lanes.push(g); selLane = g.id;
+  commit(sel ? `Group added, and “${sel.name}” now plays through it. On other tracks, choose Output → ${g.name}.` : `Group added. On each track you want in it, choose Output → ${g.name}.`);
+}
+function addReturn(type) {
+  if (type !== 'hall' && !HAS_TONE) type = 'hall';
+  const r = newLane(type === 'hall' ? 'Reverb return' : 'Delay return', '#6FA8DC'); r.type = 'return';
+  const d = newDevice(type); d.mix = 1; d.amt = type === 'hall' ? 0.6 : 0.45; r.chain = [d];
+  P.lanes.push(r); selLane = r.id;
+  commit(`${r.name} added. Raise the “Send” slider on any track to send some of it here.`);
+}
 function closeGaps(laneId) {
   let t = 0; for (const c of laneClips(laneId)) { if (c.at > t && !c.pin) c.at = t; t = Math.max(t, c.at + dur(c)); }
   commit('Gaps closed');
@@ -470,14 +497,21 @@ function getHall(ac) {
   for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); let lp = 0; for (let i = 0; i < len; i++) { lp = lp * 0.6 + (Math.random() * 2 - 1) * 0.4; d[i] = lp * Math.pow(1 - i / len, 2.2) * (i < ac.sampleRate * 0.02 ? i / (ac.sampleRate * 0.02) : 1); } }
   return (hall = b);
 }
-const hasHall = () => P.lanes.some(l => l.tfx && l.tfx.type === 'hall');
+const laneHasFx = t => P.lanes.some(l => (l.chain || []).some(d => d.on && d.type === t));
+const hasHall = () => laneHasFx('hall');
 const echoTime = () => P.bpm ? clamp(0.75 * 60 / P.bpm, 0.08, 1.5) : 0.36;
 function setFilter(node, v) {
   if (v < 0) { node.type = 'lowpass'; node.frequency.value = 20000 * Math.pow(2, v / 100 * 9.4); node.Q.value = 0.9; }
   else if (v > 0) { node.type = 'highpass'; node.frequency.value = 20 * Math.pow(2, v / 100 * 9.4); node.Q.value = 0.9; }
   else { node.type = 'lowpass'; node.frequency.value = 22000; node.Q.value = 0.0001; }
 }
-const laneAudible = l => !l.mute && (!P.lanes.some(x => x.solo) || l.solo);
+function laneAudible(l) {
+  if (l.mute) return false;
+  if (!P.lanes.some(x => x.solo) || l.solo) return true;
+  if (l.type === 'return') return true; // shared effects keep sounding for whatever is soloed
+  if (l.type === 'group' && P.lanes.some(x => x.out === l.id && x.solo)) return true;
+  const g = l.out && P.lanes.find(x => x.id === l.out); return !!(g && g.solo);
+}
 function buildLane(ac, l, master, force) {
   const g = ac.createGain(); g.gain.value = force || laneAudible(l) ? l.gain : 0;
   const ag = ac.createGain(); // automation rides on top of the fader
@@ -487,19 +521,13 @@ function buildLane(ac, l, master, force) {
   const filt = ac.createBiquadFilter(); setFilter(filt, l.fx.filter);
   const pan = ac.createStereoPanner(); pan.pan.value = l.pan;
   g.connect(ag); ag.connect(pg); pg.connect(bass); bass.connect(treble); treble.connect(filt);
-  let tfx = null;
-  let gate = null;
-  const ft = l.tfx && l.tfx.type;
-  if (ft === 'gate') { gate = ac.createGain(); filt.connect(gate); gate.connect(pan); }
-  else if (ft === 'hall') { // a long hall: pre-delay, then a 5.5-second tail, mixed under the dry sound
-    const mix = clamp(l.tfx.mix ?? 0.4, 0, 1), dry = ac.createGain(), wet = ac.createGain(), pre = ac.createDelay(0.2), cv = ac.createConvolver();
-    dry.gain.value = 1 - mix * 0.5; wet.gain.value = mix * (0.5 + (l.tfx.amt ?? 0.5)); pre.delayTime.value = 0.03; cv.buffer = getHall(ac);
-    filt.connect(dry); dry.connect(pan); filt.connect(pre); pre.connect(cv); cv.connect(wet); wet.connect(pan);
+  // the effect chain, in order; switched-off effects are skipped
+  let node = filt; const devs = {}, toneFx = [];
+  for (const dev of (l.chain || [])) {
+    if (!dev.on) continue; let d; try { d = buildDevice(ac, dev); } catch (e) { continue; }
+    link(node, d.in); node = d.out; devs[dev.id] = d; if (d.tone) toneFx.push(d.tone);
   }
-  else {
-    if (HAS_TONE && ft && ft !== 'none') { try { tfx = makeTrackFx(toneFor(ac), l); } catch (e) { tfx = null; } }
-    if (tfx) { tconnect(filt, tfx); tfx.connect(pan); } else filt.connect(pan);
-  }
+  link(node, pan);
   const echoSend = ac.createGain(); echoSend.gain.value = l.fx.echo / 100;
   const delay = ac.createDelay(2); delay.delayTime.value = echoTime();
   const fb = ac.createGain(); fb.gain.value = 0.42; const dl = ac.createBiquadFilter(); dl.type = 'lowpass'; dl.frequency.value = 3500;
@@ -507,9 +535,9 @@ function buildLane(ac, l, master, force) {
   const revSend = ac.createGain(); revSend.gain.value = l.fx.reverb / 100 * 0.8;
   const conv = ac.createConvolver(); conv.buffer = getImpulse(ac);
   filt.connect(revSend); revSend.connect(conv); conv.connect(pan);
-  pan.connect(master);
-  const meter = ac.createAnalyser(); meter.fftSize = 512; pan.connect(meter); keepAlive(ac, meter);
-  return { g, ag, pg, bass, treble, filt, pan, echoSend, delay, revSend, meter, tfx, gate };
+  // where the lane's sound goes (the master, or a group) is wired up in buildGraph, once every lane exists
+  const meter = ac.createAnalyser(); meter.fftSize = 2048; pan.connect(meter); keepAlive(ac, meter);
+  return { g, ag, pg, bass, treble, filt, pan, echoSend, delay, revSend, meter, devs, toneFx };
 }
 function envelope(param, c, startPos, when0) {
   const d = dur(c), fi = c.fadeIn || 0, fo = effFo(c), g = c.gain ?? 1;
@@ -727,11 +755,52 @@ function makeToneInst(tctx, inst, dest) {
   if (tail) { v.connect(tail); tconnect(tail, dest); } else tconnect(v, dest);
   return { nodes, play(p, t, d, vel) { try { v.triggerAttackRelease(440 * Math.pow(2, (p - 69) / 12), Math.max(0.03, d), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} } };
 }
-/* ---- one effect per track ---- */
+/* ---- effect chains: each track runs its sound through these, top to bottom ---- */
+const FX_TYPES = { eq: 'EQ', comp: 'Compressor', distortion: 'Saturation / distortion', chorus: 'Chorus', phaser: 'Phaser', pingpong: 'Ping-pong delay', hall: 'Big reverb (hall)', gate: 'Trance gate', autofilter: 'Auto-filter sweep' };
+const EQ_DEFAULT = () => [{ t: 'hp', f: 30, on: false }, { t: 'ls', f: 120, g: 0, on: true }, { t: 'pk', f: 400, g: 0, q: 1, on: true }, { t: 'pk', f: 2500, g: 0, q: 1, on: true }, { t: 'hs', f: 8000, g: 0, on: true }, { t: 'lp', f: 18000, on: false }];
+const BAND_TYPE = { hp: 'highpass', ls: 'lowshelf', pk: 'peaking', hs: 'highshelf', lp: 'lowpass' };
+const BAND_NAME = { hp: 'Low cut', ls: 'Low shelf', pk: 'Bell', hs: 'High shelf', lp: 'High cut' };
+function newDevice(type) {
+  const d = { id: uid(), type, on: true, amt: 0.5, mix: 0.5 };
+  if (type === 'eq') d.bands = EQ_DEFAULT();
+  if (type === 'comp') Object.assign(d, { th: -18, ratio: 4, att: 10, rel: 120, knee: 6, makeup: 0, mix: 1 });
+  if (type === 'gate') Object.assign(d, { gate: 'classic', amt: 0.9 });
+  if (type === 'hall') d.mix = 0.4;
+  return d;
+}
+function setBand(n, b) { n.type = BAND_TYPE[b.t]; n.frequency.value = clamp(b.f, 20, 20000); n.Q.value = b.t === 'pk' ? clamp(b.q || 1, 0.2, 12) : 0.707; n.gain.value = b.t === 'hp' || b.t === 'lp' ? 0 : clamp(b.g || 0, -24, 24); }
+function applyComp(x, d) {
+  x.comp.threshold.value = d.th; x.comp.ratio.value = d.ratio; x.comp.attack.value = d.att / 1000; x.comp.release.value = d.rel / 1000; x.comp.knee.value = d.knee ?? 6;
+  // the browser's compressor quietly adds its own makeup gain (0.6 of what it takes off a full-scale signal); take it back out, so only our Makeup slider adds level
+  const hidden = 0.6 * Math.max(0, -d.th) * (1 - 1 / Math.max(1, d.ratio));
+  x.mk.gain.value = Math.pow(10, ((d.makeup || 0) - hidden) / 20); const m = clamp(d.mix ?? 1, 0, 1); x.dry.gain.value = 1 - m; x.wet.gain.value = m;
+}
+const link = (a, b) => (HAS_TONE ? Tone.connect(a, b) : a.connect(b));
+function buildDevice(ac, dev) {
+  if (dev.type === 'eq') {
+    const ns = dev.bands.map(b => { if (!b.on) return null; const n = ac.createBiquadFilter(); setBand(n, b); return n; });
+    // a low or high cut is two filters in a row (24 dB per octave), steeper than one
+    const chain = []; ns.forEach((n, i) => { if (!n) return; chain.push(n); if (dev.bands[i].t === 'hp' || dev.bands[i].t === 'lp') { const n2 = ac.createBiquadFilter(); setBand(n2, dev.bands[i]); chain.push(n2); ns[i] = [n, n2]; } });
+    if (!chain.length) { const p = ac.createGain(); return { in: p, out: p, eqNodes: ns }; }
+    for (let i = 1; i < chain.length; i++) chain[i - 1].connect(chain[i]);
+    return { in: chain[0], out: chain[chain.length - 1], eqNodes: ns };
+  }
+  if (dev.type === 'comp') {
+    const x = { in: ac.createGain(), out: ac.createGain(), dry: ac.createGain(), wet: ac.createGain(), mk: ac.createGain(), comp: ac.createDynamicsCompressor() };
+    x.in.connect(x.dry); x.dry.connect(x.out); x.in.connect(x.comp); x.comp.connect(x.mk); x.mk.connect(x.wet); x.wet.connect(x.out); applyComp(x, dev); return x;
+  }
+  if (dev.type === 'gate') { const g = ac.createGain(); return { in: g, out: g, gate: g }; }
+  if (dev.type === 'hall') { // pre-delay, then a 5.5-second tail under the dry sound (all wet when the mix is at 100%, as on a return)
+    const mix = clamp(dev.mix ?? 0.4, 0, 1), x = { in: ac.createGain(), out: ac.createGain() }, dry = ac.createGain(), wet = ac.createGain(), pre = ac.createDelay(0.2), cv = ac.createConvolver();
+    dry.gain.value = mix >= 0.99 ? 0 : 1 - mix * 0.5; wet.gain.value = mix * (0.5 + (dev.amt ?? 0.5)); pre.delayTime.value = 0.03; cv.buffer = getHall(ac);
+    x.in.connect(dry); dry.connect(x.out); x.in.connect(pre); pre.connect(cv); cv.connect(wet); wet.connect(x.out); return x;
+  }
+  if (HAS_TONE) { const t = makeTrackFx(toneFor(ac), dev); if (t) return { in: t, out: t, tone: t }; }
+  const p = ac.createGain(); return { in: p, out: p };
+}
 const GATES = { classic: 'x.x.xx.x.x.xx.xx', offbeat: '.x.x.x.x.x.x.x.x', stutter: 'xxx.xxx.xx.xxx.x', eighths: 'x.x.x.x.x.x.x.x.', pulse: 'xxxxxxxxxxxxxxxx' };
-const TRACK_FX = { none: 'None', gate: 'Trance gate', hall: 'Big reverb (hall)', chorus: 'Chorus', phaser: 'Phaser', pingpong: 'Ping-pong delay', distortion: 'Distortion', autofilter: 'Auto-filter sweep' };
-function makeTrackFx(tctx, l) {
-  const f = l.tfx || {}, o = { context: tctx, wet: clamp(f.mix ?? 0.5, 0, 1) }, beat = 60 / (P.bpm || 120), amt = clamp(f.amt ?? 0.5, 0, 1);
+function makeTrackFx(tctx, dev) {
+  const f = dev || {}, o = { context: tctx, wet: clamp(f.mix ?? 0.5, 0, 1) }, beat = 60 / (P.bpm || 120), amt = clamp(f.amt ?? 0.5, 0, 1);
   if (f.type === 'chorus') return new Tone.Chorus({ ...o, frequency: 0.6 + amt * 2, delayTime: 3.5, depth: 0.4 + amt * 0.6 }).start();
   if (f.type === 'phaser') return new Tone.Phaser({ ...o, frequency: 0.2 + amt * 1.5, octaves: 3, baseFrequency: 350 });
   if (f.type === 'pingpong') return new Tone.PingPongDelay({ ...o, delayTime: 0.75 * beat, feedback: 0.2 + amt * 0.5 });
@@ -1102,14 +1171,33 @@ function buildGraph(ac, startPos, when0, opts = {}) {
   }
   out.connect(ac.destination);
   const lanes = new Map();
-  for (const l of P.lanes) if (!opts.lane || l.id === opts.lane) {
-    const ln = buildLane(ac, l, master, !!opts.lane); lanes.set(l.id, ln);
+  // one track on its own (a stem) is printed through its whole path: its group and the shared effects it sends to,
+  // so the stems add up to the mix. A group on its own brings the tracks that feed it.
+  const only = opts.lane && P.lanes.find(x => x.id === opts.lane);
+  let want = P.lanes;
+  if (only) {
+    const set = new Set([only]), grp = only.out && P.lanes.find(x => x.id === only.out && x.type === 'group');
+    if (only.type === 'group') P.lanes.filter(x => x.out === only.id).forEach(x => set.add(x));
+    if (grp) set.add(grp);
+    for (const x of [...set]) for (const [rid, lv] of Object.entries(x.sends || {})) { const R = lv > 0 && P.lanes.find(y => y.id === rid && y.type === 'return'); if (R) set.add(R); }
+    want = P.lanes.filter(x => set.has(x));
+  }
+  for (const l of want) {
+    const ln = buildLane(ac, l, master, !!only && (l === only || !l.mute)); lanes.set(l.id, ln); // a muted group or return stays muted in a stem
     scheduleAuto(ln.ag.gain, l.auto.vol, startPos, when0, 1);
     if (l.auto.pan.length) scheduleAuto(ln.pan.pan, l.auto.pan, startPos, when0, l.pan);
   }
-  const srcs = [], toneNodes = [...[...lanes.values()].map(x => x.tfx).filter(Boolean)];
+  for (const l of want) {
+    const ln = lanes.get(l.id), grp = l.type !== 'group' && l.out && P.lanes.find(x => x.id === l.out && x.type === 'group');
+    ln.pan.connect(grp && lanes.get(grp.id) ? lanes.get(grp.id).g : master);
+    for (const [rid, lv] of Object.entries(l.sends || {})) { // sends after the fader, to shared effect returns
+      const R = P.lanes.find(x => x.id === rid && x.type === 'return'), rl = lanes.get(rid); if (!R || !rl || rid === l.id || !(lv > 0)) continue;
+      const s = ac.createGain(); s.gain.value = lv; ln.pan.connect(s); s.connect(rl.g);
+    }
+  }
+  const srcs = [], toneNodes = [...lanes.values()].flatMap(x => x.toneFx || []);
   const pat = { startPos, when0, upto: startPos, stopAt: Infinity, voices: new Map(), pumps: new Map(), gates: new Map() };
-  for (const l of P.lanes) { const ln = lanes.get(l.id); if (ln && ln.gate) pat.gates.set(l.id, { node: ln.gate, steps: GATES[l.tfx.gate || 'classic'] || GATES.classic, depth: clamp(l.tfx.amt ?? 0.9, 0.1, 1) }); }
+  for (const l of P.lanes) { const ln = lanes.get(l.id); if (!ln) continue; for (const dev of (l.chain || [])) { const d = ln.devs[dev.id]; if (d && d.gate) pat.gates.set(dev.id, { node: d.gate, steps: GATES[dev.gate || 'classic'] || GATES.classic, depth: clamp(dev.amt ?? 0.9, 0.1, 1) }); } }
   for (const l of P.lanes) { const ln = lanes.get(l.id); if (ln && l.pump && l.pump.on) pat.pumps.set(l.id, { pg: ln.pg, depth: clamp(l.pump.depth ?? 0.7, 0.1, 0.95), release: 0.45 * 60 / (P.bpm || 124) }); }
   for (const c of P.clips) {
     if (c.mute) continue;
@@ -1193,7 +1281,7 @@ function scheduleClicks(ac, dest, startPos, when0, until) {
   for (let t = timeAtBeat(b); t < until && out.length < 4000; b++, t = timeAtBeat(b)) out.push(clickAt(ac, dest, when0 + (t - startPos), b % 4 === 0));
   return out;
 }
-const hasTails = () => P.clips.some(c => c.fxOut === 'echo') || P.lanes.some(l => l.fx.echo > 0 || l.fx.reverb > 0 || (l.tfx && ['hall', 'pingpong'].includes(l.tfx.type)));
+const hasTails = () => P.clips.some(c => c.fxOut === 'echo') || P.lanes.some(l => l.fx.echo > 0 || l.fx.reverb > 0 || (l.chain || []).some(d => d.on && ['hall', 'pingpong'].includes(d.type)));
 
 /* ---------- playback ---------- */
 let playing = false, pos0 = 0, t0 = 0, graph = null, preview = null, tickT = null, previewT = null, pendingLoop = null;
@@ -1247,6 +1335,7 @@ function tick() {
   if (p >= projectEnd() && !rec && !loopActive()) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
   drawPlayhead(p); followPlayhead(p); if (rec || (P.tempoChanges || []).length) renderTransport(); if (P.video) syncVideo();
   if (UI.mixer) updateMeters();
+  updateDeviceMeters();
 }
 function liveLanes() {
   if (!graph) return; const now = ctx.currentTime;
@@ -1589,12 +1678,12 @@ function renderLanes() {
   $('#lanes').innerHTML = P.lanes.map(l => {
     const fxOn = Object.values(l.fx).some(v => v);
     return `
-    <div class="lane${l.id === selLane ? ' on' : ''}${l.folded ? ' folded' : ''}${l.locked ? ' locked' : ''}" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]};${!l.folded && l.h ? `height:${l.h}px` : ''}">
+    <div class="lane${l.id === selLane ? ' on' : ''}${l.folded ? ' folded' : ''}${l.locked ? ' locked' : ''}${l.type === 'group' ? ' group' : l.type === 'return' ? ' ret' : ''}" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]};${!l.folded && l.h ? `height:${l.h}px` : ''}">
       <div class="lane-head">
         <div class="lh-slim" title="${esc(l.name)}"><b>${esc(l.name.slice(0, 2))}</b><button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute ${esc(l.name)}" aria-pressed="${l.mute}">M</button><button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only ${esc(l.name)}" aria-pressed="${l.solo}">S</button><button class="tg lk${l.locked ? ' on' : ''}" data-lf="lock" title="${l.locked ? 'Unlock' : 'Lock'} ${esc(l.name)}" aria-pressed="${!!l.locked}"><svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg></button></div>
         <div class="lh-top">
           <button class="fold" data-lf="fold" aria-expanded="${!l.folded}" title="${l.folded ? 'Open this track' : 'Fold this track to a slim bar'} (Alt+click: all tracks)">${l.folded ? '▸' : '▾'}</button>
-          <input value="${esc(l.name)}" data-lf="name" aria-label="Track name" maxlength="40">
+          ${l.type === 'group' ? '<span class="ltag" title="Group track">GRP</span>' : l.type === 'return' ? '<span class="ltag" title="Effect return">RTN</span>' : l.out ? '<span class="ltag dim" title="Plays through a group">→</span>' : ''}<input value="${esc(l.name)}" data-lf="name" aria-label="Track name" maxlength="40">
           <button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute this track" aria-pressed="${l.mute}">M</button>
           <button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only this track" aria-pressed="${l.solo}">S</button>
           <button class="tg a${l.auto.show ? ' on' : ''}${l.auto.vol.length || l.auto.pan.length ? ' has' : ''}" data-lf="auto" title="Automation: draw how the volume or pan changes over time" aria-pressed="${!!l.auto.show}">A</button>
@@ -1746,6 +1835,84 @@ function drawEditor() {
   $('#edZoomLbl').textContent = span >= D - 0.01 ? 'whole song' : `${span < 10 ? span.toFixed(2) : fmtT(span)} shown`;
 }
 
+function routingHTML(l) {
+  const groups = P.lanes.filter(x => x.type === 'group' && x.id !== l.id), returns = P.lanes.filter(x => x.type === 'return' && x.id !== l.id);
+  let h = '';
+  if (l.type === 'group') { const kids = P.lanes.filter(x => x.out === l.id); h += `<p class="hint"><b>Group track.</b> ${kids.length ? `${kids.map(k => esc(k.name)).join(', ')} play${kids.length === 1 ? 's' : ''} through it` : 'No tracks play through it yet: on another track, set Output to this group'}. Its effects and volume apply to all of them together.</p>`; }
+  if (l.type === 'return') h += `<p class="hint"><b>Effect return.</b> Tracks send some of their sound here with their “Send” sliders, so one reverb or delay can be shared. Keep its effect fully wet (Mix 100%).</p>`;
+  if (l.type !== 'group' && l.type !== 'return' && groups.length) h += `<div class="field"><label for="lOut">Output</label><select id="lOut" data-lroute><option value="">Master</option>${groups.map(g => `<option value="${g.id}" ${l.out === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select><span></span></div>`;
+  if (l.type !== 'return') for (const R of returns) { const v = Math.round(((l.sends || {})[R.id] || 0) * 100); h += `<div class="field"><label for="snd${R.id}">Send</label><input id="snd${R.id}" type="range" min="0" max="100" value="${v}" data-lsend="${R.id}" title="How much of this track goes to ${esc(R.name)}"><output>${v}% → ${esc(R.name)}</output></div>`; }
+  return h;
+}
+function chainHTML(l) {
+  const ch = l.chain || [], n = ch.length;
+  const pct = x => Math.round((x ?? 0.5) * 100);
+  const sl = (d, k, label, min, max, step, val, fmt) => `<div class="field"><label>${label}</label><input type="range" min="${min}" max="${max}" step="${step}" value="${val}" data-dvp="${k}"><output>${fmt(val)}</output></div>`;
+  const body = d => {
+    if (d.type === 'eq') return `<canvas class="eqcv" data-eq="${d.id}" aria-label="EQ curve"></canvas><p class="hint eqread" data-eqread="${d.id}">Drag a dot: left and right moves it, up and down boosts or cuts. Turn the wheel on a dot to make a bell narrower or wider. Double-click a dot to switch it on or off.</p>`;
+    if (d.type === 'comp') return sl(d, 'th', 'Threshold', -60, 0, 1, d.th, v => `${v} dB`) + sl(d, 'ratio', 'Ratio', 1, 20, 0.5, d.ratio, v => `${v}:1`) + sl(d, 'att', 'Attack', 0.5, 100, 0.5, d.att, v => `${v} ms`) + sl(d, 'rel', 'Release', 20, 1000, 5, d.rel, v => `${v} ms`) + sl(d, 'makeup', 'Makeup', 0, 24, 0.5, d.makeup, v => `+${v} dB`) + sl(d, 'mix', 'Mix', 0, 100, 1, pct(d.mix), v => `${v}%`)
+      + `<div class="field"><label>Squeeze</label><div class="gr" title="How much the compressor is turning the sound down right now"><i data-gr="${d.id}"></i></div><output data-grv="${d.id}">0 dB</output></div>`;
+    if (d.type === 'gate') return `<div class="field"><label>Rhythm</label><select data-dvp="gate">${Object.keys(GATES).map(k => `<option value="${k}" ${(d.gate || 'classic') === k ? 'selected' : ''}>${k[0].toUpperCase() + k.slice(1)} · ${GATES[k].replace(/x/g, '■').replace(/\./g, '·')}</option>`).join('')}</select><span></span></div>` + sl(d, 'amt', 'Depth', 0, 100, 1, pct(d.amt), v => `${v}%`);
+    return sl(d, 'amt', 'Amount', 0, 100, 1, pct(d.amt), v => `${v}%`) + sl(d, 'mix', 'Mix', 0, 100, 1, pct(d.mix), v => `${v}%`);
+  };
+  return `<p class="sub">Effects <span class="hint" style="font-weight:400">· the sound runs through them from top to bottom</span></p>
+    ${ch.map((d, i) => `<div class="dev${d.on ? '' : ' off'}" data-dev="${d.id}"><div class="dev-h"><button class="dvon" data-dv="on" aria-pressed="${d.on}" title="${d.on ? 'Switch off (bypass)' : 'Switch on'}">${d.on ? '●' : '○'}</button><b>${FX_TYPES[d.type] || d.type}</b><span class="sp"></span><button data-dv="up" ${i ? '' : 'disabled'} title="Move up">↑</button><button data-dv="down" ${i < n - 1 ? '' : 'disabled'} title="Move down">↓</button><button data-dv="del" title="Remove">✕</button></div>${d.on ? body(d) : ''}</div>`).join('')}
+    <select class="addfx" data-dvadd aria-label="Add an effect"><option value="">+ Add an effect…</option>${Object.entries(FX_TYPES).filter(([k]) => HAS_TONE || ['eq', 'comp', 'gate', 'hall'].includes(k)).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>`;
+}
+/* ---- the EQ: draw the curve over the track's live spectrum, and drag its dots ---- */
+const eqX = (f, w) => Math.log(f / 20) / Math.log(1000) * w, eqF = (x, w) => 20 * Math.pow(1000, clamp(x / w, 0, 1));
+const EQG = 18, eqY = (g, h) => h / 2 - g / EQG * (h / 2 - 8), eqG = (y, h) => clamp((h / 2 - y) / (h / 2 - 8) * EQG, -EQG, EQG);
+function findDev(id) { for (const l of P.lanes) { const d = (l.chain || []).find(x => x.id === id); if (d) return { l, d }; } return null; }
+function bandPos(b, w, h) { return [eqX(b.f, w), b.t === 'hp' || b.t === 'lp' ? eqY(0, h) : eqY(b.g || 0, h)]; }
+function drawEQ(cv) {
+  const hit = findDev(cv.dataset.eq); if (!hit) return; const { l, d } = hit;
+  const r = dpr(), w = cv.clientWidth || 260, h = cv.clientHeight || 130; cv.width = Math.round(w * r); cv.height = Math.round(h * r);
+  const g = cv.getContext('2d'); g.setTransform(r, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
+  g.fillStyle = css('--bg'); g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(255,255,255,.07)'; g.lineWidth = 1; g.fillStyle = css('--dim'); g.font = `9px ${css('--f-mono')}`;
+  for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000]) { const x = Math.round(eqX(f, w)) + .5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); g.fillText(f >= 1000 ? f / 1000 + 'k' : String(f), x + 2, h - 3); }
+  for (const db of [-12, -6, 0, 6, 12]) { const y = Math.round(eqY(db, h)) + .5; g.strokeStyle = db ? 'rgba(255,255,255,.06)' : 'rgba(255,255,255,.18)'; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+  // the track's sound right now, behind the curve
+  const ln = graph && graph.lanes.get(l.id);
+  if (playing && ln) { const an = ln.meter, bins = new Float32Array(an.frequencyBinCount); an.getFloatFrequencyData(bins); const ny = ctx.sampleRate / 2;
+    g.beginPath(); g.moveTo(0, h); for (let x = 0; x <= w; x += 2) { const f = eqF(x, w), i = Math.min(bins.length - 1, Math.round(f / ny * bins.length)); const v = clamp((bins[i] + 100) / 80, 0, 1); g.lineTo(x, h - v * h * 0.9); } g.lineTo(w, h); g.closePath(); g.fillStyle = withAlpha(l.color || PALETTE[0], 0.22); g.fill(); }
+  // the curve
+  const N = 160, freqs = new Float32Array(N), mag = new Float32Array(N), tmp = new Float32Array(N), ph = new Float32Array(N);
+  for (let i = 0; i < N; i++) freqs[i] = eqF(i / (N - 1) * w, w);
+  for (const b of d.bands) { if (!b.on) continue; const reps = b.t === 'hp' || b.t === 'lp' ? 2 : 1; const n = ctx.createBiquadFilter(); setBand(n, b); n.getFrequencyResponse(freqs, tmp, ph); for (let i = 0; i < N; i++) mag[i] += reps * 20 * Math.log10(tmp[i] + 1e-9); }
+  g.beginPath(); for (let i = 0; i < N; i++) { const x = i / (N - 1) * w, y = eqY(clamp(mag[i], -EQG - 6, EQG + 6), h); i ? g.lineTo(x, y) : g.moveTo(x, y); }
+  g.strokeStyle = css('--accent'); g.lineWidth = 2; g.stroke();
+  d.bands.forEach((b, i) => { const [x, y] = bandPos(b, w, h); g.beginPath(); g.arc(x, y, i === +cv.dataset.sel ? 6 : 5, 0, Math.PI * 2); g.fillStyle = b.on ? css('--accent') : css('--raise'); g.fill(); g.strokeStyle = css('--ink'); g.lineWidth = 1.2; g.stroke(); g.fillStyle = b.on ? css('--accent-ink') : css('--muted'); g.font = `600 8px ${css('--f-mono')}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(i + 1), x, y + 0.5); g.textAlign = 'left'; g.textBaseline = 'alphabetic'; });
+}
+function eqLive(l, d, i) { // change the playing sound straight away, without restarting
+  const ln = graph && graph.lanes.get(l.id), x = ln && ln.devs[d.id]; if (!x || !x.eqNodes) return;
+  const n = x.eqNodes[i]; if (!n) return; (Array.isArray(n) ? n : [n]).forEach(m => setBand(m, d.bands[i]));
+}
+function eqReadout(d, i) { const b = d.bands[i], el = document.querySelector(`[data-eqread="${d.id}"]`); if (!el || !b) return; el.textContent = `${i + 1} · ${BAND_NAME[b.t]} ${b.f >= 1000 ? (b.f / 1000).toFixed(2) + ' kHz' : Math.round(b.f) + ' Hz'}${b.t === 'hp' || b.t === 'lp' ? '' : ` · ${b.g > 0 ? '+' : ''}${(b.g || 0).toFixed(1)} dB`}${b.t === 'pk' ? ` · width ${(b.q || 1).toFixed(2)}` : ''}${b.on ? '' : ' · off'}`; }
+document.addEventListener('pointerdown', e => {
+  const cv = e.target.closest && e.target.closest('canvas.eqcv'); if (!cv) return;
+  const hit = findDev(cv.dataset.eq); if (!hit) return; const { l, d } = hit;
+  const r = cv.getBoundingClientRect(), w = r.width, h = r.height, x = e.clientX - r.left, y = e.clientY - r.top;
+  let best = -1, bd = 14; d.bands.forEach((b, i) => { const [bx, by] = bandPos(b, w, h); const dd = Math.hypot(bx - x, by - y); if (dd < bd) { bd = dd; best = i; } });
+  if (best < 0) return; cv.dataset.sel = best; eqReadout(d, best);
+  if (e.detail >= 2) { d.bands[best].on = !d.bands[best].on; commit(`EQ dot ${best + 1} ${d.bands[best].on ? 'on' : 'off'}`); return; }
+  const b = d.bands[best]; try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  const mv = ev => { const xx = ev.clientX - r.left, yy = ev.clientY - r.top; b.f = Math.round(eqF(xx, w)); if (b.t !== 'hp' && b.t !== 'lp') b.g = Math.round(eqG(yy, h) * 2) / 2; eqLive(l, d, best); drawEQ(cv); eqReadout(d, best); };
+  cv.addEventListener('pointermove', mv);
+  cv.addEventListener('pointerup', () => { cv.removeEventListener('pointermove', mv); quietCommit(); drawEQ(cv); }, { once: true });
+  drawEQ(cv);
+});
+document.addEventListener('wheel', e => {
+  const cv = e.target.closest && e.target.closest('canvas.eqcv'); if (!cv) return; const hit = findDev(cv.dataset.eq); if (!hit) return;
+  const i = +cv.dataset.sel; const b = hit.d.bands[i]; if (!b || b.t !== 'pk') return; e.preventDefault();
+  b.q = clamp((b.q || 1) * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 0.2, 12); eqLive(hit.l, hit.d, i); drawEQ(cv); eqReadout(hit.d, i); clearTimeout(drawEQ.t); drawEQ.t = setTimeout(quietCommit, 400);
+}, { passive: false });
+let meterTick = 0;
+function updateDeviceMeters() { // the compressor's squeeze and the EQ's live spectrum, while playing
+  if (!UI.insp || !graph || ++meterTick % 3) return;
+  document.querySelectorAll('[data-gr]').forEach(i => { for (const [, ln] of graph.lanes) { const x = ln.devs && ln.devs[i.dataset.gr]; if (x && x.comp) { const red = x.comp.reduction || 0; i.style.width = clamp(-red / 24, 0, 1) * 100 + '%'; const o = document.querySelector(`[data-grv="${i.dataset.gr}"]`); if (o) o.textContent = `${red.toFixed(1)} dB`; } } });
+  document.querySelectorAll('canvas.eqcv').forEach(drawEQ);
+}
 function renderInspector() {
   const c = clipById(selClip), l = P.lanes.find(x => x.id === selLane);
   let html = '';
@@ -1790,11 +1957,9 @@ function renderInspector() {
       <div class="field"><label for="fFil">Filter</label><input id="fFil" type="range" min="-100" max="100" value="${f}" data-lx="filter"><output>${f === 0 ? 'off' : f < 0 ? 'muffle ' + -f : 'thin ' + f}</output></div>
       <div class="field"><label for="fEcho">Echo</label><input id="fEcho" type="range" min="0" max="100" value="${fx.echo}" data-lx="echo"><output>${fx.echo}%</output></div>
       <div class="field"><label for="fRev">Reverb</label><input id="fRev" type="range" min="0" max="100" value="${fx.reverb}" data-lx="reverb"><output>${fx.reverb}%</output></div>
-      ${HAS_TONE ? `<div class="field"><label for="tFx">Effect</label><select id="tFx" data-ltfx="type">${Object.entries(TRACK_FX).map(([k, v]) => `<option value="${k}" ${(l.tfx && l.tfx.type || 'none') === k ? 'selected' : ''}>${v}</option>`).join('')}</select><span></span></div>
-      ${l.tfx && l.tfx.type === 'gate' ? `<div class="field"><label for="tGate">Rhythm</label><select id="tGate" data-ltfx="gate">${Object.keys(GATES).map(k => `<option value="${k}" ${(l.tfx.gate || 'classic') === k ? 'selected' : ''}>${k[0].toUpperCase() + k.slice(1)} · ${GATES[k].replace(/x/g, '■').replace(/\./g, '·')}</option>`).join('')}</select><span></span></div>` : ''}
-      ${l.tfx && l.tfx.type && l.tfx.type !== 'none' ? `<div class="field"><label for="tFxAmt">Amount</label><input id="tFxAmt" type="range" min="0" max="100" value="${Math.round((l.tfx.amt ?? 0.5) * 100)}" data-ltfx="amt"><output>${Math.round((l.tfx.amt ?? 0.5) * 100)}%</output></div>
-      <div class="field"><label for="tFxMix">Mix</label><input id="tFxMix" type="range" min="0" max="100" value="${Math.round((l.tfx.mix ?? 0.5) * 100)}" data-ltfx="mix"><output>${Math.round((l.tfx.mix ?? 0.5) * 100)}%</output></div>` : ''}
-      <label class="chk"><input type="checkbox" data-lpump ${l.pump && l.pump.on ? 'checked' : ''}> Pump to the drum machine’s kick (sidechain)</label>
+      ${routingHTML(l)}
+      ${chainHTML(l)}
+      ${HAS_TONE ? `<label class="chk"><input type="checkbox" data-lpump ${l.pump && l.pump.on ? 'checked' : ''}> Pump to the drum machine’s kick (sidechain)</label>
       ${l.pump && l.pump.on ? `<div class="field"><label for="tPump">Depth</label><input id="tPump" type="range" min="10" max="95" value="${Math.round((l.pump.depth ?? 0.7) * 100)}" data-lpumpd><output>${Math.round((l.pump.depth ?? 0.7) * 100)}%</output></div>` : ''}` : ''}
       <label class="chk"><input type="checkbox" data-lrole="dialogue" ${l.role === 'dialogue' ? 'checked' : ''}> This is the dialogue (for loudness measured on speech, and for ducking)</label>
       <div class="btnrow"><button class="btn sm" data-act="fxreset">Reset effects</button><button class="btn sm" data-act="closegaps">Close gaps</button></div></div>`;
@@ -1816,7 +1981,7 @@ function renderInspector() {
       <div class="btnrow"><button class="btn sm" data-act="evenout">Even out volume between parts</button></div></div>
     <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>M</kbd> hit point · <kbd>V</kbd> video · <kbd>T</kbd> tempo change<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
   html = `<button class="rail" data-act="toggleinsp" title="Show the settings (I)"><span>◂</span><span class="rl">Settings</span></button><div class="insp-top"><button class="headbtn" data-act="toggleinsp" title="Fold the settings away for more room (I)">▸</button></div>` + html;
-  const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; ins.scrollTop = st; applyTips();
+  const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; requestAnimationFrame(() => document.querySelectorAll('canvas.eqcv').forEach(drawEQ)); ins.scrollTop = st; applyTips();
   if (c && !['midi', 'pattern', 'riser'].includes(c.kind)) { $('#cFxIn').value = c.fxIn || 'fade'; $('#cFxOut').value = c.fxOut || 'fade'; }
 }
 function renderMixer() {
@@ -1912,7 +2077,13 @@ const acts = {
   zin: () => { pushZoom(true); zoom(1.5); }, zout: () => { pushZoom(true); zoom(1 / 1.5); }, fit: fitZoom, zsel: zoomToSelection, zprev: prevZoom, amp: cycleAmp, demo: () => loadDemo(), shortcuts: showShortcuts, tour: () => startTour(true),
   edzin: () => edZoom(1 / 1.6), edzout: () => edZoom(1.6), edfit: () => edFit('part'), edall: () => edFit('all'),
   snap: () => { P.snap = !P.snap; if (P.snap && !P.bpm) toast('Add a song first so the Studio can find the beat.'); commit(P.snap ? 'Snapping to the beat' : 'Snap off'); },
-  addlane: () => { const l = newLane(P.lanes.length + 1); P.lanes.push(l); selLane = l.id; commit('Track added'); },
+  addlane: b => { const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [
+    { label: 'Track', act: () => { const l = newLane(P.lanes.length + 1); P.lanes.push(l); selLane = l.id; commit('Track added'); } },
+    { label: 'Group track (several tracks through one fader and effects)', act: () => addGroup() },
+    { sep: true },
+    { label: 'Reverb return (one shared reverb)', act: () => addReturn('hall') },
+    { label: 'Delay return (one shared delay)', act: () => addReturn('pingpong') },
+  ]); },
   selall: () => { const c = clipById(selClip); if (c) { edSel = { a: c.start, b: c.end }; drawEditor(); } },
   prevsel: previewSel, keep: keepSel, remove: removeSel,
   selappend: () => { const c = clipById(selClip); if (c && edSel) addRegion(c.trackId, edSel.a, edSel.b, 'append'); },
@@ -1981,7 +2152,7 @@ const TIPS = {
   loop: 'Repeat this part', closegaps: 'Slide parts on this track together so there are no silences', fxreset: 'Set all effects on this track back to zero',
   evenout: 'Make every part about as loud as the others', matchtempo: 'Speed this part up or down to the mix tempo', matchkey: 'Shift this part into the mix key',
   selall: 'Select the whole part in the editor', prevsel: 'Hear the selection on its own', keep: 'Keep only the selected stretch (K)', remove: 'Remove the selected stretch and close the gap (Delete)',
-  selappend: 'Copy the selection to the end of this track', sellayer: 'Copy the selection onto a new track', addlane: 'Add an empty track', mutepart: 'Mute or unmute this part',
+  selappend: 'Copy the selection to the end of this track', sellayer: 'Copy the selection onto a new track', addlane: 'Add a track, a group track or a shared reverb/delay', mutepart: 'Mute or unmute this part',
   import: 'Pick music files from this computer', showlib: 'Show your library on the left', record: 'Record your voice over the mix, with a one-bar count-in',
 };
 document.addEventListener('mouseover', e => {
@@ -2391,7 +2562,13 @@ $('#edWrap').addEventListener('pointerdown', e => {
 $('#insp').addEventListener('input', e => {
   const c = clipById(selClip), d = e.target.dataset, out = e.target.nextElementSibling, v = +e.target.value;
   if (d.pf === 'xfade') { P.xfade = v; out.textContent = v.toFixed(1) + 's'; return; }
-  if (d.ltfx && d.ltfx !== 'type' && out) { out.textContent = v + '%'; return; }
+  if (e.target.matches('[data-dvp]') && out) {
+    const box = e.target.closest('[data-dev]'), hit = box && findDev(box.dataset.dev), k = e.target.dataset.dvp;
+    out.textContent = { th: `${v} dB`, ratio: `${v}:1`, att: `${v} ms`, rel: `${v} ms`, makeup: `+${v} dB` }[k] || `${v}%`;
+    if (hit && hit.d.type === 'comp') { hit.d[k] = k === 'mix' ? v / 100 : v; const ln = graph && graph.lanes.get(hit.l.id), x = ln && ln.devs[hit.d.id]; if (x) applyComp(x, hit.d); } // heard straight away
+    return;
+  }
+  if (e.target.matches('[data-lsend]') && out) { const R = P.lanes.find(x => x.id === e.target.dataset.lsend); out.textContent = `${v}% → ${R ? R.name : ''}`; return; }
   if (e.target.matches('[data-lpumpd]') && out) { out.textContent = v + '%'; return; }
   if (d.lx) {
     const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.fx[d.lx] = v;
@@ -2420,7 +2597,10 @@ $('#insp').addEventListener('change', async e => {
     if (d.linkset === 'profile') { P.link.profileChoice = e.target.value; return commit(`Deliveries now aim at ${PROFILES[e.target.value].name}.`); }
     if (d.linkset === 'tc') { if (tcToSec(e.target.value) == null) { e.target.value = startTC(); return toast('Write the start as hh:mm:ss:ff, for example 10:00:00:00.'); } P.link.tcChoice = e.target.value.trim(); return commit(`Programme starts at ${P.link.tcChoice}.`); }
   }
-  if (d.ltfx) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.tfx = { type: 'none', amt: 0.5, mix: 0.5, ...(l.tfx || {}) }; l.tfx[d.ltfx] = d.ltfx === 'type' || d.ltfx === 'gate' ? e.target.value : +e.target.value / 100; commit(d.ltfx === 'type' ? (l.tfx.type === 'none' ? 'Effect off' : `${TRACK_FX[l.tfx.type]} on “${l.name}”`) : undefined); renderInspector(); return; }
+  if (e.target.matches('[data-dvadd]')) { const l = P.lanes.find(x => x.id === selLane); if (!l || !e.target.value) return; const dv = newDevice(e.target.value); if (l.type === 'return' && ['hall', 'pingpong', 'chorus'].includes(dv.type)) dv.mix = 1; l.chain = [...(l.chain || []), dv]; commit(`${FX_TYPES[dv.type]} added to “${l.name}”`); renderInspector(); return; }
+  if (e.target.matches('[data-dvp]')) { const box = e.target.closest('[data-dev]'), hit = box && findDev(box.dataset.dev); if (!hit) return; const k = e.target.dataset.dvp; hit.d[k] = k === 'gate' ? e.target.value : ['amt', 'mix'].includes(k) ? +e.target.value / 100 : +e.target.value; if (hit.d.type === 'comp') { quietCommit(); return; } commit(); return; }
+  if (e.target.matches('[data-lroute]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.out = e.target.value || null; const gname = l.out && P.lanes.find(x => x.id === l.out).name; commit(gname ? `“${l.name}” now plays through “${gname}”.` : `“${l.name}” goes straight to the master.`); renderInspector(); return; }
+  if (e.target.matches('[data-lsend]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.sends = { ...(l.sends || {}), [e.target.dataset.lsend]: +e.target.value / 100 }; commit(); return; }
   if (e.target.matches('[data-lpump]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.pump = { depth: 0.7, ...(l.pump || {}), on: e.target.checked }; commit(l.pump.on ? `“${l.name}” now ducks on every kick of the drum machine.` : 'Pump off'); renderInspector(); return; }
   if (e.target.matches('[data-lpumpd]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.pump.depth = +e.target.value / 100; commit(); return; }
   if (d.lrole) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; P.lanes.forEach(x => { if (x.role === 'dialogue') x.role = null; }); if (e.target.checked) l.role = 'dialogue'; return commit(e.target.checked ? `“${l.name}” is the dialogue: Netflix-style loudness is measured where it speaks.` : 'No dialogue track marked.'); }
@@ -3488,7 +3668,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, normalize, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,
