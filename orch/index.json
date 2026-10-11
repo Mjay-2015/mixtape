@@ -1,0 +1,556 @@
+{
+ "format": "mixtape-orchestra/1",
+ "source": "VSCO 2 Community Edition (CC0 1.0), github.com/sgossner/VSCO-2-CE @ 440300901dfe9275fd84e0b7763af1f8443ae62e",
+ "instruments": {
+  "violins": {
+   "name": "Violins (section)",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "55": "violins/sus/55.wav",
+      "59": "violins/sus/59.wav",
+      "62": "violins/sus/62.wav",
+      "66": "violins/sus/66.wav",
+      "69": "violins/sus/69.wav",
+      "72": "violins/sus/72.wav",
+      "76": "violins/sus/76.wav",
+      "79": "violins/sus/79.wav",
+      "83": "violins/sus/83.wav",
+      "86": "violins/sus/86.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "55": "violins/short/55.wav",
+      "59": "violins/short/59.wav",
+      "62": "violins/short/62.wav",
+      "66": "violins/short/66.wav",
+      "69": "violins/short/69.wav",
+      "72": "violins/short/72.wav",
+      "76": "violins/short/76.wav",
+      "79": "violins/short/79.wav",
+      "83": "violins/short/83.wav",
+      "86": "violins/short/86.wav"
+     }
+    },
+    "pizz": {
+     "kind": "pluck",
+     "notes": {
+      "55": "violins/pizz/55.wav",
+      "59": "violins/pizz/59.wav",
+      "62": "violins/pizz/62.wav",
+      "66": "violins/pizz/66.wav",
+      "69": "violins/pizz/69.wav",
+      "72": "violins/pizz/72.wav",
+      "76": "violins/pizz/76.wav",
+      "79": "violins/pizz/79.wav",
+      "83": "violins/pizz/83.wav",
+      "86": "violins/pizz/86.wav"
+     }
+    }
+   }
+  },
+  "violas": {
+   "name": "Violas (section)",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "48": "violas/sus/48.wav",
+      "52": "violas/sus/52.wav",
+      "55": "violas/sus/55.wav",
+      "59": "violas/sus/59.wav",
+      "62": "violas/sus/62.wav",
+      "65": "violas/sus/65.wav",
+      "69": "violas/sus/69.wav",
+      "72": "violas/sus/72.wav",
+      "76": "violas/sus/76.wav",
+      "79": "violas/sus/79.wav",
+      "83": "violas/sus/83.wav",
+      "86": "violas/sus/86.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "48": "violas/short/48.wav",
+      "52": "violas/short/52.wav",
+      "55": "violas/short/55.wav",
+      "59": "violas/short/59.wav",
+      "62": "violas/short/62.wav",
+      "65": "violas/short/65.wav",
+      "69": "violas/short/69.wav",
+      "72": "violas/short/72.wav",
+      "76": "violas/short/76.wav",
+      "79": "violas/short/79.wav",
+      "83": "violas/short/83.wav",
+      "86": "violas/short/86.wav"
+     }
+    },
+    "pizz": {
+     "kind": "pluck",
+     "notes": {
+      "48": "violas/pizz/48.wav",
+      "52": "violas/pizz/52.wav",
+      "55": "violas/pizz/55.wav",
+      "59": "violas/pizz/59.wav",
+      "62": "violas/pizz/62.wav",
+      "65": "violas/pizz/65.wav",
+      "69": "violas/pizz/69.wav",
+      "72": "violas/pizz/72.wav",
+      "76": "violas/pizz/76.wav",
+      "79": "violas/pizz/79.wav",
+      "83": "violas/pizz/83.wav",
+      "86": "violas/pizz/86.wav"
+     }
+    }
+   }
+  },
+  "cellos": {
+   "name": "Cellos (section)",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "36": "cellos/sus/36.wav",
+      "40": "cellos/sus/40.wav",
+      "43": "cellos/sus/43.wav",
+      "47": "cellos/sus/47.wav",
+      "50": "cellos/sus/50.wav",
+      "53": "cellos/sus/53.wav",
+      "57": "cellos/sus/57.wav",
+      "60": "cellos/sus/60.wav",
+      "64": "cellos/sus/64.wav",
+      "67": "cellos/sus/67.wav",
+      "71": "cellos/sus/71.wav",
+      "74": "cellos/sus/74.wav",
+      "77": "cellos/sus/77.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "36": "cellos/short/36.wav",
+      "40": "cellos/short/40.wav",
+      "43": "cellos/short/43.wav",
+      "47": "cellos/short/47.wav",
+      "50": "cellos/short/50.wav",
+      "53": "cellos/short/53.wav",
+      "57": "cellos/short/57.wav",
+      "60": "cellos/short/60.wav",
+      "64": "cellos/short/64.wav",
+      "67": "cellos/short/67.wav",
+      "71": "cellos/short/71.wav",
+      "74": "cellos/short/74.wav",
+      "77": "cellos/short/77.wav"
+     }
+    },
+    "pizz": {
+     "kind": "pluck",
+     "notes": {
+      "36": "cellos/pizz/36.wav",
+      "40": "cellos/pizz/40.wav",
+      "43": "cellos/pizz/43.wav",
+      "47": "cellos/pizz/47.wav",
+      "50": "cellos/pizz/50.wav",
+      "53": "cellos/pizz/53.wav",
+      "57": "cellos/pizz/57.wav",
+      "60": "cellos/pizz/60.wav",
+      "64": "cellos/pizz/64.wav",
+      "67": "cellos/pizz/67.wav",
+      "71": "cellos/pizz/71.wav",
+      "74": "cellos/pizz/74.wav",
+      "77": "cellos/pizz/77.wav"
+     }
+    }
+   }
+  },
+  "bass": {
+   "name": "Double bass",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "30": "bass/sus/30.wav",
+      "34": "bass/sus/34.wav",
+      "38": "bass/sus/38.wav",
+      "42": "bass/sus/42.wav",
+      "45": "bass/sus/45.wav",
+      "49": "bass/sus/49.wav",
+      "52": "bass/sus/52.wav",
+      "56": "bass/sus/56.wav",
+      "59": "bass/sus/59.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "28": "bass/short/28.wav",
+      "31": "bass/short/31.wav",
+      "34": "bass/short/34.wav",
+      "38": "bass/short/38.wav",
+      "42": "bass/short/42.wav",
+      "45": "bass/short/45.wav",
+      "49": "bass/short/49.wav",
+      "52": "bass/short/52.wav",
+      "56": "bass/short/56.wav",
+      "59": "bass/short/59.wav"
+     }
+    },
+    "pizz": {
+     "kind": "pluck",
+     "notes": {
+      "28": "bass/pizz/28.wav",
+      "31": "bass/pizz/31.wav",
+      "34": "bass/pizz/34.wav",
+      "38": "bass/pizz/38.wav",
+      "42": "bass/pizz/42.wav",
+      "45": "bass/pizz/45.wav",
+      "49": "bass/pizz/49.wav",
+      "52": "bass/pizz/52.wav",
+      "56": "bass/pizz/56.wav",
+      "59": "bass/pizz/59.wav"
+     }
+    }
+   }
+  },
+  "horn": {
+   "name": "French horn",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "33": "horn/sus/33.wav",
+      "36": "horn/sus/36.wav",
+      "39": "horn/sus/39.wav",
+      "43": "horn/sus/43.wav",
+      "46": "horn/sus/46.wav",
+      "50": "horn/sus/50.wav",
+      "53": "horn/sus/53.wav",
+      "57": "horn/sus/57.wav",
+      "60": "horn/sus/60.wav",
+      "74": "horn/sus/74.wav",
+      "77": "horn/sus/77.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "33": "horn/short/33.wav",
+      "36": "horn/short/36.wav",
+      "39": "horn/short/39.wav",
+      "43": "horn/short/43.wav",
+      "46": "horn/short/46.wav",
+      "50": "horn/short/50.wav",
+      "53": "horn/short/53.wav",
+      "57": "horn/short/57.wav",
+      "60": "horn/short/60.wav",
+      "74": "horn/short/74.wav",
+      "77": "horn/short/77.wav"
+     }
+    }
+   }
+  },
+  "trumpet": {
+   "name": "Trumpet",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "53": "trumpet/sus/53.wav",
+      "57": "trumpet/sus/57.wav",
+      "60": "trumpet/sus/60.wav",
+      "63": "trumpet/sus/63.wav",
+      "67": "trumpet/sus/67.wav",
+      "70": "trumpet/sus/70.wav",
+      "74": "trumpet/sus/74.wav",
+      "77": "trumpet/sus/77.wav",
+      "81": "trumpet/sus/81.wav",
+      "84": "trumpet/sus/84.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "53": "trumpet/short/53.wav",
+      "57": "trumpet/short/57.wav",
+      "60": "trumpet/short/60.wav",
+      "63": "trumpet/short/63.wav",
+      "67": "trumpet/short/67.wav",
+      "70": "trumpet/short/70.wav",
+      "74": "trumpet/short/74.wav",
+      "77": "trumpet/short/77.wav",
+      "81": "trumpet/short/81.wav",
+      "84": "trumpet/short/84.wav"
+     }
+    }
+   }
+  },
+  "trombone": {
+   "name": "Trombone",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "34": "trombone/sus/34.wav",
+      "37": "trombone/sus/37.wav",
+      "41": "trombone/sus/41.wav",
+      "46": "trombone/sus/46.wav",
+      "50": "trombone/sus/50.wav",
+      "53": "trombone/sus/53.wav",
+      "60": "trombone/sus/60.wav",
+      "63": "trombone/sus/63.wav",
+      "65": "trombone/sus/65.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "34": "trombone/short/34.wav",
+      "41": "trombone/short/41.wav",
+      "46": "trombone/short/46.wav",
+      "53": "trombone/short/53.wav",
+      "58": "trombone/short/58.wav",
+      "62": "trombone/short/62.wav",
+      "65": "trombone/short/65.wav"
+     }
+    }
+   }
+  },
+  "tuba": {
+   "name": "Tuba",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "29": "tuba/sus/29.wav",
+      "34": "tuba/sus/34.wav",
+      "39": "tuba/sus/39.wav",
+      "46": "tuba/sus/46.wav",
+      "50": "tuba/sus/50.wav",
+      "53": "tuba/sus/53.wav",
+      "58": "tuba/sus/58.wav",
+      "62": "tuba/sus/62.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "34": "tuba/short/34.wav",
+      "39": "tuba/short/39.wav",
+      "46": "tuba/short/46.wav",
+      "50": "tuba/short/50.wav",
+      "53": "tuba/short/53.wav",
+      "58": "tuba/short/58.wav",
+      "62": "tuba/short/62.wav"
+     }
+    }
+   }
+  },
+  "flute": {
+   "name": "Flute",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "60": "flute/sus/60.wav",
+      "64": "flute/sus/64.wav",
+      "69": "flute/sus/69.wav",
+      "72": "flute/sus/72.wav",
+      "76": "flute/sus/76.wav",
+      "81": "flute/sus/81.wav",
+      "84": "flute/sus/84.wav",
+      "88": "flute/sus/88.wav",
+      "93": "flute/sus/93.wav",
+      "96": "flute/sus/96.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "69": "flute/short/69.wav",
+      "72": "flute/short/72.wav",
+      "76": "flute/short/76.wav",
+      "81": "flute/short/81.wav",
+      "84": "flute/short/84.wav",
+      "88": "flute/short/88.wav",
+      "93": "flute/short/93.wav",
+      "96": "flute/short/96.wav"
+     }
+    }
+   }
+  },
+  "oboe": {
+   "name": "Oboe",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "58": "oboe/sus/58.wav",
+      "62": "oboe/sus/62.wav",
+      "65": "oboe/sus/65.wav",
+      "70": "oboe/sus/70.wav",
+      "74": "oboe/sus/74.wav",
+      "77": "oboe/sus/77.wav",
+      "82": "oboe/sus/82.wav",
+      "86": "oboe/sus/86.wav",
+      "89": "oboe/sus/89.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "58": "oboe/short/58.wav",
+      "62": "oboe/short/62.wav",
+      "65": "oboe/short/65.wav",
+      "70": "oboe/short/70.wav",
+      "74": "oboe/short/74.wav",
+      "77": "oboe/short/77.wav",
+      "82": "oboe/short/82.wav",
+      "86": "oboe/short/86.wav",
+      "89": "oboe/short/89.wav"
+     }
+    }
+   }
+  },
+  "clarinet": {
+   "name": "Clarinet",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "50": "clarinet/sus/50.wav",
+      "53": "clarinet/sus/53.wav",
+      "58": "clarinet/sus/58.wav",
+      "62": "clarinet/sus/62.wav",
+      "65": "clarinet/sus/65.wav",
+      "70": "clarinet/sus/70.wav",
+      "74": "clarinet/sus/74.wav",
+      "77": "clarinet/sus/77.wav",
+      "82": "clarinet/sus/82.wav",
+      "86": "clarinet/sus/86.wav",
+      "89": "clarinet/sus/89.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "50": "clarinet/short/50.wav",
+      "53": "clarinet/short/53.wav",
+      "58": "clarinet/short/58.wav",
+      "62": "clarinet/short/62.wav",
+      "65": "clarinet/short/65.wav",
+      "70": "clarinet/short/70.wav",
+      "74": "clarinet/short/74.wav",
+      "77": "clarinet/short/77.wav",
+      "82": "clarinet/short/82.wav",
+      "86": "clarinet/short/86.wav",
+      "89": "clarinet/short/89.wav"
+     }
+    }
+   }
+  },
+  "bassoon": {
+   "name": "Bassoon",
+   "arts": {
+    "sus": {
+     "kind": "sustain",
+     "notes": {
+      "34": "bassoon/sus/34.wav",
+      "37": "bassoon/sus/37.wav",
+      "41": "bassoon/sus/41.wav",
+      "45": "bassoon/sus/45.wav",
+      "48": "bassoon/sus/48.wav",
+      "55": "bassoon/sus/55.wav",
+      "60": "bassoon/sus/60.wav",
+      "63": "bassoon/sus/63.wav",
+      "68": "bassoon/sus/68.wav",
+      "72": "bassoon/sus/72.wav",
+      "75": "bassoon/sus/75.wav"
+     }
+    },
+    "short": {
+     "kind": "short",
+     "notes": {
+      "34": "bassoon/short/34.wav",
+      "38": "bassoon/short/38.wav",
+      "41": "bassoon/short/41.wav",
+      "45": "bassoon/short/45.wav",
+      "48": "bassoon/short/48.wav",
+      "51": "bassoon/short/51.wav",
+      "55": "bassoon/short/55.wav",
+      "60": "bassoon/short/60.wav",
+      "64": "bassoon/short/64.wav",
+      "67": "bassoon/short/67.wav",
+      "72": "bassoon/short/72.wav"
+     }
+    }
+   }
+  },
+  "timpani": {
+   "name": "Timpani",
+   "arts": {
+    "hit": {
+     "kind": "hit",
+     "notes": {
+      "42": "timpani/hit/42.wav",
+      "46": "timpani/hit/46.wav",
+      "49": "timpani/hit/49.wav",
+      "52": "timpani/hit/52.wav",
+      "54": "timpani/hit/54.wav"
+     }
+    }
+   }
+  },
+  "harp": {
+   "name": "Harp",
+   "arts": {
+    "pluck": {
+     "kind": "pluck",
+     "notes": {
+      "28": "harp/pluck/28.wav",
+      "31": "harp/pluck/31.wav",
+      "35": "harp/pluck/35.wav",
+      "38": "harp/pluck/38.wav",
+      "41": "harp/pluck/41.wav",
+      "45": "harp/pluck/45.wav",
+      "48": "harp/pluck/48.wav",
+      "52": "harp/pluck/52.wav",
+      "55": "harp/pluck/55.wav",
+      "59": "harp/pluck/59.wav",
+      "62": "harp/pluck/62.wav",
+      "65": "harp/pluck/65.wav",
+      "69": "harp/pluck/69.wav",
+      "72": "harp/pluck/72.wav",
+      "76": "harp/pluck/76.wav",
+      "79": "harp/pluck/79.wav",
+      "83": "harp/pluck/83.wav",
+      "86": "harp/pluck/86.wav",
+      "89": "harp/pluck/89.wav",
+      "93": "harp/pluck/93.wav",
+      "98": "harp/pluck/98.wav",
+      "101": "harp/pluck/101.wav"
+     }
+    }
+   }
+  },
+  "glock": {
+   "name": "Glockenspiel",
+   "arts": {
+    "hit": {
+     "kind": "hit",
+     "notes": {
+      "67": "glock/hit/67.wav",
+      "72": "glock/hit/72.wav",
+      "79": "glock/hit/79.wav",
+      "84": "glock/hit/84.wav",
+      "91": "glock/hit/91.wav",
+      "96": "glock/hit/96.wav"
+     }
+    }
+   }
+  }
+ }
+}

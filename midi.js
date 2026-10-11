@@ -96,7 +96,7 @@
   }
 
   /* ---------- instruments ---------- */
-  const INSTRUMENTS = { piano: 'Piano', strings: 'Strings', pad: 'Warm pad', bass: 'Bass', pluck: 'Pluck / guitar', organ: 'Organ', brass: 'Brass', lead: 'Synth lead', drums: 'Drum kit' };
+  const INSTRUMENTS = { piano: 'Piano', strings: 'Synth strings', pad: 'Warm pad', bass: 'Bass', pluck: 'Pluck / guitar', organ: 'Organ', brass: 'Synth brass', lead: 'Synth lead', drums: 'Drum kit' };
   const PROGRAM = { piano: 0, pluck: 24, organ: 16, bass: 33, strings: 48, brass: 61, lead: 80, pad: 89, drums: 0 };
   function instForProgram(p) {
     if (p == null) return 'piano';
