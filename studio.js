@@ -1143,6 +1143,7 @@ function renderLanes() {
     return `
     <div class="lane${l.id === selLane ? ' on' : ''}${l.folded ? ' folded' : ''}" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]};${!l.folded && l.h ? `height:${l.h}px` : ''}">
       <div class="lane-head">
+        <div class="lh-slim" title="${esc(l.name)}"><b>${esc(l.name.slice(0, 2))}</b><button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute ${esc(l.name)}" aria-pressed="${l.mute}">M</button><button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only ${esc(l.name)}" aria-pressed="${l.solo}">S</button></div>
         <div class="lh-top">
           <button class="fold" data-lf="fold" aria-expanded="${!l.folded}" title="${l.folded ? 'Open this track' : 'Fold this track to a slim bar'} (Alt+click: all tracks)">${l.folded ? '▸' : '▾'}</button>
           <input value="${esc(l.name)}" data-lf="name" aria-label="Track name" maxlength="40">
@@ -1172,6 +1173,8 @@ function renderLanes() {
   $('#tlEmpty').hidden = P.clips.length > 0 || !!P.video;
   renderVideoRow(); renderMarkerLines(); renderVideoWindow(); renderGrid();
   $('#lanes').dataset.h = UI.h;
+  document.documentElement.classList.toggle('slimhead', !!UI.slimHead);
+  { const b = $('#headBtn'); if (b) { b.textContent = UI.slimHead ? '▸' : '◂'; b.title = UI.slimHead ? 'Show the track names and sliders' : 'Fold the track names away for more room'; b.setAttribute('aria-pressed', !!UI.slimHead); } }
   renderLoop();
   $$('.clip').forEach(el => drawClipCanvas(el.querySelector('canvas'), clipById(el.dataset.clip)));
   $$('#lanes .lane').forEach(el => { const l = P.lanes.find(x => x.id === el.dataset.lane); if (l) drawAuto(el, l); });
@@ -1432,6 +1435,7 @@ function renderAll() { $('#projName').value = P.name; $('#ampBtn').textContent =
 const acts = {
   play: () => playing ? (rec ? stopRecord() : pause()) : play(), stop: () => { if (rec) return stopRecord(); pause(); seek(0); $('#tl').scrollLeft = 0; },
   undo, redo, save: saveSong, record: toggleRecord,
+  slimhead: () => { UI.slimHead = !UI.slimHead; saveUI(); renderLanes(); renderVideoRow(); toast(UI.slimHead ? 'Track names folded away. Hover a track’s colour to see its name; click ▸ to bring them back.' : 'Track names back.'); },
   zin: () => { pushZoom(true); zoom(1.5); }, zout: () => { pushZoom(true); zoom(1 / 1.5); }, fit: fitZoom, zsel: zoomToSelection, zprev: prevZoom, amp: cycleAmp, demo: () => loadDemo(), shortcuts: showShortcuts, tour: () => startTour(true),
   edzin: () => edZoom(1 / 1.6), edzout: () => edZoom(1.6), edfit: () => edFit('part'), edall: () => edFit('all'),
   snap: () => { P.snap = !P.snap; if (P.snap && !P.bpm) toast('Add a song first so the Studio can find the beat.'); commit(P.snap ? 'Snapping to the beat' : 'Snap off'); },
@@ -1765,12 +1769,18 @@ $('#lanes').addEventListener('pointerdown', e => {
       if (under && under.dataset.lane !== c.lane) { c.lane = under.dataset.lane; under.querySelector('.lane-body').appendChild(el); }
       el.style.left = c.at * pps + 'px';
     } else if (mode === 'l') {
-      let ns = clamp(o.start + dt * r, 0, o.end - 0.1); ns = snapSrc(c.trackId, ns);
+      const want = o.start + dt * r;
+      // snap first, then hold it inside the song: snapping after the limit could reach before the song's first second
+      let ns = clamp(snapSrc(c.trackId, want), 0, o.end - 0.1);
       c.start = ns; c.at = o.at + (ns - o.start) / r;
       if (c.at < 0) { c.start = o.start - o.at * r; c.at = 0; }
       el.style.left = c.at * pps + 'px'; el.style.width = dur(c) * pps + 'px';
+      if (want < -0.05) edgeLimit(el, 'l', c.kind === 'midi' ? 'This part starts at its first note.' : 'That is the very start of the song. There is no more of it before this.');
+      else if (c.at === 0 && want < c.start - 0.05) edgeLimit(el, 'l', 'The part has reached the start of the timeline.');
     } else {
-      c.end = clamp(snapSrc(c.trackId, o.end + dt * r), o.start + 0.1, srcDur); el.style.width = dur(c) * pps + 'px';
+      const want = o.end + dt * r;
+      c.end = clamp(snapSrc(c.trackId, want), o.start + 0.1, srcDur); el.style.width = dur(c) * pps + 'px';
+      if (want > srcDur + 0.05) edgeLimit(el, 'r', 'That is the end of the song. There is no more of it after this. To make it longer, repeat it (Ctrl + D) or add another part.');
     }
   };
   el.addEventListener('pointermove', mv);
@@ -1780,6 +1790,12 @@ $('#lanes').addEventListener('pointerdown', e => {
   }, { once: true });
 });
 
+/* When a drag reaches the end of the material, say so instead of silently stopping */
+let edgeToastAt = 0;
+function edgeLimit(el, side, msg) {
+  const h = el.querySelector(`.h.${side}`); if (h) { h.classList.add('limit'); setTimeout(() => h.classList.remove('limit'), 500); }
+  const now = performance.now(); if (now - edgeToastAt > 2500) { edgeToastAt = now; toast(msg, 3500); }
+}
 function markSelected(el, c) {
   selLane = c.lane;
   $$('.clip.sel').forEach(x => x.classList.remove('sel')); el.classList.add('sel');
