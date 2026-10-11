@@ -218,9 +218,21 @@ function adoptTempoKey() {
     if (!P.key && a.key != null) P.key = { key: a.key, mode: a.mode };
     if (P.bpm && P.key) break; }
 }
+/* What a locked track holds: its parts and its automation. Volume, pan, mute and solo stay free for mixing. */
+function lockedSig(p, ids) { return JSON.stringify(ids.map(id => { const l = p.lanes.find(x => x.id === id); return [id, !!l, l ? l.auto : null, p.clips.filter(c => c.lane === id).map(c => JSON.stringify(c)).sort()]; })); }
 function commit(msg) {
   adoptTempoKey();
   P.clips.forEach(fixFades);
+  // a change that touches a locked track is undone, whatever made it
+  const lockedIds = P.lanes.filter(l => l.locked).map(l => l.id);
+  if (lockedIds.length) {
+    let prev = null; try { prev = JSON.parse(last); } catch (e) {}
+    if (prev && lockedSig(prev, lockedIds) !== lockedSig(P, lockedIds)) {
+      const names = P.lanes.filter(l => l.locked && lockedSig(prev, [l.id]) !== lockedSig(P, [l.id])).map(l => `“${l.name}”`).join(', ') || 'That track';
+      P = normalize(prev); P.lanes.forEach(l => { if (lockedIds.includes(l.id)) l.locked = true; }); fixSel(); renderAll();
+      return toast(`${names} is locked, so nothing on it was changed. Click its padlock to unlock it.`, 4500);
+    }
+  }
   const s = JSON.stringify(P); if (s === last) { renderAll(); if (msg) toast(msg); return; }
   hist.push(last); if (hist.length > 150) hist.shift(); fut = []; last = s; persist();
   fixSel(); renderAll(); restartIfPlaying(); if (msg) toast(msg);
@@ -359,6 +371,7 @@ function closeGaps(laneId) {
 }
 async function deleteLane(id) {
   const l = P.lanes.find(x => x.id === id); if (!l) return;
+  if (l.locked) return toast(`“${l.name}” is locked. Unlock it first to delete it.`, 3500);
   const n = P.clips.filter(c => c.lane === id).length;
   if (n && !(await ask({ title: `Delete “${l.name}”?`, text: `Its ${n} part${n === 1 ? '' : 's'} go too. You can undo this.`, ok: 'Delete track', danger: true }))) return;
   P.lanes = P.lanes.filter(x => x !== l); P.clips = P.clips.filter(c => c.lane !== id);
@@ -1151,15 +1164,16 @@ function renderLanes() {
   $('#lanes').innerHTML = P.lanes.map(l => {
     const fxOn = Object.values(l.fx).some(v => v);
     return `
-    <div class="lane${l.id === selLane ? ' on' : ''}${l.folded ? ' folded' : ''}" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]};${!l.folded && l.h ? `height:${l.h}px` : ''}">
+    <div class="lane${l.id === selLane ? ' on' : ''}${l.folded ? ' folded' : ''}${l.locked ? ' locked' : ''}" data-lane="${l.id}" style="--c:${l.color || PALETTE[0]};${!l.folded && l.h ? `height:${l.h}px` : ''}">
       <div class="lane-head">
-        <div class="lh-slim" title="${esc(l.name)}"><b>${esc(l.name.slice(0, 2))}</b><button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute ${esc(l.name)}" aria-pressed="${l.mute}">M</button><button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only ${esc(l.name)}" aria-pressed="${l.solo}">S</button></div>
+        <div class="lh-slim" title="${esc(l.name)}"><b>${esc(l.name.slice(0, 2))}</b><button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute ${esc(l.name)}" aria-pressed="${l.mute}">M</button><button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only ${esc(l.name)}" aria-pressed="${l.solo}">S</button><button class="tg lk${l.locked ? ' on' : ''}" data-lf="lock" title="${l.locked ? 'Unlock' : 'Lock'} ${esc(l.name)}" aria-pressed="${!!l.locked}"><svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg></button></div>
         <div class="lh-top">
           <button class="fold" data-lf="fold" aria-expanded="${!l.folded}" title="${l.folded ? 'Open this track' : 'Fold this track to a slim bar'} (Alt+click: all tracks)">${l.folded ? '▸' : '▾'}</button>
           <input value="${esc(l.name)}" data-lf="name" aria-label="Track name" maxlength="40">
           <button class="tg m${l.mute ? ' on' : ''}" data-lf="mute" title="Mute this track" aria-pressed="${l.mute}">M</button>
           <button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only this track" aria-pressed="${l.solo}">S</button>
           <button class="tg a${l.auto.show ? ' on' : ''}${l.auto.vol.length || l.auto.pan.length ? ' has' : ''}" data-lf="auto" title="Automation: draw how the volume or pan changes over time" aria-pressed="${!!l.auto.show}">A</button>
+          <button class="tg lk${l.locked ? ' on' : ''}" data-lf="lock" title="${l.locked ? 'Unlock this track' : 'Lock this track: its parts cannot be moved, trimmed, cut or deleted'}" aria-pressed="${!!l.locked}"><svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg></button>
           <button class="tg x" data-lf="del" title="Delete track" aria-label="Delete track">✕</button>
         </div>
         <div class="lh-row"><span>VOL</span><input type="range" min="0" max="150" value="${Math.round(l.gain * 100)}" data-lf="gain" aria-label="Track volume"><output>${Math.round(l.gain * 100)}%</output></div>
@@ -1227,7 +1241,7 @@ function drawPlayhead(p = curPos()) {
   if (P.video) { $('#vtc').textContent = tc(p); if (!playing) scrubVideo(p); }
 }
 function followPlayhead(p) {
-  if (performance.now() - navAt < 4000) return;
+  if (UI.follow === false || performance.now() - navAt < 4000) return;
   const tl = $('#tl'), x = headW() + p * pps;
   if (x > tl.scrollLeft + tl.clientWidth - 40 || x < tl.scrollLeft + headW()) { progScroll = true; tl.scrollLeft = x - headW() - 40; }
 }
@@ -1438,7 +1452,7 @@ function renderTransport() {
   $('#metroBtn').setAttribute('aria-pressed', !!P.metro); $('#vidBtn').setAttribute('aria-pressed', !!(P.video && UI.vwin)); $('#mixBtn').setAttribute('aria-pressed', !!UI.mixer);
   $('#libBtn').setAttribute('aria-pressed', UI.lib); $('#inspBtn').setAttribute('aria-pressed', UI.insp);
   $$('.hsz button').forEach(b => b.setAttribute('aria-pressed', b.dataset.h === UI.h));
-  $('#snapBtn').setAttribute('aria-pressed', P.snap);
+  $('#snapBtn').setAttribute('aria-pressed', P.snap); $('#followBtn').setAttribute('aria-pressed', UI.follow !== false);
   $('#tempoLbl').textContent = P.bpm ? `${Math.round(tempoAt(curPos()) * 10) / 10} BPM${(P.tempoChanges || []).length ? ' (map)' : ''}${P.key ? ' · ' + keyName(P.key.key, P.key.mode) : ''}` : '— BPM';
   $('#recBtn').classList.toggle('on', !!rec);
   $('#recLbl').textContent = rec ? `Stop recording ${fmtT((Date.now() - rec.began) / 1000).replace(/\.\d$/, '')}` : 'Record voice';
@@ -1482,6 +1496,7 @@ const acts = {
   togglelib: () => { UI.lib = !UI.lib; applyUI(); },
   toggleinsp: () => { UI.insp = !UI.insp; applyUI(); },
   lh: b => { UI.h = b.dataset.h; P.lanes.forEach(l => { l.h = null; l.folded = false; }); quietCommit(); applyUI(); },
+  follow: () => { UI.follow = UI.follow === false; saveUI(); renderTransport(); toast(UI.follow ? 'Follow on: the view scrolls along with playback.' : 'Follow off: the view stays where you put it while the music plays.', 3500); },
   looplock: () => {
     if (!P.loop) return toast('Mark a loop first: drag along the time ruler above the tracks.', 4500);
     P.loopLock = !P.loopLock; if (P.loopLock) P.loopOn = true;
@@ -1543,7 +1558,7 @@ document.addEventListener('mouseover', e => {
 function showShortcuts() {
   const g = (h, rows) => `<div class="kgroup"><h4>${h}</h4>${rows.map(([k, d]) => `<div class="krow"><span class="keys">${k.split(' ').map(x => `<kbd>${x}</kbd>`).join(' ')}</span><span>${d}</span></div>`).join('')}</div>`;
   ask({ title: 'Shortcuts', ok: 'Close', extra: `<div class="ksheet">
-    ${g('Play', [['Space', 'Play or pause'], ['Home', 'Back to the start'], ['L', 'Loop on or off'], ['C', 'Click track']])}
+    ${g('Play', [['Space', 'Play or pause'], ['Home', 'Back to the start'], ['L', 'Loop on or off'], ['F', 'Follow the playhead on or off'], ['C', 'Click track']])}
     ${g('See', [['Wheel', 'Zoom where the mouse is, over a waveform (or pinch)'], ['Shift wheel', 'Move along the timeline'], ['Wheel on names', 'Scroll up and down the tracks'], ['+ −', 'Zoom in and out'], ['Z', 'Zoom to the selection'], ['Shift Z', 'Back to the previous zoom'], ['Alt wheel', 'Taller or shorter waveforms'], ['B', 'Library'], ['I', 'Settings'], ['X', 'Mixer'], ['V', 'Video window']])}
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
@@ -1686,6 +1701,7 @@ $('#overview').addEventListener('pointermove', e => {
 $('#ruler').addEventListener('pointerdown', e => {
   const cv = e.currentTarget; try { cv.setPointerCapture(e.pointerId); } catch (_) {}
   { const x = e.clientX - cv.getBoundingClientRect().left, hit = visibleMarkers().find(m => Math.abs(mT(m) * pps - x) <= 6);
+    if (hit && P.markersLocked) { selMarker = hit.id; seekClick(mT(hit)); renderMarkerLines(); renderRuler(); renderInspector(); return; }
     if (hit) {
       selMarker = hit.id; let moved = false; const x0 = e.clientX; if (P.video && !UI.vwin) { UI.vwin = true; saveUI(); renderVideoWindow(); }
       const mv = ev => { if (Math.abs(ev.clientX - x0) > 2) moved = true; if (!moved) return; const t = Math.max(0, (ev.clientX - cv.getBoundingClientRect().left) / pps); setMarkerTime(hit, t); renderMarkerLines(); renderRuler(); scrubVideo(t); $('#vtc').textContent = tc(t); };
@@ -1733,6 +1749,7 @@ $('#lanes').addEventListener('click', e => {
     if (b.dataset.lf === 'mute') { l.mute = !l.mute; liveLanes(); quietCommit(); renderLanes(); renderMixer(); }
     else if (b.dataset.lf === 'solo') { l.solo = !l.solo; liveLanes(); quietCommit(); renderLanes(); renderMixer(); }
     else if (b.dataset.lf === 'del') deleteLane(l.id);
+    else if (b.dataset.lf === 'lock') { l.locked = !l.locked; quietCommit(); renderLanes(); toast(l.locked ? `“${l.name}” locked: its parts stay exactly as they are. You can still change its volume, pan, mute and solo.` : `“${l.name}” unlocked.`, 4000); }
     else if (b.dataset.lf === 'auto') { l.auto.show = l.auto.show ? null : (l.auto.pan.length && !l.auto.vol.length ? 'pan' : 'vol'); if (l.folded) l.folded = false; quietCommit(); renderLanes(); }
     else if (b.dataset.lf === 'automenu') autoMenu(b, l);
     else if (b.dataset.lf === 'fold') { const v = !l.folded; (e.altKey ? P.lanes : [l]).forEach(x => { x.folded = v; }); quietCommit(); renderLanes(); }
@@ -1755,13 +1772,20 @@ $('#lanes').addEventListener('pointerdown', e => {
   }
   const body = e.target.closest('.lane-body'); if (!body || e.button !== 0) return;
   const asvg = e.target.closest('svg.auto');
-  if (asvg) { e.preventDefault(); const l = P.lanes.find(x => x.id === body.parentElement.dataset.lane); if (l) autoPointer(e, asvg, l); return; }
+  if (asvg) { e.preventDefault(); const l = P.lanes.find(x => x.id === body.parentElement.dataset.lane); if (l && l.locked) return toast(`“${l.name}” is locked. Click its padlock to change its automation.`, 3000); if (l) autoPointer(e, asvg, l); return; }
   const el = e.target.closest('.clip');
   if (!el) {
     const t = (e.clientX - body.getBoundingClientRect().left) / pps; selLane = body.parentElement.dataset.lane; selClip = null; edSel = null;
     seekClick(clamp(t, 0, projectEnd())); renderLanes(); drawEditor(); renderInspector(); return;
   }
   const c = clipById(el.dataset.clip); if (!c) return;
+  const lockedLane = P.lanes.find(l => l.id === c.lane && l.locked);
+  if (lockedLane) { // on a locked track a click only moves the playhead
+    selClip = c.id; selLane = c.lane; markSelected(el, c);
+    seekClick(c.at + clamp((e.clientX - el.getBoundingClientRect().left) / pps, 0, dur(c))); drawEditor(); renderInspector();
+    if (e.target.dataset.h || e.target.dataset.fade || e.target.classList.contains('cl')) toast(`“${lockedLane.name}” is locked. Click its padlock to move or trim its parts.`, 3000);
+    return;
+  }
   const mode = e.target.dataset.h || (e.target.dataset.fade ? 'fade-' + e.target.dataset.fade : e.target.classList.contains('cl') ? 'move' : 'select');
   if (selClip !== c.id) { selClip = c.id; edSel = null; }
   if (mode === 'select') return selectStretch(e, el, c);
@@ -1925,6 +1949,7 @@ $('#insp').addEventListener('change', async e => {
   if (d.pf === 'xfade') return commit();
   if (d.pf === 'bpm') { const v = parseFloat(e.target.value); P.bpm = v >= 40 && v <= 240 ? Math.round(v * 10) / 10 : null; commit(P.bpm ? `Mix tempo set to ${P.bpm} BPM` : 'Mix tempo cleared'); liveLanes(); return; }
   if (d.pf === 'key') { const [k, m] = e.target.value.split('|'); P.key = e.target.value ? { key: +k, mode: m } : null; return commit(P.key ? `Mix key set to ${keyName(P.key.key, P.key.mode)}` : 'Mix key cleared'); }
+  if (e.target.matches('[data-mklock]')) { P.markersLocked = e.target.checked; quietCommit(); renderRuler(); return toast(P.markersLocked ? 'Hit points locked: clicking one jumps to it, and dragging does nothing.' : 'Hit points unlocked: drag one along the ruler to move it.'); }
   if (d.uiset) { UI[d.uiset] = e.target.checked; saveUI(); return toast(e.target.checked ? 'The mouse wheel now zooms over waveforms. Shift + wheel moves sideways.' : 'The mouse wheel now scrolls. Hold Ctrl to zoom.'); }
   if (d.linkset && P.link) {
     if (d.linkset === 'profile') { P.link.profileChoice = e.target.value; return commit(`Deliveries now aim at ${PROFILES[e.target.value].name}.`); }
@@ -1965,6 +1990,7 @@ document.addEventListener('keydown', e => {
   else if (kl === 'z' && !(e.ctrlKey || e.metaKey)) { if (e.shiftKey) prevZoom(); else zoomToSelection(); }
   else if (kl === 's') splitHere();
   else if (kl === 'l') acts.looptoggle();
+  else if (kl === 'f') acts.follow();
   else if (kl === 'b') acts.togglelib();
   else if (kl === 'x') acts.togglemixer();
   else if (kl === 'm') addMarker(curPos());
@@ -2275,7 +2301,7 @@ function addMarker(t = playhead, label) {
   P.markers.push(m); selMarker = m.id; commit(`Added “${m.label}” at ${P.video ? tc(t) : fmtT(t)}. Drag it on the ruler, or rename it under Scene on the right.`);
 }
 function setMarkerTime(m, t) { const vt = videoTimeAt(t); if (m.vt != null && vt != null) m.vt = vt; else { delete m.vt; m.t = Math.max(0, t); } }
-function deleteMarker(id) { P.markers = (P.markers || []).filter(m => m.id !== id); if (selMarker === id) selMarker = null; commit('Hit point removed'); }
+function deleteMarker(id) { if (P.markersLocked) return toast('Hit points are locked. Unlock them in Settings → Scene to remove one.', 3500); P.markers = (P.markers || []).filter(m => m.id !== id); if (selMarker === id) selMarker = null; commit('Hit point removed'); }
 function renderMarkerLines() {
   $('#mklines').innerHTML = visibleMarkers().map(m => `<div class="mk${m.id === selMarker ? ' sel' : ''}" style="left:${headW() + mT(m) * pps}px"></div>`).join('');
 }
@@ -2445,6 +2471,7 @@ function sceneSectionHTML() {
     <div class="field"><label for="sVol">Scene sound</label><input id="sVol" type="range" min="0" max="100" value="${Math.round((v.vol ?? 0.8) * 100)}" data-sf="vol"><output>${Math.round((v.vol ?? 0.8) * 100)}%</output></div>
     <div class="btnrow"><button class="btn sm" data-act="video">${UI.vwin ? 'Hide video' : 'Show video'}</button><button class="btn sm" data-act="actionzero" ${v.at > 0.01 ? '' : 'disabled'}>Start the action at 0:00</button></div>
     <p class="sub">Hit points</p>${hits}
+    <label class="chk"><input type="checkbox" data-mklock ${P.markersLocked ? 'checked' : ''}> Lock hit points (they cannot be dragged or removed; you can still add new ones)</label>
     <div class="btnrow"><button class="btn sm primary" data-act="addhit">+ Hit point (M)</button><button class="btn sm" data-act="findcuts">Find cuts</button><button class="btn sm" data-act="findtempo" ${ms.length >= 3 ? '' : 'disabled'} title="Find the tempos that land the most hit points on a beat">Tempo from hits</button></div>
     <div class="btnrow"><button class="btn sm" data-act="loadhits">Import hit points</button><button class="btn sm" data-act="savehits" ${ms.length ? '' : 'disabled'}>Save hit points</button></div>
     <p class="hint">Right-click a part and choose “Fit between hit points” to make it start and end exactly on two of them. Scene sound plays while you work but is never mixed into exports.</p></div>`;

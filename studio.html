@@ -165,6 +165,12 @@ button,input,select{font:inherit;color:inherit}
 .tg.on.m{background:#E8B931;border-color:#E8B931;color:#1A1405}
 .tg.on.s{background:#4F8EF7;border-color:#4F8EF7;color:#06101F}
 .tg.x{border-color:transparent;background:transparent}
+.tg.lk{display:inline-grid;place-items:center}
+.tg.on.lk{background:#9AA4B2;border-color:#9AA4B2;color:#0D0F13}
+.lane.locked .clip{cursor:default}
+.lane.locked .clip .h,.lane.locked .clip .fh{display:none}
+.lane.locked .clip .cl::after{content:"  · locked";opacity:.7}
+.lane.locked .lane-body{background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.025) 0 6px,transparent 6px 12px)}
 .tg.a.has{color:#4FD1A5;border-color:#4FD1A5}
 .tempo-picks{display:grid;gap:4px;max-height:300px;overflow:auto}
 .trow{display:grid;grid-template-columns:20px 110px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font:12px var(--f-mono);cursor:pointer}
@@ -430,6 +436,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <button class="btn sm tgl" data-act="looplock" id="loopLockBtn" aria-pressed="false" title="Lock the loop: clicks outside it are ignored and playback stays in the loop. Unlocked, a click outside turns the loop off and plays from there."><svg class="i" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2"/></svg>Lock</button>
       <button class="btn sm tgl" data-act="metro" id="metroBtn" aria-pressed="false" title="Metronome: a click on every beat while playing (C)">Click</button>
       <button class="btn sm tgl" data-act="snap" id="snapBtn" aria-pressed="false" title="Line parts and selections up with the beat">Snap</button>
+      <button class="btn sm tgl" data-act="follow" id="followBtn" aria-pressed="true" title="Follow: the view scrolls along with playback (F). Off: it stays where you put it.">Follow</button>
       <button class="btn sm rec" data-act="record" id="recBtn" title="Record your voice over the mix"><span class="dot"></span><span id="recLbl">Record</span></button>
     </div>
     <div class="tb-right">
