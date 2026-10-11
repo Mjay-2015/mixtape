@@ -834,7 +834,11 @@ function liveLanes() {
     n.delay.delayTime.setTargetAtTime(echoTime(), now, 0.05);
   }
 }
-function seek(t) { playhead = clamp(t, 0, Math.max(projectEnd(), 0)); if (playing && !rec) { pause(); play(); } else drawPlayhead(); }
+function seek(t) {
+  const to = clamp(t, 0, Math.max(projectEnd(), 0));
+  // stopping remembers where playback was, so set the new spot after stopping, not before
+  if (playing && !rec) { pause(); playhead = to; play(); } else { playhead = to; drawPlayhead(); }
+}
 async function previewSel() {
   if (preview) return stopPreview();
   const c = clipById(selClip); if (!c) return;
@@ -1755,6 +1759,7 @@ $('#lanes').addEventListener('pointerdown', e => {
   drawEditor(); renderInspector();
   try { el.setPointerCapture(e.pointerId); } catch (_) {}
   el.style.cursor = mode === 'move' ? 'grabbing' : 'ew-resize';
+  const r0left = el.getBoundingClientRect().left;
   const x0 = e.clientX, o = { at: c.at, start: c.start, end: c.end }, r = c.rate || 1, srcDur = c.kind === 'midi' ? 36000 : bufs.get(c.trackId)?.buffer.duration ?? c.end;
   const edges = P.clips.filter(x => x !== c).flatMap(x => [x.at, x.at + dur(x)]).concat([0, playhead], visibleMarkers().map(mT));
   const snapEdge = t => { for (const s of edges) if (Math.abs(s - t) * pps < 8) return s; return null; };
@@ -1789,7 +1794,7 @@ $('#lanes').addEventListener('pointerdown', e => {
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', () => {
     el.removeEventListener('pointermove', mv); el.style.cursor = '';
-    if (moved) { selLane = c.lane; tlSel = null; commit(); } else { tlSel = null; el.querySelectorAll('.tlsel').forEach(x => x.remove()); }
+    if (moved) { selLane = c.lane; tlSel = null; commit(); } else { tlSel = null; el.querySelectorAll('.tlsel').forEach(x => x.remove()); if (mode === 'move') seek(o.at + (x0 - r0left) / pps); }
   }, { once: true });
 });
 
@@ -1822,7 +1827,7 @@ function selectStretch(e, el, c) {
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', () => {
     el.removeEventListener('pointermove', mv);
-    if (!tlSel) { if (!playing) { playhead = a0; drawPlayhead(); } else seek(a0); }
+    if (!tlSel) seek(a0); // a click on a part moves the playhead there, playing or not
     else toast(`Selected ${(tlSel.b - tlSel.a).toFixed(1)}s. Delete removes it · K keeps only it · Ctrl+E splits · Ctrl+D repeats · right-click for more`, 4500);
     if (edOpen && tlSel) { const s = selSource(); if (s) edSel = { a: s.a, b: s.b }; }
     drawEditor(); renderInspector();
