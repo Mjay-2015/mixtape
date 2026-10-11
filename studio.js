@@ -168,8 +168,10 @@ let P, projId = null;
 }
 let selClip = null, selLane = P.lanes[0].id, playhead = 0, pps = 24, edSel = null;
 let hist = [], fut = [], last = JSON.stringify(P);
+let savedT = null;
 const persist = () => {
-  try { localStorage.setItem(LSP_ONE(projId), last); } catch (e) { toast('This laptop’s browser storage is full, so the last change could not be saved.', 6000); }
+  try { localStorage.setItem(LSP_ONE(projId), last); const s = document.getElementById('savedLbl'); if (s) { s.textContent = 'Saved'; s.classList.add('on'); clearTimeout(savedT); savedT = setTimeout(() => s.classList.remove('on'), 1600); } }
+  catch (e) { toast('This laptop’s browser storage is full, so the last change could not be saved.', 6000); }
   const list = loadIndex(), it = list.find(x => x.id === projId);
   if (it) { it.name = P.name || 'My mix'; it.updated = Date.now(); } else list.unshift({ id: projId, name: P.name || 'My mix', updated: Date.now() });
   saveIndex(list);
@@ -1144,7 +1146,7 @@ function renderLanes() {
   renderLoop();
   $$('.clip').forEach(el => drawClipCanvas(el.querySelector('canvas'), clipById(el.dataset.clip)));
   $$('#lanes .lane').forEach(el => { const l = P.lanes.find(x => x.id === el.dataset.lane); if (l) drawAuto(el, l); });
-  renderRuler(); drawPlayhead();
+  renderRuler(); drawPlayhead(); drawOverview();
 }
 function renderRuler() {
   const cv = $('#ruler'), r = dpr(), w = timelineWidth(), h = 28;
@@ -1189,6 +1191,22 @@ function followPlayhead(p) {
 function scrollToTime(t) { const tl = $('#tl'); const x = t * pps; if (x < tl.scrollLeft || x > tl.scrollLeft + tl.clientWidth - headW() - 60) tl.scrollLeft = Math.max(0, x - 60); }
 
 let edView = null;
+let edWin = null; // { clipId, v0, v1 }: the stretch of the song the part editor shows
+function edWindow(c, D) {
+  if (!edWin || edWin.clipId !== c.id) { const pad = Math.max(0.5, (c.end - c.start) * 0.08); edWin = { clipId: c.id, v0: Math.max(0, c.start - pad), v1: Math.min(D, c.end + pad) }; }
+  edWin.v0 = clamp(edWin.v0, 0, D); edWin.v1 = clamp(edWin.v1, edWin.v0 + 0.02, D);
+  return edWin;
+}
+function edZoom(f, anchorFrac = 0.5) {
+  const c = clipById(selClip); if (!c || !edView || edView.midi) return;
+  const D = edView.D, span = edWin.v1 - edWin.v0, ns = clamp(span * f, 0.05, D), at = edWin.v0 + span * anchorFrac;
+  let v0 = at - ns * anchorFrac; v0 = clamp(v0, 0, D - ns); edWin.v0 = v0; edWin.v1 = v0 + ns; drawEditor();
+}
+function edFit(what) {
+  const c = clipById(selClip); if (!c || !edView || edView.midi) return;
+  if (what === 'all') { edWin.v0 = 0; edWin.v1 = edView.D; } else { const pad = Math.max(0.5, (c.end - c.start) * 0.08); edWin.v0 = Math.max(0, c.start - pad); edWin.v1 = Math.min(edView.D, c.end + pad); }
+  drawEditor();
+}
 function drawEditor() {
   const c = clipById(selClip), cv = $('#edCanvas'), wrap = $('#edWrap');
   $('#edEmpty').hidden = !!c;
@@ -1211,17 +1229,30 @@ function drawEditor() {
   $('#edInfo').textContent = `part ${fmtT(c.start)}–${fmtT(c.end)} of ${e ? fmtT(e.buffer.duration) : '?'}${a ? ` · ${a.bpm ? a.bpm + ' BPM' : 'no steady beat'} · ${a.keyName}` : analyzing.has(c.trackId) ? ' · finding tempo and key…' : ''}`;
   $('#selInfo').textContent = edSel ? `Selected ${fmtT(edSel.a)}–${fmtT(edSel.b)} (${(edSel.b - edSel.a).toFixed(1)}s)` : P.snap ? 'Drag to select (snaps to the beat)' : 'Drag across the waveform to select';
   if (!e) return;
-  const D = e.buffer.duration; edView = { D, w };
-  const X = s => s / D * w, col = laneColor(c.lane);
-  g.fillStyle = withAlpha(col, .12); g.fillRect(X(c.start), 0, X(c.end) - X(c.start), h);
-  drawWave(g, e, 0, D, 0, w, h, withAlpha(col, .3));
-  g.save(); g.beginPath(); g.rect(X(c.start), 0, X(c.end) - X(c.start), h); g.clip(); drawWave(g, e, 0, D, 0, w, h, col); g.restore();
+  const D = e.buffer.duration, W = edWindow(c, D), span = W.v1 - W.v0, OV = 14; // the top strip is an overview of the whole song
+  edView = { D, w, v0: W.v0, v1: W.v1, ov: OV };
+  const X = s => (s - W.v0) / span * w, col = laneColor(c.lane), hh = h - OV;
+  g.save(); g.translate(0, OV);
+  g.fillStyle = withAlpha(col, .12); g.fillRect(X(c.start), 0, X(c.end) - X(c.start), hh);
+  drawWave(g, e, W.v0, W.v1, 0, w, hh, withAlpha(col, .3));
+  g.save(); g.beginPath(); g.rect(X(c.start), 0, X(c.end) - X(c.start), hh); g.clip(); drawWave(g, e, W.v0, W.v1, 0, w, hh, col); g.restore();
   const sb = songBeats(c.trackId);
-  if (sb && sb.len / D * w >= 3) { g.fillStyle = css('--muted'); for (let b = 0, tb = sb.off; tb < D; b++, tb += sb.len) g.fillRect(Math.round(X(tb)), 0, 1, b % 4 ? 4 : 9); }
-  g.fillStyle = css('--accent'); g.fillRect(X(c.start) - 1, 0, 2, h); g.fillRect(X(c.end) - 1, 0, 2, h);
-  if (edSel) { g.fillStyle = css('--sel'); g.fillRect(X(edSel.a), 0, X(edSel.b) - X(edSel.a), h); g.fillStyle = css('--ink'); g.fillRect(X(edSel.a), 0, 1, h); g.fillRect(X(edSel.b), 0, 1, h); }
-  if (preview) { const p = preview.a + (ctx.currentTime - preview.st); g.fillStyle = css('--danger'); g.fillRect(X(clamp(p, preview.a, preview.b)), 0, 2, h); }
-  else { const p = curPos() - c.at; if (p >= 0 && p <= dur(c)) { g.fillStyle = css('--danger'); g.fillRect(X(c.start + p * (c.rate || 1)), 0, 2, h); } }
+  if (sb && sb.len / span * w >= 3) { g.fillStyle = css('--muted'); const b0 = Math.max(0, Math.floor((W.v0 - sb.off) / sb.len)); for (let b = b0, tb = sb.off + b0 * sb.len; tb < W.v1; b++, tb += sb.len) g.fillRect(Math.round(X(tb)), 0, 1, b % 4 ? 4 : 9); }
+  // time labels along the bottom, so you always know where you are
+  { const steps = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60], st = steps.find(s => s / span * w >= 70) || 120; g.fillStyle = css('--muted'); g.font = `10px ${css('--f-mono')}`; g.textBaseline = 'bottom';
+    for (let t = Math.ceil(W.v0 / st) * st; t < W.v1; t += st) { const x = Math.round(X(t)); g.fillRect(x, hh - 5, 1, 5); g.fillText(st < 1 ? t.toFixed(2) : fmtT(t), x + 3, hh - 1); } }
+  g.fillStyle = css('--accent'); g.fillRect(X(c.start) - 1, 0, 2, hh); g.fillRect(X(c.end) - 1, 0, 2, hh);
+  if (edSel) { g.fillStyle = css('--sel'); g.fillRect(X(edSel.a), 0, X(edSel.b) - X(edSel.a), hh); g.fillStyle = css('--ink'); g.fillRect(X(edSel.a), 0, 1, hh); g.fillRect(X(edSel.b), 0, 1, hh); }
+  if (preview) { const p = preview.a + (ctx.currentTime - preview.st); g.fillStyle = css('--danger'); g.fillRect(X(clamp(p, preview.a, preview.b)), 0, 2, hh); }
+  else { const p = curPos() - c.at; if (p >= 0 && p <= dur(c)) { g.fillStyle = css('--danger'); g.fillRect(X(c.start + p * (c.rate || 1)), 0, 2, hh); } }
+  g.restore();
+  // overview strip: the whole song, the part in colour, a box round what is shown
+  const O = s => s / D * w;
+  g.fillStyle = css('--raise'); g.fillRect(0, 0, w, OV - 2);
+  drawWave(g, e, 0, D, 0, w, OV - 2, withAlpha(col, .45));
+  g.fillStyle = withAlpha(col, .35); g.fillRect(O(c.start), 0, O(c.end) - O(c.start), OV - 2);
+  g.strokeStyle = css('--ink'); g.lineWidth = 1; g.strokeRect(O(W.v0) + 0.5, 0.5, Math.max(3, O(W.v1) - O(W.v0)) - 1, OV - 3);
+  $('#edZoomLbl').textContent = span >= D - 0.01 ? 'whole song' : `${span < 10 ? span.toFixed(2) : fmtT(span)} shown`;
 }
 
 function renderInspector() {
@@ -1328,12 +1359,24 @@ $('#strips').addEventListener('click', e => {
   else if (b.dataset.mx === 'fx') { selLane = l.id; selClip = null; if (!UI.insp) { UI.insp = true; applyUI(); } renderLanes(); renderInspector(); $('#insp').scrollTop = 0; return; }
   liveLanes(); quietCommit(); renderLanes(); renderMixer();
 });
+/* Listening in the library: one song at a time, from a little way in, click again to stop */
+let libPrev = null;
+function stopLibPrev() { if (!libPrev) return; libPrev.audio.pause(); URL.revokeObjectURL(libPrev.url); libPrev = null; renderLibrary(); }
+function toggleLibPrev(id) {
+  const same = libPrev && libPrev.id === id; stopLibPrev(); if (same) return;
+  const t = libTrack(id); if (!t) return;
+  pause(); stopPreview();
+  const url = URL.createObjectURL(t.blob), audio = new Audio(url);
+  audio.addEventListener('loadedmetadata', () => { if (audio.duration > 40) audio.currentTime = audio.duration * 0.3; }, { once: true });
+  audio.addEventListener('ended', stopLibPrev, { once: true });
+  audio.play().catch(() => {}); libPrev = { id, audio, url }; renderLibrary();
+}
 function renderLibrary() {
   const q = $('#libQ').value.trim().toLowerCase();
   const list = lib.filter(t => !t.stemOf && t.kind !== 'video' && (!q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q)));
   $('#lib').innerHTML = list.length ? list.map(t => { const a = ana[t.id];
     const info = a ? `<span class="bk">${a.bpm ? a.bpm + ' BPM' : 'no steady beat'} · ${esc(a.keyName)}</span>` : analyzing.has(t.id) ? '<span class="bk busy">finding tempo and key…</span>' : '';
-    return `<li draggable="true" data-drag="${t.id}" title="Drag onto a track"><span class="grip" aria-hidden="true">⋮⋮</span><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span class="li-sub">${esc(t.artist || 'Unknown artist')} · ${fmtT(t.duration).replace(/\.\d$/, '')}</span>${info}</div>
+    return `<li draggable="true" data-drag="${t.id}" title="Drag onto a track"><button class="lp${libPrev && libPrev.id === t.id ? ' on' : ''}" data-libprev="${t.id}" title="${libPrev && libPrev.id === t.id ? 'Stop listening' : 'Listen'}" aria-label="${libPrev && libPrev.id === t.id ? 'Stop listening to' : 'Listen to'} ${esc(t.title)}">${libPrev && libPrev.id === t.id ? '■' : '▶'}</button><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span class="li-sub">${esc(t.artist || 'Unknown artist')} · ${fmtT(t.duration).replace(/\.\d$/, '')}</span>${info}</div>
       <div class="acts"><button data-add="append" data-id="${t.id}" title="Add to the end of the selected track">Add</button><button data-add="layer" data-id="${t.id}" title="Put it on a new track at the playhead">New track</button></div></li>`; }).join('')
     : `<li class="empty-note">${lib.length ? 'No songs match your search.' : 'No songs yet. Press “Import audio files” above, or drop music files onto the timeline.'}</li>`;
   const n = lib.filter(t => !t.stemOf && t.kind !== 'video').length; $('#libCount').textContent = `${n} song${n === 1 ? '' : 's'}`;
@@ -1358,7 +1401,8 @@ function renderAll() { $('#projName').value = P.name; renderLanes(); drawEditor(
 const acts = {
   play: () => playing ? (rec ? stopRecord() : pause()) : play(), stop: () => { if (rec) return stopRecord(); pause(); seek(0); $('#tl').scrollLeft = 0; },
   undo, redo, save: saveSong, record: toggleRecord,
-  zin: () => zoom(1.5), zout: () => zoom(1 / 1.5), fit: fitZoom,
+  zin: () => zoom(1.5), zout: () => zoom(1 / 1.5), fit: fitZoom, zsel: zoomToSelection, shortcuts: showShortcuts, tour: () => startTour(true),
+  edzin: () => edZoom(1 / 1.6), edzout: () => edZoom(1.6), edfit: () => edFit('part'), edall: () => edFit('all'),
   snap: () => { P.snap = !P.snap; if (P.snap && !P.bpm) toast('Add a song first so the Studio can find the beat.'); commit(P.snap ? 'Snapping to the beat' : 'Snap off'); },
   addlane: () => { const l = newLane(P.lanes.length + 1); P.lanes.push(l); selLane = l.id; commit('Track added'); },
   selall: () => { const c = clipById(selClip); if (c) { edSel = { a: c.start, b: c.end }; drawEditor(); } },
@@ -1401,7 +1445,10 @@ const acts = {
   projects: b => projectsMenu(b),
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && !b.disabled && acts[b.dataset.act]) acts[b.dataset.act](b, e); });
-$('#lib').addEventListener('click', e => { const b = e.target.closest('[data-add]'); if (b) addRegion(b.dataset.id, 0, null, b.dataset.add); });
+$('#lib').addEventListener('click', e => {
+  const p = e.target.closest('[data-libprev]'); if (p) return toggleLibPrev(p.dataset.libprev);
+  const b = e.target.closest('[data-add]'); if (b) { stopLibPrev(); addRegion(b.dataset.id, 0, null, b.dataset.add); }
+});
 $('#libQ').addEventListener('input', renderLibrary);
 $('#projName').addEventListener('change', e => { P.name = e.target.value.trim() || 'My mix'; commit(); });
 
@@ -1418,14 +1465,138 @@ const TIPS = {
   selappend: 'Copy the selection to the end of this track', sellayer: 'Copy the selection onto a new track', addlane: 'Add an empty track', mutepart: 'Mute or unmute this part',
   import: 'Pick music files from this computer', showlib: 'Show your library on the left', record: 'Record your voice over the mix, with a one-bar count-in',
 };
-function applyTips() { $$('[data-act]').forEach(b => { if (!b.title && TIPS[b.dataset.act]) b.title = TIPS[b.dataset.act]; }); }
-function zoom(f, anchorT) {
-  const tl = $('#tl'); const t = anchorT ?? (tl.scrollLeft + (tl.clientWidth - headW()) / 2) / pps;
-  pps = clamp(pps * f, 2, 600); renderLanes(); drawEditor();
-  tl.scrollLeft = Math.max(0, t * pps - (tl.clientWidth - headW()) / 2);
+document.addEventListener('mouseover', e => {
+  const bar = document.getElementById('hintbar'); if (!bar || !e.target.closest) return;
+  let tip = '';
+  const z = e.target.closest('[data-h],[data-fade],.cl,.clip,svg.auto,.lane-grip,#ruler,#overview,#edWrap,.lane-body,[title],[aria-label]');
+  if (z) {
+    if (z.dataset && z.dataset.h) tip = 'Drag to trim this end of the part.';
+    else if (z.dataset && z.dataset.fade) tip = `Drag to fade ${z.dataset.fade === 'in' ? 'in' : 'out'}.`;
+    else if (z.classList.contains('cl')) tip = 'Drag the name bar to move the part, even onto another track. Double-click to open it in the part editor.';
+    else if (z.classList.contains('clip')) tip = 'Drag across the waveform to select a stretch, then Delete removes it or K keeps only it. Right-click for more.';
+    else if (z.matches('svg.auto')) tip = 'Click to add a point, drag to move it, double-click to remove it.';
+    else if (z.classList.contains('lane-grip')) tip = 'Drag to make this track taller or shorter.';
+    else if (z.id === 'ruler') tip = 'Click to move the playhead. Drag along the ruler to mark a loop.';
+    else if (z.id === 'overview') tip = 'The whole mix. Drag the box to move around, drag its edges to zoom.';
+    else if (z.id === 'edWrap') tip = 'Drag to select. Ctrl + scroll (or pinch) zooms where the mouse is; scroll moves along the song. Click the strip at the top to jump.';
+    else if (z.classList.contains('lane-body')) tip = 'Click to move the playhead here. Ctrl + scroll (or pinch) zooms where the mouse is.';
+    else tip = z.getAttribute('title') || z.getAttribute('aria-label') || '';
+  }
+  bar.textContent = tip || 'Press ? to see every shortcut.';
+});
+function showShortcuts() {
+  const g = (h, rows) => `<div class="kgroup"><h4>${h}</h4>${rows.map(([k, d]) => `<div class="krow"><span class="keys">${k.split(' ').map(x => `<kbd>${x}</kbd>`).join(' ')}</span><span>${d}</span></div>`).join('')}</div>`;
+  ask({ title: 'Shortcuts', ok: 'Close', extra: `<div class="ksheet">
+    ${g('Play', [['Space', 'Play or pause'], ['Home', 'Back to the start'], ['L', 'Loop on or off'], ['C', 'Click track']])}
+    ${g('See', [['Ctrl scroll', 'Zoom where the mouse is (or pinch)'], ['Shift scroll', 'Move along the timeline'], ['+ −', 'Zoom in and out'], ['Z', 'Zoom to the selection'], ['B', 'Library'], ['I', 'Settings'], ['X', 'Mixer'], ['V', 'Video window']])}
+    ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
+    ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
+  </div>` });
 }
-function fitZoom() { const end = Math.max(projectEnd(), 20); pps = clamp(($('#tl').clientWidth - headW() - 40) / end, 2, 600); renderLanes(); $('#tl').scrollLeft = 0; }
-$('#tl').addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); zoom(e.deltaY < 0 ? 1.25 : 0.8); }, { passive: false });
+/* First visit: three short pointers, then out of the way for good */
+function startTour(force) {
+  if (!force && UI.toured) return;
+  const steps = [
+    { el: '#lib', text: 'Your songs. Press ▶ to listen, then drag one onto a track, or press Add.' },
+    { el: '#tl', text: 'The timeline. Hold Ctrl and scroll (or pinch) to zoom where the mouse is. Drag a part’s name bar to move it; drag across its waveform to select a stretch.' },
+    { el: '#playBtn', text: 'Space plays and pauses. Everything you do is saved as you go, and Ctrl + Z undoes it. Press ? any time for the shortcuts.' },
+  ];
+  let i = 0; const tip = document.getElementById('coach');
+  const show = () => {
+    const s = steps[i], t = $(s.el); if (!t || t.offsetParent === null) return next();
+    const r = t.getBoundingClientRect();
+    tip.querySelector('p').textContent = s.text; tip.querySelector('.cstep').textContent = `${i + 1} of ${steps.length}`;
+    tip.querySelector('[data-coach="next"]').textContent = i === steps.length - 1 ? 'Got it' : 'Next';
+    tip.hidden = false;
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    let x, y;
+    if (r.height > innerHeight * 0.35) { // a tall panel: sit beside it, near its top, so what it describes stays visible
+      x = r.right + 12 + tw < innerWidth ? r.right + 12 : Math.max(12, r.left - tw - 12); y = clamp(r.top + 60, 12, innerHeight - th - 12);
+      if (r.width > innerWidth * 0.5) { x = clamp(r.left + 60, 12, innerWidth - tw - 12); y = clamp(r.top + 110, 12, innerHeight - th - 12); }
+    } else { x = clamp(r.left + r.width / 2 - tw / 2, 12, innerWidth - tw - 12); y = r.bottom + 12; if (y + th > innerHeight - 12) y = Math.max(12, r.top - th - 12); }
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+    $$('.coach-target').forEach(x => x.classList.remove('coach-target')); t.classList.add('coach-target');
+  };
+  const done = () => { tip.hidden = true; $$('.coach-target').forEach(x => x.classList.remove('coach-target')); UI.toured = true; saveUI(); };
+  const next = () => { i++; if (i >= steps.length) return done(); show(); };
+  tip.onclick = e => { const b = e.target.closest('[data-coach]'); if (!b) return; b.dataset.coach === 'skip' ? done() : next(); };
+  show();
+}
+function applyTips() { $$('[data-act]').forEach(b => { if (!b.title && TIPS[b.dataset.act]) b.title = TIPS[b.dataset.act]; }); }
+/* Zoom keeps the moment under the pointer (or the middle of the view) where it is, like Audacity */
+const PPS_MIN = 2, PPS_MAX = 800;
+function zoom(f, anchorT, anchorX) {
+  const tl = $('#tl'), viewW = tl.clientWidth - headW(), ax = anchorX ?? viewW / 2;
+  const t = anchorT ?? (tl.scrollLeft + ax) / pps;
+  const next = clamp(pps * f, PPS_MIN, PPS_MAX); if (Math.abs(next - pps) < 1e-9) return;
+  pps = next; renderLanes(); drawEditor();
+  tl.scrollLeft = Math.max(0, t * pps - ax);
+  syncZoomUI();
+}
+function fitZoom() { const end = Math.max(projectEnd(), 20); pps = clamp(($('#tl').clientWidth - headW() - 40) / end, PPS_MIN, PPS_MAX); renderLanes(); $('#tl').scrollLeft = 0; syncZoomUI(); }
+function zoomToRange(a, b) {
+  const tl = $('#tl'), viewW = tl.clientWidth - headW();
+  pps = clamp((viewW - 60) / Math.max(0.05, b - a), PPS_MIN, PPS_MAX); renderLanes(); drawEditor();
+  tl.scrollLeft = Math.max(0, a * pps - 30); syncZoomUI();
+}
+function zoomToSelection() {
+  if (tlSel) return zoomToRange(tlSel.a, tlSel.b);
+  const c = clipById(selClip); if (c) return zoomToRange(c.at, c.at + dur(c));
+  if (loopActive()) return zoomToRange(P.loop.a, P.loop.b);
+  toast('Select a part or drag across a stretch first, then press Z to zoom to it.');
+}
+const ppsToSlider = v => Math.round(1000 * Math.log(v / PPS_MIN) / Math.log(PPS_MAX / PPS_MIN));
+const sliderToPps = s => PPS_MIN * Math.pow(PPS_MAX / PPS_MIN, s / 1000);
+function syncZoomUI() { const s = $('#zoomSlider'); if (s) s.value = ppsToSlider(pps); drawOverview(); }
+$('#zoomSlider').addEventListener('input', e => zoom(sliderToPps(+e.target.value) / pps));
+// Ctrl/Cmd + scroll or a trackpad pinch zooms at the pointer; Shift + scroll moves along the timeline; plain scroll moves up and down
+$('#tl').addEventListener('wheel', e => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  const r = $('#tl').getBoundingClientRect(), ax = clamp(e.clientX - r.left - headW(), 0, r.width);
+  zoom(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025)), undefined, ax);
+}, { passive: false });
+$('#tl').addEventListener('scroll', () => drawOverview(), { passive: true });
+/* The overview: the whole mix in one thin strip, with a box showing the part you are looking at. Drag the box to move, drag its edges to zoom. */
+function drawOverview() {
+  const box = $('#overview'); if (!box) return;
+  const show = P.clips.length > 0; box.hidden = !show; if (!show) return;
+  const cv = $('#ovCanvas'), r = dpr(), w = box.clientWidth, h = box.clientHeight, end = Math.max(projectEnd(), 1) * 1.02;
+  cv.width = Math.round(w * r); cv.height = Math.round(h * r);
+  const g = cv.getContext('2d'); g.setTransform(r, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
+  const n = Math.max(1, P.lanes.length), lh = (h - 4) / n;
+  P.lanes.forEach((l, i) => {
+    g.fillStyle = withAlpha(l.color || PALETTE[0], laneAudible(l) ? 0.85 : 0.3);
+    for (const c of P.clips) if (c.lane === l.id) g.fillRect(c.at / end * w, 2 + i * lh, Math.max(1, dur(c) / end * w), Math.max(1, lh - 1));
+  });
+  const tl = $('#tl'), a = tl.scrollLeft / pps, b = a + (tl.clientWidth - headW()) / pps;
+  const x0 = clamp(a / end * w, 0, w), x1 = clamp(b / end * w, 0, w);
+  g.fillStyle = 'rgba(255,255,255,.10)'; g.fillRect(x0, 0, Math.max(4, x1 - x0), h);
+  g.strokeStyle = css('--ink'); g.lineWidth = 1.5; g.strokeRect(x0 + 0.75, 0.75, Math.max(4, x1 - x0) - 1.5, h - 1.5);
+  const p = curPos() / end * w; g.fillStyle = css('--danger'); g.fillRect(p, 0, 1.5, h);
+  box.dataset.x0 = x0; box.dataset.x1 = x1; box.dataset.end = end;
+}
+$('#overview').addEventListener('pointerdown', e => {
+  const box = e.currentTarget, rect = box.getBoundingClientRect(), w = rect.width, end = +box.dataset.end;
+  const x0 = +box.dataset.x0, x1 = +box.dataset.x1, x = e.clientX - rect.left, tl = $('#tl');
+  const mode = Math.abs(x - x0) < 6 ? 'l' : Math.abs(x - x1) < 6 ? 'r' : (x > x0 && x < x1) ? 'move' : 'jump';
+  try { box.setPointerCapture(e.pointerId); } catch (_) {}
+  const startA = x0 / w * end, startB = x1 / w * end, grab = x / w * end - startA;
+  const apply = (a, b) => { a = Math.max(0, a); b = Math.max(a + 0.2, b); pps = clamp((tl.clientWidth - headW()) / (b - a), PPS_MIN, PPS_MAX); renderLanes(); tl.scrollLeft = a * pps; syncZoomUI(); };
+  const mv = ev => {
+    const t = clamp((ev.clientX - rect.left) / w, 0, 1) * end;
+    if (mode === 'l') apply(Math.min(t, startB - 0.2), startB);
+    else if (mode === 'r') apply(startA, Math.max(t, startA + 0.2));
+    else { tl.scrollLeft = Math.max(0, (t - (mode === 'jump' ? (startB - startA) / 2 : grab)) * pps); drawOverview(); }
+  };
+  mv(e);
+  box.addEventListener('pointermove', mv);
+  box.addEventListener('pointerup', () => box.removeEventListener('pointermove', mv), { once: true });
+});
+$('#overview').addEventListener('pointermove', e => {
+  const box = e.currentTarget, x = e.clientX - box.getBoundingClientRect().left;
+  box.style.cursor = Math.abs(x - +box.dataset.x0) < 6 || Math.abs(x - +box.dataset.x1) < 6 ? 'ew-resize' : (x > +box.dataset.x0 && x < +box.dataset.x1) ? 'grab' : 'pointer';
+});
 
 $('#ruler').addEventListener('pointerdown', e => {
   const cv = e.currentTarget; try { cv.setPointerCapture(e.pointerId); } catch (_) {}
@@ -1593,11 +1764,26 @@ $('#lanes').addEventListener('dblclick', e => {
   ensureBuf(c.trackId).then(() => drawEditor()).catch(() => {});
   drawEditor(); renderInspector();
 });
+$('#edWrap').addEventListener('wheel', e => {
+  const c = clipById(selClip); if (!c || !edView || edView.midi) return;
+  e.preventDefault();
+  const r = e.currentTarget.getBoundingClientRect(), frac = clamp((e.clientX - r.left) / r.width, 0, 1);
+  if (e.ctrlKey || e.metaKey) return edZoom(Math.exp(e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025)), frac);
+  // plain or Shift + scroll moves along the song
+  const span = edWin.v1 - edWin.v0, d = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * (e.deltaMode === 1 ? 16 : 1) / r.width * span;
+  const v0 = clamp(edWin.v0 + d, 0, edView.D - span); edWin.v0 = v0; edWin.v1 = v0 + span; drawEditor();
+}, { passive: false });
 $('#edWrap').addEventListener('pointerdown', e => {
   const c = clipById(selClip); if (!c || !edView) return;
   if (c.kind === 'midi') { if (edView.midi) pianoPointer(e, e.currentTarget, c); return; }
-  const wrap = e.currentTarget; try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
-  const tAt = ev => clamp(snapSrc(c.trackId, (ev.clientX - wrap.getBoundingClientRect().left) / edView.w * edView.D), 0, edView.D);
+  const wrap = e.currentTarget, rect = wrap.getBoundingClientRect();
+  // a click in the overview strip moves the view there
+  if (e.clientY - rect.top < edView.ov) {
+    const span = edWin.v1 - edWin.v0, at = (e.clientX - rect.left) / rect.width * edView.D, v0 = clamp(at - span / 2, 0, edView.D - span);
+    edWin.v0 = v0; edWin.v1 = v0 + span; drawEditor(); return;
+  }
+  try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+  const tAt = ev => clamp(snapSrc(c.trackId, edView.v0 + (ev.clientX - wrap.getBoundingClientRect().left) / edView.w * (edView.v1 - edView.v0)), 0, edView.D);
   const a0 = tAt(e); stopPreview();
   const mv = ev => { const b = tAt(ev); edSel = { a: Math.min(a0, b), b: Math.max(a0, b) }; drawEditor(); };
   wrap.addEventListener('pointermove', mv);
@@ -1655,11 +1841,13 @@ document.addEventListener('keydown', e => {
   else if (mod && kl === 'v') { e.preventDefault(); pasteAtPlayhead(); }
   else if (mod && kl === 'l') { e.preventDefault(); acts.looptoggle(); }
   else if (mod || e.altKey) return;
+  else if (k === '?') { e.preventDefault(); showShortcuts(); }
   else if (k === ' ') { e.preventDefault(); acts.play(); }
   else if (k === 'Home') { e.preventDefault(); seek(0); }
   else if ((k === 'Delete' || k === 'Backspace') && edOpen && edNote && clipById(selClip)?.kind === 'midi') { e.preventDefault(); const c = clipById(selClip); c.notes = c.notes.filter(n => n.id !== edNote); edNote = null; commit('Note removed'); }
   else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); if (tlSel) removeStretch(); else if (selMarker && !selClip) deleteMarker(selMarker); else if (selClip) deleteClip(); }
   else if (kl === 'k') keepStretch();
+  else if (kl === 'z' && !(e.ctrlKey || e.metaKey)) zoomToSelection();
   else if (kl === 's') splitHere();
   else if (kl === 'l') acts.looptoggle();
   else if (kl === 'b') acts.togglelib();
@@ -2666,10 +2854,11 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
   const add = new URLSearchParams(location.search).get('add');
   if (add && libTrack(add)) { history.replaceState(null, '', location.pathname); await addRegion(add, 0, null, 'append'); }
   if (P.clips.length) fitZoom();
+  setTimeout(() => startTour(false), 600);
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,

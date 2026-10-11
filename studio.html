@@ -98,7 +98,7 @@ button,input,select{font:inherit;color:inherit}
 .libhint{margin:0;font-size:12px;color:var(--muted);line-height:1.4}
 .libhint b{color:var(--ink);font-weight:600}
 .lib{list-style:none;margin:0;padding:8px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:4px}
-.lib li{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 8px 8px 6px;border-radius:8px;border:1px solid transparent;background:var(--panel-2)}
+.lib li{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 8px 8px 6px;border-radius:8px;border:1px solid transparent;background:var(--panel-2)}
 .lib li:hover{border-color:var(--line-2);background:#1F242C}
 .lib li[draggable="true"]{cursor:grab}
 .lib li.dragging{opacity:.45}
@@ -108,7 +108,7 @@ button,input,select{font:inherit;color:inherit}
 .lib .li-sub{display:block;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lib .bk{display:inline-block;margin-top:4px;font:11px var(--f-mono);color:var(--accent);background:rgba(245,165,36,.1);border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .lib .bk.busy{color:var(--muted);background:var(--raise)}
-.lib .acts{display:flex;flex-direction:column;gap:4px;opacity:0;transition:opacity .12s}
+.lib .acts{display:flex;flex-direction:column;gap:4px;opacity:.45;transition:opacity .12s}
 .lib li:hover .acts,.lib li:focus-within .acts{opacity:1}
 @media (hover:none){.lib .acts{opacity:1}}
 .lib .acts button{height:24px;padding:0 9px;border-radius:5px;border:1px solid var(--line-2);background:var(--raise);font-size:11px;font-weight:600;cursor:pointer;color:var(--ink);white-space:nowrap}
@@ -117,9 +117,14 @@ button,input,select{font:inherit;color:inherit}
 .lib li.empty-note{display:block;color:var(--muted);padding:16px 10px;font-size:13px;background:none;border:0}
 
 /* centre: tracks over the part editor */
-.mid{display:grid;grid-template-rows:minmax(0,1fr) auto auto;min-height:0;min-width:0;background:var(--bg)}
+.mid{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto;min-height:0;min-width:0;background:var(--bg)}
 .tl{overflow:auto;position:relative;min-height:0}
 .tl-inner{position:relative;min-height:100%}
+.overview{height:26px;flex:none;background:var(--panel);border-bottom:1px solid var(--line);cursor:pointer;touch-action:none}
+.overview canvas{display:block;width:100%;height:100%}
+.zoomslider{width:110px;accent-color:var(--accent)}
+.edzoom{display:flex;align-items:center;gap:4px}
+.edzoom .zl{font:11px var(--f-mono);color:var(--muted);min-width:78px;text-align:center}
 .ruler-row{position:sticky;top:0;z-index:5;display:flex;height:30px;background:var(--panel);border-bottom:1px solid var(--line)}
 .corner{position:sticky;left:0;z-index:6;width:var(--head-w);flex:none;background:var(--panel);border-right:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 6px 0 12px}
 #ruler{display:block;height:30px;cursor:pointer}
@@ -277,7 +282,24 @@ svg.auto .aread{fill:#4FD1A5;font:600 11px var(--f-mono);pointer-events:none}
 
 /* part editor dock */
 .editor{border-top:1px solid var(--line);background:var(--panel);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
-.ed-head{display:flex;align-items:center;gap:12px;min-width:0}
+.ed-head{display:flex;align-items:center;gap:6px 12px;min-width:0;flex-wrap:wrap}
+.ed-head .edzoom{margin-left:auto}
+.saved{font:11px var(--f-mono);color:var(--muted);opacity:0;transition:opacity .4s}
+.saved.on{opacity:1}
+.lib .lp{width:28px;height:28px;border-radius:50%;border:1px solid var(--line-2);background:var(--raise);color:var(--ink);font-size:10px;cursor:pointer;padding:0;display:grid;place-items:center}
+.lib .lp:hover{border-color:var(--accent);color:var(--accent)}
+.lib .lp.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.hintbar{position:fixed;left:0;right:0;bottom:0;z-index:30;height:22px;padding:3px 14px;font:11px var(--f-ui);color:var(--muted);background:var(--panel);border-top:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+body{padding-bottom:22px}
+.coach{position:fixed;z-index:60;max-width:320px;background:var(--raise);color:var(--ink);border:1px solid var(--accent);border-radius:10px;padding:12px 14px;box-shadow:0 12px 32px -8px rgba(0,0,0,.6);display:grid;gap:8px}
+.coach p{margin:0;font-size:13px;line-height:1.45}
+.coach .cstep{font:600 10px var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.coach .cbtns{display:flex;justify-content:flex-end;gap:6px}
+.coach-target{outline:2px solid var(--accent);outline-offset:-2px;border-radius:6px}
+.ksheet{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;max-height:60vh;overflow:auto}
+.kgroup h4{margin:0 0 6px;font:600 11px var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.krow{display:grid;grid-template-columns:96px 1fr;gap:8px;align-items:center;font-size:12px;padding:3px 0}
+.krow kbd{font:600 11px var(--f-mono);background:var(--bg);border:1px solid var(--line-2);border-bottom-width:2px;border-radius:4px;padding:1px 5px}
 .ed-tag{font:600 10px var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);flex:none}
 .ed-head h2{font:600 14px var(--f-ui);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .ed-head .info{font:11px var(--f-mono);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}
@@ -370,6 +392,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <div class="sepv"></div>
       <div class="mark"><i aria-hidden="true"></i>Mixtape <span>Studio</span></div>
       <input class="name" id="projName" value="My mix" aria-label="Mix name" maxlength="60" title="Name of this mix">
+      <span class="saved" id="savedLbl" aria-live="polite"></span>
     </div>
     <div class="transport" role="group" aria-label="Transport">
       <button class="ib" data-act="stop" aria-label="Back to start" title="Back to start (Home)"><svg class="i"><use href="#i-stop"/></svg></button>
@@ -386,13 +409,16 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <div class="sepv"></div>
       <button class="ib" data-act="zout" aria-label="Zoom out" title="Zoom out (−)"><svg class="i"><use href="#i-zout"/></svg></button>
       <button class="btn sm ghost" data-act="fit" title="Fit the whole mix on screen">Fit</button>
-      <button class="ib" data-act="zin" aria-label="Zoom in" title="Zoom in (+)"><svg class="i"><use href="#i-zin"/></svg></button>
+      <input type="range" id="zoomSlider" class="zoomslider" min="0" max="1000" value="400" aria-label="Zoom" title="Zoom. Tip: hold Ctrl and scroll (or pinch) over the tracks to zoom where the mouse is.">
+      <button class="ib" data-act="zin" aria-label="Zoom in" title="Zoom in (+). Ctrl + scroll zooms where the mouse is"><svg class="i"><use href="#i-zin"/></svg></button>
+      <button class="btn sm ghost" data-act="zsel" title="Zoom to the selected part or stretch (Z)">Zoom to selection</button>
       <div class="sepv"></div>
       <button class="ib tgl2" data-act="video" id="vidBtn" aria-pressed="false" aria-label="Scene video" title="Score a scene: add a video, or show and hide the video window (V)"><svg class="i"><use href="#i-film"/></svg></button>
       <button class="ib tgl2" data-act="togglemixer" id="mixBtn" aria-pressed="false" aria-label="Show or hide the mixer" title="Show or hide the mixer (X)"><svg class="i"><use href="#i-mixer"/></svg></button>
       <button class="ib tgl2" data-act="togglelib" id="libBtn" aria-pressed="true" aria-label="Show or hide the library" title="Show or hide the library (B)"><svg class="i"><use href="#i-pleft"/></svg></button>
       <button class="ib tgl2" data-act="toggleinsp" id="inspBtn" aria-pressed="true" aria-label="Show or hide the settings" title="Show or hide the settings (I)"><svg class="i"><use href="#i-pright"/></svg></button>
       <div class="sepv"></div>
+      <button class="ib" data-act="shortcuts" aria-label="Shortcuts and help" title="Shortcuts and help (?)">?</button>
       <button class="btn sm ghost" data-act="projects" id="projBtn" title="Your mixes: open another, start a new one, duplicate or delete">Mixes ▾</button>
       <button class="btn primary" data-act="save" id="saveBtn" title="Save your mix as a song in your library or as a file"><svg class="i"><use href="#i-export"/></svg>Export</button>
     </div>
@@ -415,6 +441,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
     </aside>
 
     <section class="mid">
+      <div class="overview" id="overview" hidden title="The whole mix. Drag the box to move around, drag its edges to zoom."><canvas id="ovCanvas"></canvas></div>
       <div class="tl" id="tl">
         <div class="tl-empty" id="tlEmpty" hidden>
           <b>Start a mix</b>
@@ -440,7 +467,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 
       <div class="mixer" id="mixer" hidden aria-label="Mixer"><div class="mx-head"><span class="ed-tag">Mixer</span><span class="sp"></span><button class="ib" data-act="togglemixer" aria-label="Close the mixer" title="Close the mixer (X)"><svg class="i"><use href="#i-close"/></svg></button></div><div class="strips" id="strips"></div></div>
       <div class="editor" hidden>
-        <div class="ed-head"><span class="ed-tag">Part editor</span><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span><span class="sp"></span><button class="ib" data-act="edclose" aria-label="Close the part editor" title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
+        <div class="ed-head"><span class="ed-tag">Part editor</span><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span><span class="sp"></span><span class="edzoom" role="group" aria-label="Part editor zoom"><button class="ib" data-act="edzout" aria-label="Zoom out" title="Zoom out (Ctrl + scroll)"><svg class="i"><use href="#i-zout"/></svg></button><span class="zl" id="edZoomLbl"></span><button class="ib" data-act="edzin" aria-label="Zoom in" title="Zoom in (Ctrl + scroll)"><svg class="i"><use href="#i-zin"/></svg></button><button class="btn sm ghost" data-act="edfit" title="Show just this part">Part</button><button class="btn sm ghost" data-act="edall" title="Show the whole song">Whole song</button></span><button class="ib" data-act="edclose" aria-label="Close the part editor" title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
         <div class="ed-wrap" id="edWrap">
           <canvas id="edCanvas"></canvas>
           <div class="ed-empty" id="edEmpty">Click a part on the timeline to edit it here.</div>
@@ -479,6 +506,8 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 </div>
 <div class="busy" id="busy" hidden><div class="busybox"><span id="busyText">Working…</span><div class="pbar" id="busyBar" hidden><i id="busyFill"></i></div><button class="btn sm" id="busyCancel" hidden>Cancel</button></div></div>
 <div class="toast" id="toast" role="status" hidden></div>
+<div class="hintbar" id="hintbar" aria-live="off">Press ? to see every shortcut.</div>
+<div class="coach" id="coach" role="dialog" aria-label="Getting started" hidden><span class="cstep"></span><p></p><div class="cbtns"><button class="btn sm ghost" data-coach="skip">Skip</button><button class="btn sm primary" data-coach="next">Next</button></div></div>
 <script src="dsp-shared.js"></script>
 <script src="midi.js"></script>
 <script src="studio.js"></script>
