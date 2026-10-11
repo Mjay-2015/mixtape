@@ -834,6 +834,11 @@ function liveLanes() {
     n.delay.delayTime.setTargetAtTime(echoTime(), now, 0.05);
   }
 }
+/* A click on the timeline: outside a running loop, the loop switches off so playback goes where you clicked */
+function seekClick(t) {
+  if (loopActive() && (t < P.loop.a - 1e-3 || t >= P.loop.b)) { P.loopOn = false; quietCommit(); renderLoop(); renderRuler(); renderTransport(); toast('Loop off. Press L to turn it back on.', 2500); }
+  seek(t);
+}
 function seek(t) {
   const to = clamp(t, 0, Math.max(projectEnd(), 0));
   // stopping remembers where playback was, so set the new spot after stopping, not before
@@ -1696,7 +1701,7 @@ $('#ruler').addEventListener('pointerdown', e => {
     if (zooming) return;
     if (dragging && P.loop && P.loop.b - P.loop.a > 0.2) { quietCommit(); renderTransport(); restartIfPlaying(); toast(`Looping ${fmtT(P.loop.a)}–${fmtT(P.loop.b)}. Press L to turn the loop off.`, 3500); }
     else if (dragging) { P.loop = null; P.loopOn = false; renderLoop(); renderRuler(); }
-    else seek((ev.clientX - cv.getBoundingClientRect().left) / pps);
+    else seekClick((ev.clientX - cv.getBoundingClientRect().left) / pps);
   }, { once: true });
 });
 
@@ -1745,7 +1750,7 @@ $('#lanes').addEventListener('pointerdown', e => {
   const el = e.target.closest('.clip');
   if (!el) {
     const t = (e.clientX - body.getBoundingClientRect().left) / pps; selLane = body.parentElement.dataset.lane; selClip = null; edSel = null;
-    seek(clamp(t, 0, projectEnd())); renderLanes(); drawEditor(); renderInspector(); return;
+    seekClick(clamp(t, 0, projectEnd())); renderLanes(); drawEditor(); renderInspector(); return;
   }
   const c = clipById(el.dataset.clip); if (!c) return;
   const mode = e.target.dataset.h || (e.target.dataset.fade ? 'fade-' + e.target.dataset.fade : e.target.classList.contains('cl') ? 'move' : 'select');
@@ -1794,7 +1799,7 @@ $('#lanes').addEventListener('pointerdown', e => {
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', () => {
     el.removeEventListener('pointermove', mv); el.style.cursor = '';
-    if (moved) { selLane = c.lane; tlSel = null; commit(); } else { tlSel = null; el.querySelectorAll('.tlsel').forEach(x => x.remove()); if (mode === 'move') seek(o.at + (x0 - r0left) / pps); }
+    if (moved) { selLane = c.lane; tlSel = null; commit(); } else { tlSel = null; el.querySelectorAll('.tlsel').forEach(x => x.remove()); if (mode === 'move') seekClick(o.at + (x0 - r0left) / pps); }
   }, { once: true });
 });
 
@@ -1827,7 +1832,7 @@ function selectStretch(e, el, c) {
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', () => {
     el.removeEventListener('pointermove', mv);
-    if (!tlSel) seek(a0); // a click on a part moves the playhead there, playing or not
+    if (!tlSel) seekClick(a0); // a click on a part moves the playhead there, playing or not
     else toast(`Selected ${(tlSel.b - tlSel.a).toFixed(1)}s. Delete removes it · K keeps only it · Ctrl+E splits · Ctrl+D repeats · right-click for more`, 4500);
     if (edOpen && tlSel) { const s = selSource(); if (s) edSel = { a: s.a, b: s.b }; }
     drawEditor(); renderInspector();
