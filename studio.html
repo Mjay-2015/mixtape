@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Mixtape Studio</title>
@@ -169,6 +169,7 @@ button,input,select{font:inherit;color:inherit}
 .tg.on.lk{background:#9AA4B2;border-color:#9AA4B2;color:#0D0F13}
 .lane.locked .clip{cursor:default}
 .clip.pinned .cl::after{content:"  · pinned";opacity:.75}
+.clip.pattern .h.l{display:none}
 .clip.pinned .cl{cursor:not-allowed}
 .clip.pinned .h.l{display:none}
 .lane.locked .clip .h,.lane.locked .clip .fh{display:none}
@@ -551,6 +552,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="hintbar" id="hintbar" aria-live="off">Press ? to see every shortcut.</div>
 <div class="coach" id="coach" role="dialog" aria-label="Getting started" hidden><span class="cstep"></span><p></p><div class="cbtns"><button class="btn sm ghost" data-coach="skip">Skip</button><button class="btn sm primary" data-coach="next">Next</button></div></div>
+<script src="vendor/tone/Tone.js"></script>
 <script src="dsp-shared.js"></script>
 <script src="midi.js"></script>
 <script src="studio.js"></script>

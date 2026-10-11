@@ -110,7 +110,7 @@ function clipParams(c) {
 const procReady = new Map(), procLoading = new Map();
 const procKey = (id, k) => `${id}|${k.toFixed(4)}`;
 function ensureProc(c) {
-  if (c.kind === 'midi') return Promise.resolve(null);
+  if (c.kind === 'midi' || c.kind === 'pattern') return Promise.resolve(null);
   const { k } = clipParams(c); if (k === 1) return Promise.resolve(null);
   const key = procKey(c.trackId, k);
   if (procReady.has(key)) return Promise.resolve(procReady.get(key));
@@ -239,6 +239,7 @@ function holdPins(prev) {
 }
 function commit(msg) {
   adoptTempoKey();
+  P.clips.forEach(c => { if (c.kind === 'pattern') syncPattern(c); });
   P.clips.forEach(fixFades);
   { let prev = null; try { prev = JSON.parse(last); } catch (e) {}
     const s = holdPins(prev);
@@ -472,11 +473,15 @@ const laneAudible = l => !l.mute && (!P.lanes.some(x => x.solo) || l.solo);
 function buildLane(ac, l, master, force) {
   const g = ac.createGain(); g.gain.value = force || laneAudible(l) ? l.gain : 0;
   const ag = ac.createGain(); // automation rides on top of the fader
+  const pg = ac.createGain(); // sidechain pump from the drum machine's kick
   const bass = ac.createBiquadFilter(); bass.type = 'lowshelf'; bass.frequency.value = 150; bass.gain.value = l.fx.bass;
   const treble = ac.createBiquadFilter(); treble.type = 'highshelf'; treble.frequency.value = 5000; treble.gain.value = l.fx.treble;
   const filt = ac.createBiquadFilter(); setFilter(filt, l.fx.filter);
   const pan = ac.createStereoPanner(); pan.pan.value = l.pan;
-  g.connect(ag); ag.connect(bass); bass.connect(treble); treble.connect(filt); filt.connect(pan);
+  g.connect(ag); ag.connect(pg); pg.connect(bass); bass.connect(treble); treble.connect(filt);
+  let tfx = null;
+  if (HAS_TONE && l.tfx && l.tfx.type && l.tfx.type !== 'none') { try { tfx = makeTrackFx(toneFor(ac), l); } catch (e) { tfx = null; } }
+  if (tfx) { tconnect(filt, tfx); tfx.connect(pan); } else filt.connect(pan);
   const echoSend = ac.createGain(); echoSend.gain.value = l.fx.echo / 100;
   const delay = ac.createDelay(2); delay.delayTime.value = echoTime();
   const fb = ac.createGain(); fb.gain.value = 0.42; const dl = ac.createBiquadFilter(); dl.type = 'lowpass'; dl.frequency.value = 3500;
@@ -486,7 +491,7 @@ function buildLane(ac, l, master, force) {
   filt.connect(revSend); revSend.connect(conv); conv.connect(pan);
   pan.connect(master);
   const meter = ac.createAnalyser(); meter.fftSize = 512; pan.connect(meter); keepAlive(ac, meter);
-  return { g, ag, bass, treble, filt, pan, echoSend, delay, revSend, meter };
+  return { g, ag, pg, bass, treble, filt, pan, echoSend, delay, revSend, meter, tfx };
 }
 function envelope(param, c, startPos, when0) {
   const d = dur(c), fi = c.fadeIn || 0, fo = effFo(c), g = c.gain ?? 1;
@@ -567,6 +572,201 @@ async function duckUnder(l, key, depthDb = -10) {
     l.auto.vol = pts; l.auto.show = 'vol';
     commit(`“${l.name}” now dips ${-depthDb} dB under “${key.name}” in ${kept.length} place${kept.length === 1 ? '' : 's'}.`);
   } finally { busy(null); }
+}
+/* ---------- Tone.js (MIT, vendor/tone): drum machine voices, extra synths and track effects ----------
+   Tone runs on Studio's own AudioContext (and on each OfflineAudioContext when saving), and Studio does the timing:
+   every note is triggered at an exact time we work out from the tempo map, so the two never drift apart. */
+const HAS_TONE = typeof Tone !== 'undefined';
+const toneCtxs = new WeakMap();
+function toneFor(ac) {
+  if (!HAS_TONE) return null;
+  let t = toneCtxs.get(ac); if (t) return t;
+  t = new Tone.Context({ context: ac, clockSource: ac === ctx ? 'timeout' : 'offline', lookAhead: 0 });
+  toneCtxs.set(ac, t); return t;
+}
+const tconnect = (src, dst) => Tone.connect(src, dst);
+/* ---- drum kits, built from synthesis only (no recordings, so nothing to license) ---- */
+const DRUM_ROWS = [['kick', 'Kick'], ['snare', 'Snare'], ['clap', 'Clap'], ['chh', 'Closed hat'], ['ohh', 'Open hat'], ['tom', 'Tom'], ['rim', 'Rim'], ['cow', 'Cowbell']];
+const KITS = { '909': '909-style', '808': '808-style' };
+function makeKit(tctx, kit, dest) {
+  const o = { context: tctx }, nodes = [], is808 = kit === '808';
+  const out = new Tone.Gain({ ...o, gain: 0.5 }); nodes.push(out); tconnect(out, dest); // headroom: a kit at full level clips once other tracks join it
+  const add = n => { nodes.push(n); return n; };
+  const kick = add(new Tone.MembraneSynth({ ...o, pitchDecay: is808 ? 0.07 : 0.035, octaves: is808 ? 5 : 4, oscillator: { type: 'sine' }, envelope: { attack: 0.001, decay: is808 ? 0.9 : 0.38, sustain: 0.01, release: is808 ? 0.6 : 0.12 }, volume: is808 ? -1 : 0 })); kick.connect(out);
+  const kclickF = add(new Tone.Filter({ ...o, type: 'highpass', frequency: 2500 })); kclickF.connect(out);
+  const kclick = add(new Tone.NoiseSynth({ ...o, noise: { type: 'white' }, envelope: { attack: 0.001, decay: 0.008, sustain: 0 }, volume: is808 ? -40 : -14 })); kclick.connect(kclickF);
+  const snT = add(new Tone.MembraneSynth({ ...o, pitchDecay: 0.01, octaves: 1.5, envelope: { attack: 0.001, decay: is808 ? 0.14 : 0.1, sustain: 0 }, volume: is808 ? -6 : -10 })); snT.connect(out);
+  const snF = add(new Tone.Filter({ ...o, type: 'bandpass', frequency: is808 ? 2600 : 3200, Q: 0.7 })); snF.connect(out);
+  const snN = add(new Tone.NoiseSynth({ ...o, noise: { type: 'white' }, envelope: { attack: 0.001, decay: is808 ? 0.16 : 0.22, sustain: 0 }, volume: is808 ? -8 : -4 })); snN.connect(snF);
+  const clF = add(new Tone.Filter({ ...o, type: 'bandpass', frequency: 1150, Q: 1.6 })); clF.connect(out);
+  const clN = add(new Tone.NoiseSynth({ ...o, noise: { type: 'pink' }, envelope: { attack: 0.001, decay: 0.012, sustain: 0 }, volume: 2 })); clN.connect(clF);
+  const clT = add(new Tone.NoiseSynth({ ...o, noise: { type: 'pink' }, envelope: { attack: 0.002, decay: 0.2, sustain: 0 }, volume: 0 })); clT.connect(clF);
+  const chF = add(new Tone.Filter({ ...o, type: 'highpass', frequency: is808 ? 7500 : 8800 })); chF.connect(out);
+  const ch = add(new Tone.NoiseSynth({ ...o, noise: { type: 'white' }, envelope: { attack: 0.001, decay: is808 ? 0.035 : 0.05, sustain: 0 }, volume: -10 })); ch.connect(chF);
+  const ohF = add(new Tone.Filter({ ...o, type: 'highpass', frequency: is808 ? 7000 : 8000 })); ohF.connect(out);
+  const oh = add(new Tone.NoiseSynth({ ...o, noise: { type: 'white' }, envelope: { attack: 0.001, decay: is808 ? 0.3 : 0.38, sustain: 0 }, volume: -12 })); oh.connect(ohF);
+  const tom = add(new Tone.MembraneSynth({ ...o, pitchDecay: 0.05, octaves: 2, envelope: { attack: 0.001, decay: 0.42, sustain: 0 }, volume: -4 })); tom.connect(out);
+  const rimF = add(new Tone.Filter({ ...o, type: 'highpass', frequency: 1200 })); rimF.connect(out);
+  const rim = add(new Tone.MembraneSynth({ ...o, pitchDecay: 0.004, octaves: 1, envelope: { attack: 0.001, decay: 0.035, sustain: 0 }, volume: -6 })); rim.connect(rimF);
+  const cowF = add(new Tone.Filter({ ...o, type: 'bandpass', frequency: 800, Q: 2 })); cowF.connect(out);
+  const cow1 = add(new Tone.Synth({ ...o, oscillator: { type: 'square' }, envelope: { attack: 0.001, decay: 0.22, sustain: 0, release: 0.05 }, volume: -16 })); cow1.connect(cowF);
+  const cow2 = add(new Tone.Synth({ ...o, oscillator: { type: 'square' }, envelope: { attack: 0.001, decay: 0.22, sustain: 0, release: 0.05 }, volume: -16 })); cow2.connect(cowF);
+  const safe = f => { try { f(); } catch (e) {} };
+  return {
+    nodes,
+    hit(row, t, v) {
+      const vel = clamp(v / 127, 0.05, 1);
+      if (row === 'kick') { safe(() => kick.triggerAttackRelease(is808 ? 'G1' : 'A1', 0.3, t, vel)); safe(() => kclick.triggerAttackRelease(0.01, t, vel)); }
+      else if (row === 'snare') { safe(() => snT.triggerAttackRelease(is808 ? 'E3' : 'D3', 0.08, t, vel)); safe(() => snN.triggerAttackRelease(0.1, t, vel)); }
+      else if (row === 'clap') { [0, 0.011, 0.022].forEach(d => safe(() => clN.triggerAttackRelease(0.008, t + d, vel))); safe(() => clT.triggerAttackRelease(0.1, t + 0.03, vel)); }
+      else if (row === 'chh') safe(() => ch.triggerAttackRelease(0.02, t, vel));
+      else if (row === 'ohh') safe(() => oh.triggerAttackRelease(0.2, t, vel));
+      else if (row === 'tom') safe(() => tom.triggerAttackRelease('A2', 0.2, t, vel));
+      else if (row === 'rim') safe(() => rim.triggerAttackRelease('E5', 0.02, t, vel));
+      else if (row === 'cow') { safe(() => cow1.triggerAttackRelease(540, 0.12, t, vel)); safe(() => cow2.triggerAttackRelease(800, 0.12, t, vel)); }
+    },
+  };
+}
+/* ---- extra synths for instrument parts ---- */
+const TONE_INSTS = { acid: 'Acid bass', supersaw: 'Supersaw lead', housepad: 'House pad', fmkeys: 'FM keys', plucky: 'Pluck synth', sub: 'Sub bass' };
+const TONE_PROGRAM = { acid: 38, supersaw: 81, housepad: 89, fmkeys: 4, plucky: 25, sub: 38 };
+if (HAS_TONE) { Object.assign(MixtapeMIDI.INSTRUMENTS, TONE_INSTS); Object.assign(MixtapeMIDI.PROGRAM, TONE_PROGRAM); }
+function makeToneInst(tctx, inst, dest) {
+  const o = { context: tctx }, nodes = [];
+  const add = n => { nodes.push(n); return n; };
+  let v, tail = null;
+  if (inst === 'acid') v = add(new Tone.PolySynth({ ...o, voice: Tone.MonoSynth, maxPolyphony: 8, options: { oscillator: { type: 'sawtooth' }, filter: { Q: 7, type: 'lowpass', rolloff: -24 }, filterEnvelope: { attack: 0.001, decay: 0.18, sustain: 0.15, release: 0.2, baseFrequency: 160, octaves: 3.6 }, envelope: { attack: 0.002, decay: 0.2, sustain: 0.6, release: 0.08 } }, volume: -10 }));
+  else if (inst === 'supersaw') { v = add(new Tone.PolySynth({ ...o, voice: Tone.Synth, options: { oscillator: { type: 'fatsawtooth', count: 5, spread: 35 }, envelope: { attack: 0.01, decay: 0.3, sustain: 0.65, release: 0.45 } }, volume: -16 })); tail = add(new Tone.Filter({ ...o, type: 'lowpass', frequency: 6500 })); }
+  else if (inst === 'housepad') { v = add(new Tone.PolySynth({ ...o, voice: Tone.Synth, options: { oscillator: { type: 'fatsawtooth', count: 3, spread: 22 }, envelope: { attack: 0.45, decay: 0.5, sustain: 0.85, release: 1.6 } }, volume: -18 })); tail = add(new Tone.Filter({ ...o, type: 'lowpass', frequency: 1800, Q: 0.6 })); }
+  else if (inst === 'fmkeys') v = add(new Tone.PolySynth({ ...o, voice: Tone.FMSynth, options: { harmonicity: 3, modulationIndex: 9, envelope: { attack: 0.005, decay: 0.7, sustain: 0.2, release: 0.9 }, modulationEnvelope: { attack: 0.005, decay: 0.4, sustain: 0.1, release: 0.5 } }, volume: -12 }));
+  else if (inst === 'plucky') v = add(new Tone.PolySynth({ ...o, voice: Tone.MonoSynth, options: { oscillator: { type: 'square' }, filter: { Q: 2, type: 'lowpass' }, filterEnvelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.1, baseFrequency: 400, octaves: 4 }, envelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.15 } }, volume: -12 }));
+  else v = add(new Tone.PolySynth({ ...o, voice: Tone.Synth, options: { oscillator: { type: 'sine' }, envelope: { attack: 0.005, decay: 0.1, sustain: 0.9, release: 0.2 } }, volume: -6 }));
+  if (tail) { v.connect(tail); tconnect(tail, dest); } else tconnect(v, dest);
+  return { nodes, play(p, t, d, vel) { try { v.triggerAttackRelease(440 * Math.pow(2, (p - 69) / 12), Math.max(0.03, d), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} } };
+}
+/* ---- one effect per track ---- */
+const TRACK_FX = { none: 'None', chorus: 'Chorus', phaser: 'Phaser', pingpong: 'Ping-pong delay', distortion: 'Distortion', autofilter: 'Auto-filter sweep' };
+function makeTrackFx(tctx, l) {
+  const f = l.tfx || {}, o = { context: tctx, wet: clamp(f.mix ?? 0.5, 0, 1) }, beat = 60 / (P.bpm || 120), amt = clamp(f.amt ?? 0.5, 0, 1);
+  if (f.type === 'chorus') return new Tone.Chorus({ ...o, frequency: 0.6 + amt * 2, delayTime: 3.5, depth: 0.4 + amt * 0.6 }).start();
+  if (f.type === 'phaser') return new Tone.Phaser({ ...o, frequency: 0.2 + amt * 1.5, octaves: 3, baseFrequency: 350 });
+  if (f.type === 'pingpong') return new Tone.PingPongDelay({ ...o, delayTime: 0.75 * beat, feedback: 0.2 + amt * 0.5 });
+  if (f.type === 'distortion') return new Tone.Distortion({ ...o, distortion: 0.1 + amt * 0.8, oversample: '2x' });
+  if (f.type === 'autofilter') return new Tone.AutoFilter({ ...o, frequency: 1 / (beat * (8 - amt * 6)), baseFrequency: 180, octaves: 4.5 }).start();
+  return null;
+}
+/* ---- drum machine parts: a looping pattern of 16th-note steps ---- */
+const patStepBeats = 0.25;
+function patSec(c) { const B0 = beatAt(c.at); return timeAtBeat(B0 + c.beats) - c.at; }
+// keep a pattern's length in beats and in seconds in step with each other and with the tempo map
+function syncPattern(c) {
+  if (!P.bpm) P.bpm = 124;
+  if (c.lenSet != null && Math.abs(dur(c) - c.lenSet) > 1e-3) c.beats = Math.max(patStepBeats, Math.round((beatAt(c.at + dur(c)) - beatAt(c.at)) / patStepBeats) * patStepBeats);
+  c.end = c.start + patSec(c); c.lenSet = dur(c);
+}
+function housePattern(bars = 1) {
+  const n = 16 * bars, rows = {}; DRUM_ROWS.forEach(([k]) => { rows[k] = Array(n).fill(0); });
+  for (let i = 0; i < n; i++) {
+    if (i % 4 === 0) rows.kick[i] = 120;
+    if (i % 8 === 4) rows.clap[i] = 110;
+    if (i % 4 === 2) rows.ohh[i] = 90; else rows.chh[i] = i % 2 ? 55 : 70;
+  }
+  return rows;
+}
+function newDrumMachine() {
+  if (!HAS_TONE) return toast('The drum machine needs the sound engine file, which did not load. Reload the page.');
+  if (!P.bpm) P.bpm = 124;
+  const l = newLane('Drum machine', PALETTE[1]); P.lanes.push(l);
+  const at = snapBeat(playhead);
+  const c = { id: uid(), kind: 'pattern', trackId: null, lane: l.id, at, start: 0, end: 1, beats: 16, gain: 1, fadeIn: 0, fadeOut: 0, rate: 1, semi: 0, keepPitch: true, fxIn: 'fade', fxOut: 'fade', name: 'House beat', pat: { kit: '909', bars: 1, swing: 0, rows: housePattern(1) } };
+  syncPattern(c); P.clips.push(c); selLane = l.id; selClip = c.id; edOpen = true; if (UI.edFold) UI.edFold = false;
+  commit(`Drum machine added at ${P.bpm} BPM with a house beat. Click squares in the grid below to change it; you hear changes on the next pass without stopping.`);
+}
+/* Pattern hits are scheduled a moment ahead while playing (so editing the grid is heard on the next pass, with no restart),
+   and all at once when saving. The kick also drives the "pump" on tracks that ask for it. */
+function schedulePatterns(gr, until) {
+  const S = gr.pat; if (!S || until <= S.upto) return;
+  const from = S.upto, end = Math.min(until, S.stopAt);
+  const kicks = [];
+  for (const c of P.clips) {
+    if (c.kind !== 'pattern' || c.mute) continue;
+    // the kick drives the pump even when its own track is not part of this render (a stem of the bass, say)
+    const voices = S.voices.get(c.id), l = P.lanes.find(x => x.id === c.lane); if (!l || (!voices && !S.pumps.size)) continue;
+    const audible = laneAudible(l);
+    const cEnd = c.at + dur(c), B0 = beatAt(c.at - c.start), n = 16 * (c.pat.bars || 1), sw = clamp((c.pat.swing || 0) / 100, 0, 0.6);
+    const a = Math.max(from, c.at), z = Math.min(end, cEnd); if (z <= a) continue;
+    for (let k = Math.max(0, Math.floor((beatAt(a) - B0) / patStepBeats) - 1); k < 100000; k++) {
+      const t = timeAtBeat(B0 + k * patStepBeats + (k % 2 ? sw * patStepBeats : 0));
+      if (t >= z) break; if (t < a - 1e-6) continue;
+      const when = S.when0 + (t - S.startPos);
+      for (const [row] of DRUM_ROWS) { const v = (c.pat.rows[row] || [])[k % n]; if (v > 0) { if (voices) voices.hit(row, when, v); if (row === 'kick' && audible) kicks.push(when); } }
+    }
+  }
+  if (kicks.length && S.pumps.size) for (const [, p] of S.pumps) for (const w of kicks.sort((x, y) => x - y)) {
+    p.pg.gain.setValueAtTime(1 - p.depth, w); p.pg.gain.setTargetAtTime(1, w + 0.008, p.release / 3);
+  }
+  S.upto = end;
+}
+function drumAudition(row, kit) {
+  if (!HAS_TONE) return; ctx.resume();
+  drumAudition.kits = drumAudition.kits || {};
+  if (!drumAudition.kits[kit]) { const g = ctx.createGain(); g.connect(ctx.destination); drumAudition.kits[kit] = makeKit(toneFor(ctx), kit, g); }
+  drumAudition.kits[kit].hit(row, ctx.currentTime + 0.02, 110);
+}
+function toneAudition(inst, p) {
+  if (!HAS_TONE) return; ctx.resume();
+  toneAudition.v = toneAudition.v || {};
+  if (!toneAudition.v[inst]) { const g = ctx.createGain(); g.connect(ctx.destination); toneAudition.v[inst] = makeToneInst(toneFor(ctx), inst, g); }
+  toneAudition.v[inst].play(p, ctx.currentTime + 0.02, 0.35, 96);
+}
+/* ---- the pattern grid in the part editor ---- */
+function drawPatternGrid(c, g, w, h) {
+  const LW = 78, rows = DRUM_ROWS, n = 16 * (c.pat.bars || 1), rh = h / rows.length, cw = (w - LW) / n, col = laneColor(c.lane);
+  edView = { pattern: true, LW, rh, cw, n, w, h };
+  rows.forEach(([key, label], r) => {
+    g.fillStyle = r % 2 ? 'rgba(255,255,255,.02)' : 'rgba(255,255,255,.045)'; g.fillRect(0, r * rh, w, rh);
+    g.fillStyle = css('--muted'); g.font = `600 ${Math.min(11, rh - 3)}px ${css('--f-mono')}`; g.textBaseline = 'middle'; g.fillText(label, 6, r * rh + rh / 2);
+    for (let i = 0; i < n; i++) {
+      const v = (c.pat.rows[key] || [])[i] || 0, x = LW + i * cw;
+      g.fillStyle = i % 4 === 0 ? 'rgba(255,255,255,.10)' : 'rgba(255,255,255,.05)'; g.fillRect(x + 1, r * rh + 1.5, cw - 2, rh - 3);
+      if (v > 0) { g.fillStyle = withAlpha(col, 0.35 + 0.65 * v / 127); g.fillRect(x + 1, r * rh + 1.5, cw - 2, rh - 3); }
+    }
+  });
+  for (let i = 0; i <= n; i += 4) { g.fillStyle = i % 16 === 0 ? 'rgba(255,255,255,.35)' : 'rgba(255,255,255,.16)'; g.fillRect(LW + i * cw - 0.5, 0, 1, h); }
+  // where the music is in the pattern right now
+  if (playing) { const p = curPos(); if (p >= c.at && p < c.at + dur(c)) { const k = Math.floor((beatAt(p) - beatAt(c.at - c.start)) / patStepBeats) % n; g.strokeStyle = css('--ink'); g.lineWidth = 2; g.strokeRect(LW + k * cw + 1, 1, cw - 2, h - 2); } }
+}
+function patternPointer(e, wrap, c) {
+  const V = edView, r = wrap.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  const row = Math.floor(y / V.rh); if (row < 0 || row >= DRUM_ROWS.length) return;
+  const key = DRUM_ROWS[row][0];
+  if (x < V.LW) return drumAudition(key, c.pat.kit);
+  const at = ev => clamp(Math.floor((ev.clientX - r.left - V.LW) / V.cw), 0, V.n - 1);
+  c.pat.rows[key] = (c.pat.rows[key] || Array(V.n).fill(0)).slice();
+  const i0 = at(e), setTo = c.pat.rows[key][i0] > 0 ? 0 : (e.shiftKey ? 127 : 100);
+  const paint = i => { c.pat.rows[key][i] = setTo; };
+  paint(i0); if (setTo) drumAudition(key, c.pat.kit);
+  patLive(c);
+  try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+  let last = i0;
+  const mv = ev => { const i = at(ev); if (i === last) return; const [a, b] = i > last ? [last, i] : [i, last]; for (let k = a; k <= b; k++) paint(k); last = i; patLive(c); };
+  wrap.addEventListener('pointermove', mv);
+  wrap.addEventListener('pointerup', () => wrap.removeEventListener('pointermove', mv), { once: true });
+}
+// a change to the grid is saved and heard on the next pass, without stopping the music
+function patLive(c) { quietCommit(); drawEditor(); const el = $(`.clip[data-clip="${c.id}"] canvas`); if (el) drawClipCanvas(el, c); }
+function patternInspectorHTML(c) {
+  const kits = Object.entries(KITS).map(([k, v]) => `<option value="${k}" ${c.pat.kit === k ? 'selected' : ''}>${v}</option>`).join('');
+  const bars = [1, 2, 4].map(b => `<option value="${b}" ${c.pat.bars === b ? 'selected' : ''}>${b} bar${b > 1 ? 's' : ''}</option>`).join('');
+  return `<div class="sec"><h3>Drum machine</h3>
+    <dl class="kv"><dt>Part</dt><dd>${esc(c.name || 'Pattern')}</dd><dt>Starts at</dt><dd>${fmtT(c.at)}</dd><dt>Length</dt><dd>${c.beats / 4} bar${c.beats === 4 ? '' : 's'}</dd></dl>
+    <div class="field"><label for="pKit">Kit</label><select id="pKit" data-cf="kit">${kits}</select><span></span></div>
+    <div class="field"><label for="pBars">Pattern</label><select id="pBars" data-cf="bars">${bars}</select><span></span></div>
+    <div class="field"><label for="pSwing">Swing</label><input id="pSwing" type="range" min="0" max="60" value="${c.pat.swing || 0}" data-cf="swing"><output>${c.pat.swing || 0}%</output></div>
+    <div class="field"><label for="cGain">Volume</label><input id="cGain" type="range" min="0" max="300" value="${Math.round((c.gain ?? 1) * 100)}" data-cf="gain"><output>${Math.round((c.gain ?? 1) * 100)}%</output></div>
+    <p class="hint">Click squares in the grid to add or remove hits (Shift + click: an accent). Drag across to paint. Click a drum’s name to hear it. Changes play on the next pass without stopping. Drag the part’s right edge to repeat the pattern for longer.</p>
+    <p class="hint">Sounds are made by Tone.js (MIT licence) from synthesis, not recordings, so they are free to use in anything you release.</p>
+    <div class="btnrow"><button class="btn sm" data-act="pathouse">House beat</button><button class="btn sm" data-act="patclear">Clear</button></div></div>`;
 }
 /* ---------- instrument (MIDI) parts ---------- */
 // A part holds notes {id, p: pitch, t: seconds into the part's own material, d: length, v: velocity}.
@@ -692,7 +892,7 @@ function drawPianoRoll(c, g, w, h) {
 function pianoPointer(e, wrap, c) {
   const V = edView, rect = wrap.getBoundingClientRect(), free = e.altKey;
   const tAt = ev => V.t0 + (ev.clientX - rect.left - V.KW) / (V.w - V.KW) * (V.t1 - V.t0), pAt = ev => clamp(V.hi - Math.floor((ev.clientY - rect.top) / V.rowH), 0, 127);
-  const sn = t => free ? t : snapNoteT(c, t), audition = p => { ctx.resume(); MixtapeMIDI.playNote(ctx, ctx.destination, c.inst || 'piano', p + (c.semi || 0), ctx.currentTime + 0.01, 0.35, 96); };
+  const sn = t => free ? t : snapNoteT(c, t), audition = p => { if (HAS_TONE && TONE_INSTS[c.inst]) return toneAudition(c.inst, p + (c.semi || 0)); ctx.resume(); MixtapeMIDI.playNote(ctx, ctx.destination, c.inst || 'piano', p + (c.semi || 0), ctx.currentTime + 0.01, 0.35, 96); };
   if (e.clientX - rect.left < V.KW) return audition(pAt(e));
   c.notes = c.notes.map(n => ({ ...n })); // parts split from one another share notes until one is edited
   const t = tAt(e), p = pAt(e);
@@ -749,12 +949,25 @@ function buildGraph(ac, startPos, when0, opts = {}) {
     scheduleAuto(ln.ag.gain, l.auto.vol, startPos, when0, 1);
     if (l.auto.pan.length) scheduleAuto(ln.pan.pan, l.auto.pan, startPos, when0, l.pan);
   }
-  const srcs = [];
+  const srcs = [], toneNodes = [...[...lanes.values()].map(x => x.tfx).filter(Boolean)];
+  const pat = { startPos, when0, upto: startPos, stopAt: Infinity, voices: new Map(), pumps: new Map() };
+  for (const l of P.lanes) { const ln = lanes.get(l.id); if (ln && l.pump && l.pump.on) pat.pumps.set(l.id, { pg: ln.pg, depth: clamp(l.pump.depth ?? 0.7, 0.1, 0.95), release: 0.45 * 60 / (P.bpm || 124) }); }
   for (const c of P.clips) {
     if (c.mute) continue;
+    if (c.kind === 'pattern') {
+      const ln = lanes.get(c.lane); if (!ln || !HAS_TONE || c.at + dur(c) <= startPos) continue;
+      const g = ac.createGain(); envelope(g.gain, c, startPos, when0); g.connect(ln.g);
+      const kit = makeKit(toneFor(ac), c.pat.kit || '909', g); pat.voices.set(c.id, kit); toneNodes.push(...kit.nodes); continue;
+    }
     if (c.kind === 'midi') {
       const ln = lanes.get(c.lane); if (!ln || c.at + dur(c) <= startPos) continue;
       const g = ac.createGain(); envelope(g.gain, c, startPos, when0); g.connect(ln.g);
+      if (HAS_TONE && TONE_INSTS[c.inst]) { // Tone.js synths
+        const v = makeToneInst(toneFor(ac), c.inst, g); toneNodes.push(...v.nodes);
+        const r = c.rate || 1, semi = c.semi || 0;
+        for (const n of c.notes) { if (n.t < c.start - 1e-6 || n.t >= c.end) continue; const tl = c.at + (n.t - c.start) / r; if (tl < startPos - 1e-6) continue; v.play(n.p + semi, when0 + (tl - startPos), Math.min(n.d, c.end - n.t) / r, n.v); }
+        continue;
+      }
       srcs.push(...scheduleMidi(ac, g, c, startPos, when0)); continue;
     }
     const e = bufs.get(c.trackId), ln = lanes.get(c.lane); if (!e || !ln) continue;
@@ -796,7 +1009,10 @@ function buildGraph(ac, startPos, when0, opts = {}) {
   }
   if (opts.metro) srcs.push(...scheduleClicks(ac, ac.destination, startPos, when0, projectEnd() + 1));
   const mmeter = ac.createAnalyser(); mmeter.fftSize = 512; out.connect(mmeter); keepAlive(ac, mmeter);
-  return { master, out, lanes, srcs, mmeter };
+  const gr = { master, out, lanes, srcs, mmeter, toneNodes, pat, forceLane: opts.lane || null };
+  // saving: every hit now. Playing: the first moment now, the rest just ahead of the music (see tick)
+  schedulePatterns(gr, ac === ctx ? startPos + 0.35 : startPos + 36000);
+  return gr;
 }
 // Level meters must be wired through to the output (silently) or the browser skips measuring them
 function keepAlive(ac, node) { const z = ac.createGain(); z.gain.value = 0; node.connect(z); z.connect(ac.destination); }
@@ -837,10 +1053,11 @@ async function play() {
 function pause() {
   if (!playing) return;
   playhead = curPos(); playing = false; clearInterval(tickT);
-  for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr) { gr.srcs.forEach(s => { try { s.stop(); } catch (e) {} }); try { gr.out.disconnect(); gr.master.disconnect(); } catch (e) {} }
+  for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr) { gr.srcs.forEach(s => { try { s.stop(); } catch (e) {} }); try { gr.out.disconnect(); gr.master.disconnect(); } catch (e) {} disposeTone(gr); }
   graph = null; pendingLoop = null; if (vidFor && !vid.paused) vid.pause(); renderTransport(); drawPlayhead();
 }
 const curPos = () => playing ? pos0 + Math.max(0, ctx.currentTime - t0) : playhead;
+function disposeTone(gr) { const ns = gr.toneNodes || []; gr.toneNodes = []; setTimeout(() => ns.forEach(n => { try { n.dispose(); } catch (e) {} }), 1500); }
 function restartIfPlaying() { if (playing && !rec) { pause(); play(); } }
 function tick() {
   if (!playing) return clearInterval(tickT);
@@ -850,14 +1067,18 @@ function tick() {
     if (!pendingLoop && pos0 < L.b && pos0 + (now - t0) >= L.b - 0.3) {
       const tEnd = t0 + (L.b - pos0);
       graph.srcs.forEach(s => { try { s.stop(tEnd); } catch (e) {} });
+      if (graph.pat) graph.pat.stopAt = L.b;
       pendingLoop = { graph: buildGraph(ctx, L.a, tEnd, { metro: P.metro }), t0: tEnd };
     }
     if (pendingLoop && now >= pendingLoop.t0) {
       const old = graph; graph = pendingLoop.graph; pos0 = L.a; t0 = pendingLoop.t0; pendingLoop = null;
-      setTimeout(() => { try { old.out.disconnect(); old.master.disconnect(); } catch (e) {} }, 400);
+      setTimeout(() => { try { old.out.disconnect(); old.master.disconnect(); } catch (e) {} disposeTone(old); }, 400);
     }
   }
+  // drum machine hits, scheduled a third of a second ahead of the music
+  for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr && gr.pat) schedulePatterns(gr, gr.pat.startPos + (ctx.currentTime + 0.35 - gr.pat.when0));
   const p = curPos();
+  if (edOpen && clipById(selClip)?.kind === 'pattern') drawEditor();
   if (p >= projectEnd() && !rec && !loopActive()) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
   drawPlayhead(p); followPlayhead(p); if (rec || (P.tempoChanges || []).length) renderTransport(); if (P.video) syncVideo();
   if (UI.mixer) updateMeters();
@@ -1159,6 +1380,14 @@ function drawClipCanvas(cv, c) {
   const wCss = Math.max(1, dur(c) * pps), hCss = cv.clientHeight || 64;
   const w = Math.min(16000, Math.round(wCss * r)), h = Math.round(hCss * r);
   cv.width = w; cv.height = h; const g = cv.getContext('2d'); g.clearRect(0, 0, w, h);
+  if (c.kind === 'pattern') { // the hits as dots, one row per drum, repeated along the part
+    const n = 16 * (c.pat.bars || 1), steps = Math.round(c.beats / patStepBeats), rowsUsed = DRUM_ROWS.filter(([k]) => (c.pat.rows[k] || []).some(v => v > 0));
+    if (!rowsUsed.length) return;
+    const rh = h / rowsUsed.length, sw = w / Math.max(1, steps);
+    g.fillStyle = withAlpha(laneColor(c.lane), .95);
+    rowsUsed.forEach(([k], r) => { const a = c.pat.rows[k]; for (let s = 0; s < steps; s++) if (a[s % n] > 0) g.fillRect(s * sw + 1, r * rh + rh * 0.2, Math.max(1.5 * dpr(), sw - 2), Math.max(1.5, rh * 0.6)); });
+    return;
+  }
   if (c.kind === 'midi') { // notes as small bars, highest pitch at the top
     const ns = c.notes.filter(n => n.t < c.end && n.t + n.d > c.start); if (!ns.length) return;
     const lo = Math.min(...ns.map(n => n.p)), hi = Math.max(...ns.map(n => n.p)), span = Math.max(12, hi - lo + 1), rh = Math.max(1.5, h / (span + 1));
@@ -1210,9 +1439,9 @@ function renderLanes() {
       <div class="lane-grip" data-grip="${l.id}" title="Drag to make this track taller or smaller"></div>
       <div class="lane-body${gridCls}" style="${gridVars}width:${timelineWidth()}px;${anySolo && !l.solo || l.mute ? 'opacity:.45' : ''}">
         ${P.clips.filter(c => c.lane === l.id).map(c => {
-          const t = libTrack(c.trackId), name = c.kind === 'midi' ? midiName(c) : t ? t.title : 'Missing song';
+          const t = libTrack(c.trackId), name = c.kind === 'pattern' ? `${c.name || 'Drum machine'} · ${KITS[c.pat.kit] || ''}` : c.kind === 'midi' ? midiName(c) : t ? t.title : 'Missing song';
           const sel = tlSel && tlSel.clipId === c.id ? `<span class="tlsel" style="left:${(tlSel.a - c.at) * pps}px;width:${(tlSel.b - tlSel.a) * pps}px"></span>` : '';
-          return `<div class="clip${c.id === selClip ? ' sel' : ''}${c.mute ? ' muted' : ''}${c.pin ? ' pinned' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px">
+          return `<div class="clip${c.id === selClip ? ' sel' : ''}${c.mute ? ' muted' : ''}${c.pin ? ' pinned' : ''}${c.kind === 'pattern' ? ' pattern' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px">
             <canvas></canvas><span class="cl" title="Drag here to move · ${esc(name)} · ${fmtT(dur(c))}${esc(clipBadge(c))}">${esc(name)}${esc(clipBadge(c))}</span>${sel}
             <span class="fh l" data-fade="in" style="left:${(c.fadeIn || 0) * pps}px" title="Drag to fade in"></span><span class="fh r" data-fade="out" style="right:${(c.fadeOut || 0) * pps}px" title="Drag to fade out"></span>
             <span class="h l" data-h="l" title="Drag to trim the start"></span><span class="h r" data-h="r" title="Drag to trim the end"></span></div>`;
@@ -1303,6 +1532,12 @@ function drawEditor() {
   cv.width = Math.round(w * r); cv.height = Math.round(h * r);
   const g = cv.getContext('2d'); g.setTransform(r, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
   if (!c) { $('#edTitle').textContent = 'Part editor'; $('#edInfo').textContent = ''; $('#selInfo').textContent = 'No part selected'; edView = null; return; }
+  if (c.kind === 'pattern') {
+    ['keep', 'remove', 'selappend', 'sellayer', 'selall'].forEach(a => { const b = $(`[data-act="${a}"]`); if (b) b.disabled = true; });
+    $('#edTitle').textContent = c.name || 'Drum machine'; $('#edInfo').textContent = `${KITS[c.pat.kit]} · ${16 * (c.pat.bars || 1)} steps${c.pat.swing ? ` · swing ${c.pat.swing}%` : ''}`;
+    $('#selInfo').textContent = 'Click a square to add or remove a hit · drag to paint · Shift + click for an accent · click a drum’s name to hear it';
+    drawPatternGrid(c, g, w, h); return;
+  }
   if (c.kind === 'midi') {
     ['keep', 'remove', 'selappend', 'sellayer', 'selall'].forEach(a => { const b = $(`[data-act="${a}"]`); if (b) b.disabled = true; });
     $('#edTitle').textContent = midiName(c); $('#edInfo').textContent = `${c.notes.length} note${c.notes.length === 1 ? '' : 's'} · ${MixtapeMIDI.INSTRUMENTS[c.inst] || ''}${c.semi ? ` · transposed ${c.semi > 0 ? '+' : ''}${c.semi}` : ''}`;
@@ -1343,7 +1578,8 @@ function drawEditor() {
 function renderInspector() {
   const c = clipById(selClip), l = P.lanes.find(x => x.id === selLane);
   let html = '';
-  if (c && c.kind === 'midi') html += midiInspectorHTML(c);
+  if (c && c.kind === 'pattern') html += patternInspectorHTML(c);
+  else if (c && c.kind === 'midi') html += midiInspectorHTML(c);
   else if (c) {
     const t = libTrack(c.trackId), d = dur(c), a = ana[c.trackId], { r } = clipParams(c);
     const songBpm = a && a.bpm ? a.bpm : null, nowBpm = songBpm ? Math.round(songBpm * r * 10) / 10 : null;
@@ -1379,6 +1615,11 @@ function renderInspector() {
       <div class="field"><label for="fFil">Filter</label><input id="fFil" type="range" min="-100" max="100" value="${f}" data-lx="filter"><output>${f === 0 ? 'off' : f < 0 ? 'muffle ' + -f : 'thin ' + f}</output></div>
       <div class="field"><label for="fEcho">Echo</label><input id="fEcho" type="range" min="0" max="100" value="${fx.echo}" data-lx="echo"><output>${fx.echo}%</output></div>
       <div class="field"><label for="fRev">Reverb</label><input id="fRev" type="range" min="0" max="100" value="${fx.reverb}" data-lx="reverb"><output>${fx.reverb}%</output></div>
+      ${HAS_TONE ? `<div class="field"><label for="tFx">Effect</label><select id="tFx" data-ltfx="type">${Object.entries(TRACK_FX).map(([k, v]) => `<option value="${k}" ${(l.tfx && l.tfx.type || 'none') === k ? 'selected' : ''}>${v}</option>`).join('')}</select><span></span></div>
+      ${l.tfx && l.tfx.type && l.tfx.type !== 'none' ? `<div class="field"><label for="tFxAmt">Amount</label><input id="tFxAmt" type="range" min="0" max="100" value="${Math.round((l.tfx.amt ?? 0.5) * 100)}" data-ltfx="amt"><output>${Math.round((l.tfx.amt ?? 0.5) * 100)}%</output></div>
+      <div class="field"><label for="tFxMix">Mix</label><input id="tFxMix" type="range" min="0" max="100" value="${Math.round((l.tfx.mix ?? 0.5) * 100)}" data-ltfx="mix"><output>${Math.round((l.tfx.mix ?? 0.5) * 100)}%</output></div>` : ''}
+      <label class="chk"><input type="checkbox" data-lpump ${l.pump && l.pump.on ? 'checked' : ''}> Pump to the drum machine’s kick (sidechain)</label>
+      ${l.pump && l.pump.on ? `<div class="field"><label for="tPump">Depth</label><input id="tPump" type="range" min="10" max="95" value="${Math.round((l.pump.depth ?? 0.7) * 100)}" data-lpumpd><output>${Math.round((l.pump.depth ?? 0.7) * 100)}%</output></div>` : ''}` : ''}
       <label class="chk"><input type="checkbox" data-lrole="dialogue" ${l.role === 'dialogue' ? 'checked' : ''}> This is the dialogue (for loudness measured on speech, and for ducking)</label>
       <div class="btnrow"><button class="btn sm" data-act="fxreset">Reset effects</button><button class="btn sm" data-act="closegaps">Close gaps</button></div></div>`;
   }
@@ -1400,7 +1641,7 @@ function renderInspector() {
     <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>M</kbd> hit point · <kbd>V</kbd> video · <kbd>T</kbd> tempo change<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
   html = `<button class="rail" data-act="toggleinsp" title="Show the settings (I)"><span>◂</span><span class="rl">Settings</span></button><div class="insp-top"><button class="headbtn" data-act="toggleinsp" title="Fold the settings away for more room (I)">▸</button></div>` + html;
   const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; ins.scrollTop = st; applyTips();
-  if (c && c.kind !== 'midi') { $('#cFxIn').value = c.fxIn || 'fade'; $('#cFxOut').value = c.fxOut || 'fade'; }
+  if (c && c.kind !== 'midi' && c.kind !== 'pattern') { $('#cFxIn').value = c.fxIn || 'fade'; $('#cFxOut').value = c.fxOut || 'fade'; }
 }
 function renderMixer() {
   $('#mixer').hidden = !UI.mixer; if (!UI.mixer) return;
@@ -1537,7 +1778,10 @@ const acts = {
   edclose: () => { edOpen = false; edSel = null; stopPreview(); drawEditor(); },
   fxreset: () => { const l = P.lanes.find(x => x.id === selLane); if (l) { l.fx = FX0(); commit('Effects reset'); liveLanes(); } },
   newproj: () => newMix(),
-  instmenu: b => { const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [{ label: 'Import a MIDI file…', act: () => $('#midiIn').click() }, { sep: true },
+  pathouse: () => { const c = clipById(selClip); if (c && c.kind === 'pattern') { c.pat.rows = housePattern(c.pat.bars || 1); patLive(c); renderInspector(); toast('House beat: kick on every beat, clap on 2 and 4, open hats on the off-beats.'); } },
+  patclear: () => { const c = clipById(selClip); if (c && c.kind === 'pattern') { for (const [k] of DRUM_ROWS) c.pat.rows[k] = Array(16 * (c.pat.bars || 1)).fill(0); patLive(c); } },
+  drummachine: () => newDrumMachine(),
+  instmenu: b => { const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [{ label: 'New drum machine (house beat)', act: newDrumMachine }, { label: 'Import a MIDI file…', act: () => $('#midiIn').click() }, { sep: true },
     ...Object.entries(MixtapeMIDI.INSTRUMENTS).map(([k, v]) => ({ label: `New ${v.toLowerCase()} track`, act: () => newInstrumentTrack(k) }))]); },
   quantize, exportmidi: exportMidi, findtempo: findTempo,
   projects: b => projectsMenu(b),
@@ -1813,6 +2057,7 @@ $('#lanes').addEventListener('pointerdown', e => {
     if (e.target.dataset.h || e.target.dataset.fade || e.target.classList.contains('cl')) toast(`“${lockedLane.name}” is locked. Click its padlock to move or trim its parts.`, 3000);
     return;
   }
+  if (c.kind === 'pattern' && e.target.dataset.h === 'l') return toast('A drum machine part starts on its first step. Drag its right edge to make it longer or shorter.', 3500);
   if (c.pin && (e.target.classList.contains('cl') || e.target.dataset.h === 'l')) {
     selClip = c.id; markSelected(el, c); seekClick(c.at + clamp((e.clientX - el.getBoundingClientRect().left) / pps, 0, dur(c))); renderInspector();
     return toast(`This part is pinned to ${P.video ? 'the picture' : 'its place'}, so it cannot be moved. Right-click it and choose Unpin to move it.`, 3500);
@@ -1829,7 +2074,7 @@ $('#lanes').addEventListener('pointerdown', e => {
   try { el.setPointerCapture(e.pointerId); } catch (_) {}
   el.style.cursor = mode === 'move' ? 'grabbing' : 'ew-resize';
   const r0left = el.getBoundingClientRect().left;
-  const x0 = e.clientX, o = { at: c.at, start: c.start, end: c.end }, r = c.rate || 1, srcDur = c.kind === 'midi' ? 36000 : bufs.get(c.trackId)?.buffer.duration ?? c.end;
+  const x0 = e.clientX, o = { at: c.at, start: c.start, end: c.end }, r = c.rate || 1, srcDur = c.kind === 'midi' || c.kind === 'pattern' ? 36000 : bufs.get(c.trackId)?.buffer.duration ?? c.end;
   const edges = P.clips.filter(x => x !== c).flatMap(x => [x.at, x.at + dur(x)]).concat([0, playhead], visibleMarkers().map(mT));
   const snapEdge = t => { for (const s of edges) if (Math.abs(s - t) * pps < 8) return s; return null; };
   const bl = beatLen();
@@ -1944,6 +2189,7 @@ $('#edWrap').addEventListener('wheel', e => {
 }, { passive: false });
 $('#edWrap').addEventListener('pointerdown', e => {
   const c = clipById(selClip); if (!c || !edView) return;
+  if (c.kind === 'pattern') { if (edView.pattern) patternPointer(e, e.currentTarget, c); return; }
   if (c.kind === 'midi') { if (edView.midi) pianoPointer(e, e.currentTarget, c); return; }
   const wrap = e.currentTarget, rect = wrap.getBoundingClientRect();
   // a click in the overview strip moves the view there
@@ -1963,6 +2209,8 @@ $('#edWrap').addEventListener('pointerdown', e => {
 $('#insp').addEventListener('input', e => {
   const c = clipById(selClip), d = e.target.dataset, out = e.target.nextElementSibling, v = +e.target.value;
   if (d.pf === 'xfade') { P.xfade = v; out.textContent = v.toFixed(1) + 's'; return; }
+  if (d.ltfx && d.ltfx !== 'type' && out) { out.textContent = v + '%'; return; }
+  if (e.target.matches('[data-lpumpd]') && out) { out.textContent = v + '%'; return; }
   if (d.lx) {
     const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.fx[d.lx] = v;
     out.textContent = d.lx === 'bass' || d.lx === 'treble' ? `${v > 0 ? '+' : ''}${v} dB` : d.lx === 'filter' ? (v === 0 ? 'off' : v < 0 ? 'muffle ' + -v : 'thin ' + v) : v + '%';
@@ -1971,6 +2219,7 @@ $('#insp').addEventListener('input', e => {
   if (!c || !d.cf) return;
   if (d.cf === 'gain') { c.gain = v / 100; out.textContent = v + '%'; }
   else if (d.cf === 'rate') { out.textContent = v + '%'; }
+  else if (d.cf === 'swing') { out.textContent = v + '%'; }
   else if (d.cf === 'semi') { out.textContent = (v > 0 ? '+' : '') + v; }
   else { c[d.cf] = v; fixFades(c); out.textContent = c[d.cf].toFixed(1) + 's'; const el = $(`.clip[data-clip="${c.id}"] canvas`); if (el) drawClipCanvas(el, c); }
 });
@@ -1988,11 +2237,17 @@ $('#insp').addEventListener('change', async e => {
     if (d.linkset === 'profile') { P.link.profileChoice = e.target.value; return commit(`Deliveries now aim at ${PROFILES[e.target.value].name}.`); }
     if (d.linkset === 'tc') { if (tcToSec(e.target.value) == null) { e.target.value = startTC(); return toast('Write the start as hh:mm:ss:ff, for example 10:00:00:00.'); } P.link.tcChoice = e.target.value.trim(); return commit(`Programme starts at ${P.link.tcChoice}.`); }
   }
+  if (d.ltfx) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.tfx = { type: 'none', amt: 0.5, mix: 0.5, ...(l.tfx || {}) }; l.tfx[d.ltfx] = d.ltfx === 'type' ? e.target.value : +e.target.value / 100; commit(d.ltfx === 'type' ? (l.tfx.type === 'none' ? 'Effect off' : `${TRACK_FX[l.tfx.type]} on “${l.name}”`) : undefined); renderInspector(); return; }
+  if (e.target.matches('[data-lpump]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.pump = { depth: 0.7, ...(l.pump || {}), on: e.target.checked }; commit(l.pump.on ? `“${l.name}” now ducks on every kick of the drum machine.` : 'Pump off'); renderInspector(); return; }
+  if (e.target.matches('[data-lpumpd]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.pump.depth = +e.target.value / 100; commit(); return; }
   if (d.lrole) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; P.lanes.forEach(x => { if (x.role === 'dialogue') x.role = null; }); if (e.target.checked) l.role = 'dialogue'; return commit(e.target.checked ? `“${l.name}” is the dialogue: Netflix-style loudness is measured where it speaks.` : 'No dialogue track marked.'); }
   if (d.pc === 'limit') { P.limit.on = e.target.checked; return commit(P.limit.on ? `Limiter on: true peak held under ${P.limit.ceiling.toFixed(1)} dBTP when you save or deliver.` : 'Limiter off'); }
   if (d.pf === 'ceiling') { P.limit.ceiling = Math.round(+e.target.value * 10) / 10; return commit(); }
   if (d.pc) { P[d.pc] = e.target.checked; return commit(); }
   if (!c) return;
+  if (c.kind === 'pattern' && d.cf === 'kit') { c.pat.kit = e.target.value; return commit(`Now plays the ${KITS[c.pat.kit]} kit`); }
+  if (c.kind === 'pattern' && d.cf === 'bars') { const nb = +e.target.value, n0 = 16 * (c.pat.bars || 1), n1 = 16 * nb; for (const [k] of DRUM_ROWS) { const a = c.pat.rows[k] || Array(n0).fill(0); c.pat.rows[k] = Array.from({ length: n1 }, (_, i) => a[i % n0] || 0); } c.pat.bars = nb; return commit(`The pattern is now ${nb} bar${nb > 1 ? 's' : ''} long`); }
+  if (c.kind === 'pattern' && d.cf === 'swing') { c.pat.swing = +e.target.value; return patLive(c); }
   if (d.cf === 'inst') { c.inst = e.target.value; return commit(`Now plays as ${MixtapeMIDI.INSTRUMENTS[c.inst]}`); }
   if (d.cf === 'rate') return setRate(c, +e.target.value / 100, `Speed set to ${e.target.value}%`);
   if (d.cf === 'semi') { c.semi = +e.target.value; try { await ensureProc(c); } catch (err) { return toast(err.message, 5000); } return commit(); }
@@ -2174,8 +2429,8 @@ $('#lanes').addEventListener('contextmenu', e => {
     { label: 'Repeat ×4', act: () => loopClip(4) },
     { sep: 1 },
     { label: 'Fit between hit points…', act: fitBetween, disabled: visibleMarkers().length < 2 },
-    ...(c.kind !== 'midi' ? [{ label: 'Bring back the whole song', act: () => restoreWhole(c), disabled: !(c.start > 0.01 || c.end < ((bufs.get(c.trackId) && bufs.get(c.trackId).buffer.duration) || c.end) - 0.01) }] : []),
-    { label: 'Split into vocals, drums, bass…', act: splitStems, disabled: c.kind === 'midi' || !!(t && t.stemOf) },
+    ...(c.kind !== 'midi' && c.kind !== 'pattern' ? [{ label: 'Bring back the whole song', act: () => restoreWhole(c), disabled: !(c.start > 0.01 || c.end < ((bufs.get(c.trackId) && bufs.get(c.trackId).buffer.duration) || c.end) - 0.01) }] : []),
+    { label: 'Split into vocals, drums, bass…', act: splitStems, disabled: c.kind === 'midi' || c.kind === 'pattern' || !!(t && t.stemOf) },
     ...(c.kind === 'midi' ? [{ label: 'Snap notes to 1/16', act: quantize }, { label: 'Export MIDI', act: exportMidi }] : []),
     { label: 'Match mix tempo', act: matchTempo, disabled: !(P.bpm && a && a.bpm) },
     { label: 'Match mix key', act: matchKey, disabled: !(P.key && a && a.key != null) },
@@ -3021,7 +3276,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 (async () => {
   try { db = await idbOpen(); } catch (e) { toast('This browser is blocking storage, so the Studio cannot read your songs.', 8000); }
   await loadLibrary(); renderLibrary();
-  const gone = c => c.kind !== 'midi' && !libTrack(c.trackId); // instrument parts have no song to lose
+  const gone = c => c.kind !== 'midi' && c.kind !== 'pattern' && !libTrack(c.trackId); // instrument and drum machine parts have no song to lose
   const missing = P.clips.filter(gone);
   if (missing.length) { P.clips = P.clips.filter(c => !gone(c)); last = JSON.stringify(P); persist(); toast(`${missing.length} part${missing.length === 1 ? ' was' : 's were'} removed because the song is no longer in your library.`, 5000); }
   if (!P.clips.length && !P.video) UI.lib = true;
@@ -3038,7 +3293,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,
