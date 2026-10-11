@@ -36,6 +36,7 @@
             const k = ch * 128 + d1, q = open.get(k);
             if (q && q.length) { const n = q.shift(); tr.notes.push({ p: d1, tick: n.tick, dt: Math.max(1, tick - n.tick), v: n.v, ch }); }
           } else if (hi === 0xc0 && tr.programs[ch] == null) tr.programs[ch] = d1;
+          else if (hi === 0xb0 && (d1 === 1 || d1 === 11)) (tr.cc = tr.cc || []).push({ tick, ch, c: d1, v: d2 }); // mod wheel and expression: the part's dynamics
         }
       }
       for (const [k, q] of open) for (const n of q) tr.notes.push({ p: k % 128, tick: n.tick, dt: Math.max(1, tick - n.tick), v: n.v, ch: Math.floor(k / 128) });
@@ -55,7 +56,8 @@
       for (const [ch, ns] of byCh) {
         const program = tr.programs[ch] ?? null;
         const name = tr.name ? (byCh.size > 1 ? `${tr.name} (ch ${ch + 1})` : tr.name) : ch === 9 ? 'Drums' : `MIDI ${out.length + 1}`;
-        out.push({ name, channel: ch, program, inst: ch === 9 ? 'drums' : instForProgram(program),
+        const cc = (tr.cc || []).filter(x => x.ch === ch), use = cc.some(x => x.c === 1) ? 1 : 11, dyn = cc.filter(x => x.c === use).map(x => ({ t: secAt(x.tick), v: x.v / 127 }));
+        out.push({ name, channel: ch, program, inst: ch === 9 ? 'drums' : instForProgram(program), dyn: dyn.length ? dyn : null,
           notes: ns.map(n => { const t = secAt(n.tick); return { p: n.p, t, d: secAt(n.tick + n.dt) - t, v: n.v }; }).sort((a, x) => a.t - x.t) });
       }
     }
@@ -89,6 +91,7 @@
         const a = tickAt(n.t), z = Math.max(a + 1, tickAt(n.t + n.d)), p = Math.max(0, Math.min(127, Math.round(n.p))), vel = Math.max(1, Math.min(127, Math.round(n.v)));
         ev.push({ tick: a, order: 3, data: [0x90 | ch, p, vel] }, { tick: z, order: 2, data: [0x80 | ch, p, 0] });
       }
+      for (const x of (tr.cc || [])) ev.push({ tick: tickAt(x.t), order: 1, data: [0xb0 | ch, x.c & 127, Math.max(0, Math.min(127, Math.round(x.v)))] });
       chunk('MTrk', track(ev));
     }
     void vlq;

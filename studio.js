@@ -139,6 +139,7 @@ const newLane = (n, color) => ({ id: uid(), name: typeof n === 'string' ? n : `T
 const newProject = () => ({ name: 'My mix', lanes: [newLane(1)], clips: [], xfade: 0.5, bpm: null, key: null, snap: false, polish: false, loop: null, loopOn: false });
 function normalize(p) {
   if (!p || !p.lanes || !p.lanes.length) return newProject();
+  p.masterChain = Array.isArray(p.masterChain) ? p.masterChain : []; p.mastering = { preset: 'none', lufs: -14, ceiling: -1, gainDb: 0, ...(p.mastering || {}) };
   p.lanes.forEach((l, i) => { l.fx = { ...FX0(), ...(l.fx || {}) }; l.auto = { show: null, vol: [], pan: [], ...(l.auto || {}) };
     // one effect per track became a chain of effects; an older single effect moves into the chain
     if (!Array.isArray(l.chain)) l.chain = l.tfx && l.tfx.type && l.tfx.type !== 'none' ? [{ id: uid(), on: true, amt: 0.5, mix: 0.5, ...l.tfx }] : [];
@@ -497,7 +498,7 @@ function getHall(ac) {
   for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); let lp = 0; for (let i = 0; i < len; i++) { lp = lp * 0.6 + (Math.random() * 2 - 1) * 0.4; d[i] = lp * Math.pow(1 - i / len, 2.2) * (i < ac.sampleRate * 0.02 ? i / (ac.sampleRate * 0.02) : 1); } }
   return (hall = b);
 }
-const laneHasFx = t => P.lanes.some(l => (l.chain || []).some(d => d.on && d.type === t));
+const laneHasFx = t => [...P.lanes.map(l => l.chain || []), P.masterChain || []].some(ch => ch.some(d => d.on && d.type === t));
 const hasHall = () => laneHasFx('hall');
 const echoTime = () => P.bpm ? clamp(0.75 * 60 / P.bpm, 0.08, 1.5) : 0.36;
 function setFilter(node, v) {
@@ -675,6 +676,7 @@ function makeKit(tctx, kit, dest) {
 }
 /* ---- extra synths for instrument parts ---- */
 const TONE_INSTS = { bass808: '808 bass (glide)', acid: 'Acid bass', supersaw: 'Supersaw lead', housepad: 'House pad', fmkeys: 'FM keys', plucky: 'Pluck synth', sub: 'Sub bass' };
+const hzOf = p => 440 * Math.pow(2, (p - 69) / 12);
 const TONE_PROGRAM = { bass808: 38, acid: 38, supersaw: 81, housepad: 89, fmkeys: 4, plucky: 25, sub: 38 };
 if (HAS_TONE) { Object.assign(MixtapeMIDI.INSTRUMENTS, TONE_INSTS); Object.assign(MixtapeMIDI.PROGRAM, TONE_PROGRAM); }
 /* ---------- the orchestra: recorded instruments from VSCO 2 Community Edition (CC0), in orch/ ----------
@@ -728,7 +730,9 @@ function makeOrch(tctx, c, dest) {
     players.push({ top, s, ring: set.kind === 'sustain' ? 0 : set.kind === 'short' ? 1.4 : 2.8 });
   }
   const pick = p => players.find(x => p < x.top) || players[players.length - 1];
-  return { nodes, play(p, t, d, vel) { const x = pick(p); if (!x) return; try { x.s.triggerAttackRelease(440 * Math.pow(2, (p - 69) / 12), Math.max(d, x.ring, 0.05), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} } };
+  return { nodes, play(p, t, d, vel) { const x = pick(p); if (!x) return; try { x.s.triggerAttackRelease(440 * Math.pow(2, (p - 69) / 12), Math.max(d, x.ring, 0.05), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} },
+    on(p, t, vel) { const x = pick(p); if (x) try { x.s.triggerAttack(hzOf(p), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} },
+    off(p, t) { const x = pick(p); if (x && !x.ring) try { x.s.triggerRelease(hzOf(p), t); } catch (e) {} } }; // short and plucked notes ring out by themselves
 }
 function makeToneInst(tctx, inst, dest) {
   const o = { context: tctx }, nodes = [];
@@ -740,6 +744,7 @@ function makeToneInst(tctx, inst, dest) {
     const drive = add(new Tone.Distortion({ ...o, distortion: 0.18, wet: 0.35 })); m.connect(drive); tconnect(drive, dest);
     const f = p => 440 * Math.pow(2, (p - 69) / 12);
     return { nodes, play(p, t, d, vel) { try { m.triggerAttackRelease(f(p), Math.max(0.03, d), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} },
+      on(p, t, vel) { try { m.triggerAttack(f(p), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} }, off(p, t) { try { m.triggerRelease(t); } catch (e) {} },
       playSeq(evs) {
         const seq = [...evs].sort((a, b) => a.when - b.when).filter((e, i, a) => !i || e.when > a[i - 1].when + 1e-4);
         seq.forEach((e, i) => { const end = e.when + Math.max(0.03, e.d), next = seq[i + 1];
@@ -753,10 +758,107 @@ function makeToneInst(tctx, inst, dest) {
   else if (inst === 'plucky') v = add(new Tone.PolySynth({ ...o, voice: Tone.MonoSynth, options: { oscillator: { type: 'square' }, filter: { Q: 2, type: 'lowpass' }, filterEnvelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.1, baseFrequency: 400, octaves: 4 }, envelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.15 } }, volume: -12 }));
   else v = add(new Tone.PolySynth({ ...o, voice: Tone.Synth, options: { oscillator: { type: 'sine' }, envelope: { attack: 0.005, decay: 0.1, sustain: 0.9, release: 0.2 } }, volume: -6 }));
   if (tail) { v.connect(tail); tconnect(tail, dest); } else tconnect(v, dest);
-  return { nodes, play(p, t, d, vel) { try { v.triggerAttackRelease(440 * Math.pow(2, (p - 69) / 12), Math.max(0.03, d), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} } };
+  return { nodes, play(p, t, d, vel) { try { v.triggerAttackRelease(440 * Math.pow(2, (p - 69) / 12), Math.max(0.03, d), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} },
+    on(p, t, vel) { try { v.triggerAttack(hzOf(p), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} }, off(p, t) { try { v.triggerRelease(hzOf(p), t); } catch (e) {} } };
 }
+/* ---- playing live from a MIDI keyboard or the computer keys, and recording what is played ---- */
+function builtinVoice(inst, dest) { // the browser-made instruments, held for as long as the key is down
+  const held = new Map();
+  return { nodes: [],
+    on(p, t, vel) { const g = ctx.createGain(); g.connect(dest); held.set(p, { g, srcs: MixtapeMIDI.playNote(ctx, g, inst, p, t, inst === 'drums' ? 0.1 : 8, vel) }); },
+    off(p, t) { const h = held.get(p); if (!h || inst === 'drums') return; held.delete(p); h.g.gain.setTargetAtTime(0, t, 0.05); h.srcs.forEach(s => { try { s.stop(t + 0.4); } catch (e) {} }); setTimeout(() => { try { h.g.disconnect(); } catch (e) {} }, 1500); } };
+}
+let midiAccess = null, mon = null, recNotes = null, sustain = false, qwerty = false, qOct = 0;
+const liveHeld = new Set(), sustained = new Set(), qHeld = new Map();
+const livePart = () => { const c = clipById(recNotes ? recNotes.clip : selClip); return c && c.kind === 'midi' ? c : null; };
+function monitorVoice(c) {
+  const inst = c ? c.inst || 'piano' : 'piano', key = inst + '|' + (c && isOrch(inst) ? orchArtOf(c) : '');
+  if (mon && mon.key === key && !mon.stale) return mon;
+  if (mon) { const old = mon; setTimeout(() => { (old.v.nodes || []).forEach(n => { try { n.dispose(); } catch (e) {} }); try { old.bus.disconnect(); } catch (e) {} }, 3000); }
+  const bus = ctx.createGain(); bus.connect(ctx.destination); let v;
+  if (HAS_TONE && c && isOrch(inst)) { v = makeOrch(toneFor(ctx), c, bus); if (!v.nodes.length) ensureOrch(c).then(() => { if (mon) mon.stale = true; }).catch(() => {}); }
+  else if (HAS_TONE && TONE_INSTS[inst]) v = makeToneInst(toneFor(ctx), inst, bus);
+  else v = builtinVoice(inst, bus);
+  mon = { key, v, bus }; return mon;
+}
+function noteIn(p, vel, on) {
+  ctx.resume(); const c = livePart(), m = monitorVoice(c), now = ctx.currentTime + 0.005, q = clamp(p + (c ? c.semi || 0 : 0), 0, 127);
+  if (on) {
+    if (liveHeld.has(p)) release(p); sustained.delete(p); liveHeld.add(p);
+    try { m.v.on ? m.v.on(q, now, vel) : m.v.play(q, now, 0.6, vel); } catch (e) {}
+    if (recNotes && playing) recNotes.open.set(p, { p, v: vel, tl: curPos() });
+  } else if (sustain) sustained.add(p); else release(p);
+}
+function release(p) {
+  const c = livePart(); liveHeld.delete(p);
+  try { mon && mon.v.off && mon.v.off(clamp(p + (c ? c.semi || 0 : 0), 0, 127), ctx.currentTime + 0.005); } catch (e) {}
+  closeRecNote(p);
+}
+function pedal(down) { sustain = down; if (!down) { [...sustained].forEach(release); sustained.clear(); } }
+function ccIn(v) { // the mod wheel: heard at once, and recorded into the part's dynamics
+  if (mon) mon.bus.gain.setTargetAtTime(dynGain(v), ctx.currentTime, 0.02);
+  if (!recNotes || !playing) return; const c = clipById(recNotes.clip); if (!c) return;
+  const t = c.start + (curPos() - c.at) * (c.rate || 1), last = recNotes.dyn[recNotes.dyn.length - 1];
+  if (t < c.start) return; if (!last || t - last.t > 0.03) recNotes.dyn.push({ t, v }); else last.v = v;
+}
+function onMidiMsg(e) {
+  const [s, a, b] = e.data, cmd = s & 0xf0;
+  if (cmd === 0x90 && b > 0) noteIn(a, b, true);
+  else if (cmd === 0x80 || (cmd === 0x90 && b === 0)) noteIn(a, 0, false);
+  else if (cmd === 0xb0 && a === 64) pedal(b >= 64);
+  else if (cmd === 0xb0 && (a === 1 || a === 11)) ccIn(b / 127);
+}
+const midiNames = () => midiAccess ? [...midiAccess.inputs.values()].map(i => i.name) : [];
+async function connectMidi() {
+  if (!navigator.requestMIDIAccess) return toast('This browser cannot use MIDI keyboards. Use Chrome or Edge, or play with the computer keys.', 6000);
+  try { midiAccess = await navigator.requestMIDIAccess(); } catch (e) { return toast('The MIDI keyboard was not allowed. Click the keyboard icon in the address bar to allow it, then try again.', 7000); }
+  const hook = () => { for (const inp of midiAccess.inputs.values()) inp.onmidimessage = onMidiMsg; };
+  hook(); midiAccess.onstatechange = () => { hook(); renderInspector(); };
+  const n = midiNames(); toast(n.length ? `Keyboard connected: ${n.join(', ')}. Play it to hear the selected part’s sound.` : 'No MIDI keyboard found yet. Plug one in and it connects by itself.', 5000); renderInspector();
+}
+async function toggleRecNotes() {
+  if (recNotes) return finishRecNotes(true);
+  let c = clipById(selClip);
+  if (!c || c.kind !== 'midi') {
+    const l = P.lanes.find(x => x.id === selLane && x.type !== 'group' && x.type !== 'return'); if (!l) return toast('Select an instrument part, or a track to record a new part onto.');
+    c = newMidiClip(l.id, playhead, [], { inst: 'piano', name: 'Recorded' }); P.clips.push(c); selClip = c.id; edOpen = true; quietCommit(); renderAll();
+  }
+  if (!midiAccess && !qwerty) { await connectMidi(); if (!midiNames().length) { qwerty = true; toast('No MIDI keyboard, so the computer keys play notes: A W S E D F T G Y H U J K. Z and X change octave.', 7000); } }
+  if (playing) pause();
+  c.notes = c.notes.map(n => ({ ...n }));
+  recNotes = { clip: c.id, open: new Map(), n: 0, dyn: [] };
+  if (P.bpm) playhead = Math.max(0, playhead - 4 * 60 / tempoAt(playhead)); // one bar to come in on
+  renderInspector(); await play();
+}
+function closeRecNote(p) {
+  const r = recNotes, o = r && r.open.get(p); if (!o) return; r.open.delete(p);
+  const c = clipById(r.clip); if (!c) return; const rate = c.rate || 1;
+  let t = c.start + (o.tl - c.at) * rate; if (t < c.start - 0.05) return; // played during the count-in
+  t = Math.max(c.start, UI.recQ ? snapNoteT(c, t) : t); const d = Math.max(0.03, (curPos() - o.tl) * rate);
+  c.notes.push({ id: uid(), p: o.p, t, d, v: o.v }); r.n++; if (t + d > c.end) c.end = t + d;
+  if (edOpen) drawEditor(); const el = $(`.clip[data-clip="${c.id}"] canvas`); if (el) drawClipCanvas(el, c);
+}
+function finishRecNotes(stopPlay) {
+  const r = recNotes; if (!r) return;
+  for (const p of [...r.open.keys()]) closeRecNote(p);
+  recNotes = null; if (stopPlay && playing) pause();
+  const c = clipById(r.clip);
+  if (c && r.dyn.length) { const a = r.dyn[0].t, b = r.dyn[r.dyn.length - 1].t; c.dyn = thinDyn([...(c.dyn || []).filter(x => x.t < a || x.t > b), ...r.dyn].sort((x, y) => x.t - y.t)); }
+  setTimeout(() => commit(r.n ? `Recorded ${r.n} note${r.n === 1 ? '' : 's'} into “${c ? midiName(c) : 'the part'}”.` : 'Recording stopped. No notes were played.'), 0); // after playback has fully stopped
+}
+// the computer keys as a piano: the bottom two rows of letters, Z and X for octaves
+const QWERTY = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12, o: 13, l: 14, p: 15 };
+window.addEventListener('keydown', e => {
+  if (!qwerty || e.ctrlKey || e.metaKey || e.altKey || !$('#modal').hidden || (e.target.closest && e.target.closest('input, select, textarea'))) return;
+  const k = e.key.toLowerCase();
+  if (k === 'escape') { qwerty = false; renderInspector(); return toast('The computer keys work as shortcuts again.'); }
+  if (k === 'z' || k === 'x') { e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) { qOct = clamp(qOct + (k === 'x' ? 1 : -1), -3, 3); toast(`The computer keys now start at C${4 + qOct}.`, 1500); } return; }
+  if (!(k in QWERTY)) return; e.preventDefault(); e.stopImmediatePropagation();
+  if (!e.repeat && !qHeld.has(k)) { const p = 60 + 12 * qOct + QWERTY[k]; qHeld.set(k, p); noteIn(p, e.shiftKey ? 120 : 96, true); }
+}, true);
+window.addEventListener('keyup', e => { const p = qHeld.get(e.key.toLowerCase()); if (p == null) return; qHeld.delete(e.key.toLowerCase()); noteIn(p, 0, false); }, true);
 /* ---- effect chains: each track runs its sound through these, top to bottom ---- */
-const FX_TYPES = { eq: 'EQ', comp: 'Compressor', distortion: 'Saturation / distortion', chorus: 'Chorus', phaser: 'Phaser', pingpong: 'Ping-pong delay', hall: 'Big reverb (hall)', gate: 'Trance gate', autofilter: 'Auto-filter sweep' };
+const FX_TYPES = { eq: 'EQ', comp: 'Compressor', sat: 'Saturation (tape / tube warmth)', lofi: 'Lo-fi (bit crush, old sampler)', distortion: 'Distortion (fuzz)', chorus: 'Chorus', phaser: 'Phaser', pingpong: 'Ping-pong delay', hall: 'Big reverb (hall)', gate: 'Trance gate', autofilter: 'Auto-filter sweep' };
 const EQ_DEFAULT = () => [{ t: 'hp', f: 30, on: false }, { t: 'ls', f: 120, g: 0, on: true }, { t: 'pk', f: 400, g: 0, q: 1, on: true }, { t: 'pk', f: 2500, g: 0, q: 1, on: true }, { t: 'hs', f: 8000, g: 0, on: true }, { t: 'lp', f: 18000, on: false }];
 const BAND_TYPE = { hp: 'highpass', ls: 'lowshelf', pk: 'peaking', hs: 'highshelf', lp: 'lowpass' };
 const BAND_NAME = { hp: 'Low cut', ls: 'Low shelf', pk: 'Bell', hs: 'High shelf', lp: 'High cut' };
@@ -764,9 +866,31 @@ function newDevice(type) {
   const d = { id: uid(), type, on: true, amt: 0.5, mix: 0.5 };
   if (type === 'eq') d.bands = EQ_DEFAULT();
   if (type === 'comp') Object.assign(d, { th: -18, ratio: 4, att: 10, rel: 120, knee: 6, makeup: 0, mix: 1 });
+  if (type === 'sat') Object.assign(d, { mode: 'tape', amt: 0.25, tone: 0.8, mix: 1 });
+  if (type === 'lofi') Object.assign(d, { bits: 8, rate: 11025, tone: 0.6, mix: 1 });
   if (type === 'gate') Object.assign(d, { gate: 'classic', amt: 0.9 });
   if (type === 'hall') d.mix = 0.4;
   return d;
+}
+const toneHz = t => 1000 * Math.pow(20, clamp(t, 0, 1)); // Tone: 1 kHz (dark) to 20 kHz (open)
+const satK = d => Math.pow(10, clamp(d.amt ?? 0.35, 0, 1) * 30 / 20); // Drive: up to 30 dB into the curve
+const satShape = (mode, u) => mode === 'tube' ? Math.tanh(u + 0.35) - Math.tanh(0.35) : mode === 'hard' ? u / Math.pow(1 + Math.pow(Math.abs(u), 8), 1 / 8) : Math.tanh(u);
+const satCache = new Map();
+function satCurve(mode, k) {
+  const key = mode + k.toFixed(3); if (satCache.has(key)) return satCache.get(key).curve;
+  const n = 4096, c = new Float32Array(n); for (let i = 0; i < n; i++) c[i] = satShape(mode, k * (i / (n - 1) * 2 - 1));
+  // the average gain for tones from -20 to -3 dBFS, taken back off, so Drive changes the colour more than the volume
+  let sum = 0; const amps = [0.1, 0.18, 0.3, 0.45, 0.7];
+  for (const A of amps) { let a = 0, b = 0; for (let i = 0; i < 512; i++) { const x = A * Math.sin(i / 512 * 2 * Math.PI), y = satShape(mode, k * x); a += x * x; b += y * y; } sum += Math.log(Math.sqrt(b / a) || 1); }
+  satCache.set(key, { curve: c, level: Math.exp(sum / amps.length) }); return c;
+}
+const satLevel = (mode, k) => { satCurve(mode, k); return satCache.get(mode + k.toFixed(3)).level; };
+// the lo-fi effect runs in lofi-worklet.js, loaded into each audio context before it is used
+const lofiOk = new WeakSet(), lofiLoading = new WeakMap();
+function ensureLofi(ac) {
+  if (!ac.audioWorklet) return Promise.resolve(false);
+  if (!lofiLoading.has(ac)) lofiLoading.set(ac, ac.audioWorklet.addModule('lofi-worklet.js').then(() => { lofiOk.add(ac); return true; }, () => false));
+  return lofiLoading.get(ac);
 }
 function setBand(n, b) { n.type = BAND_TYPE[b.t]; n.frequency.value = clamp(b.f, 20, 20000); n.Q.value = b.t === 'pk' ? clamp(b.q || 1, 0.2, 12) : 0.707; n.gain.value = b.t === 'hp' || b.t === 'lp' ? 0 : clamp(b.g || 0, -24, 24); }
 function applyComp(x, d) {
@@ -788,6 +912,24 @@ function buildDevice(ac, dev) {
   if (dev.type === 'comp') {
     const x = { in: ac.createGain(), out: ac.createGain(), dry: ac.createGain(), wet: ac.createGain(), mk: ac.createGain(), comp: ac.createDynamicsCompressor() };
     x.in.connect(x.dry); x.dry.connect(x.out); x.in.connect(x.comp); x.comp.connect(x.mk); x.mk.connect(x.wet); x.wet.connect(x.out); applyComp(x, dev); return x;
+  }
+  if (dev.type === 'sat') { // tape or tube warmth: a soft curve pushed harder by Drive, then levelled so it gets warmer, not just louder
+    const x = { in: ac.createGain(), out: ac.createGain() }, sh = ac.createWaveShaper(), hp = ac.createBiquadFilter(), tone = ac.createBiquadFilter(), lev = ac.createGain(), dry = ac.createGain(), wet = ac.createGain();
+    const mode = dev.mode || 'tape', k = satK(dev); sh.curve = satCurve(mode, k); sh.oversample = '4x';
+    hp.type = 'highpass'; hp.frequency.value = 15; tone.type = 'lowpass'; tone.frequency.value = toneHz(dev.tone ?? 0.8); lev.gain.value = 1 / satLevel(mode, k);
+    const m = clamp(dev.mix ?? 1, 0, 1); dry.gain.value = 1 - m; wet.gain.value = m;
+    x.in.connect(dry); dry.connect(x.out); x.in.connect(sh); sh.connect(hp); hp.connect(tone); tone.connect(lev); lev.connect(wet); wet.connect(x.out); return x;
+  }
+  if (dev.type === 'lofi') { // fewer bits and a slower sample clock, like an old sampler
+    const x = { in: ac.createGain(), out: ac.createGain() }, dry = ac.createGain(), wet = ac.createGain(), tone = ac.createBiquadFilter();
+    const m = clamp(dev.mix ?? 1, 0, 1); dry.gain.value = 1 - m; wet.gain.value = m; tone.type = 'lowpass'; tone.frequency.value = toneHz(dev.tone ?? 0.6);
+    x.in.connect(dry); dry.connect(x.out);
+    if (lofiOk.has(ac)) {
+      const n = new AudioWorkletNode(ac, 'mixtape-lofi', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+      n.parameters.get('bits').value = clamp(dev.bits ?? 8, 2, 16); n.parameters.get('rate').value = clamp(dev.rate ?? 11025, 1000, 48000);
+      x.in.connect(n); n.connect(tone); x.worklet = n;
+    } else x.in.connect(tone);
+    tone.connect(wet); wet.connect(x.out); return x;
   }
   if (dev.type === 'gate') { const g = ac.createGain(); return { in: g, out: g, gate: g }; }
   if (dev.type === 'hall') { // pre-delay, then a 5.5-second tail under the dry sound (all wet when the mix is at 100%, as on a return)
@@ -1043,7 +1185,7 @@ async function importMidi(file, at = playhead) {
   let first = null; const emptyFirst = P.lanes.length === 1 && !P.clips.some(c => c.lane === P.lanes[0].id) ? P.lanes[0].id : null;
   m.tracks.forEach((tr, i) => {
     const l = newLane(tr.name, PALETTE[(P.lanes.length + i) % PALETTE.length]); P.lanes.push(l);
-    const c = newMidiClip(l.id, at, tr.notes.map(n => ({ id: uid(), ...n })), { inst: tr.inst, name: tr.name });
+    const c = newMidiClip(l.id, at, tr.notes.map(n => ({ id: uid(), ...n })), { inst: tr.inst, name: tr.name, ...(tr.dyn ? { dyn: tr.dyn } : {}) });
     c.end = tr.notes.reduce((mx, n) => Math.max(mx, n.t + n.d), 0.5);
     P.clips.push(c); if (!first) first = c;
   });
@@ -1061,7 +1203,7 @@ function exportMidi() {
   const tracks = [...byLane].map(([laneId, cs]) => {
     const l = P.lanes.find(x => x.id === laneId), drums = cs[0].inst === 'drums', channel = drums ? 9 : (ch === 9 ? ++ch : ch++) % 16;
     const notes = cs.flatMap(c => c.notes.filter(n => n.t >= c.start && n.t < c.end).map(n => ({ p: n.p + (c.semi || 0), t: c.at + (n.t - c.start) / (c.rate || 1), d: Math.min(n.d, c.end - n.t) / (c.rate || 1), v: n.v })));
-    return { name: l ? l.name : 'Instrument', channel, program: MixtapeMIDI.PROGRAM[cs[0].inst] ?? 0, notes };
+    return { name: l ? l.name : 'Instrument', channel, program: MixtapeMIDI.PROGRAM[cs[0].inst] ?? 0, notes, cc: cs.flatMap(dynCC) };
   });
   const tempos = P.bpm ? tempoSegs().map((s, i) => ({ sec: i ? s.t0 : 0, bpm: s.bpm })) : [{ sec: 0, bpm: 120 }];
   const bytes = MixtapeMIDI.write({ ppq: 480, tempos, tracks, tickAt: midiTickAt(480) });
@@ -1079,6 +1221,113 @@ function quantize() {
   c.notes = c.notes.map(n => ({ ...n, t: Math.max(0, snapNoteT(c, n.t)) }));
   commit(`Snapped ${c.notes.length} note${c.notes.length === 1 ? '' : 's'} to sixteenths`);
 }
+/* ---- scales and chords for the note editor ---- */
+const SCALES = { major: ['Major', [0, 2, 4, 5, 7, 9, 11]], minor: ['Minor', [0, 2, 3, 5, 7, 8, 10]], harm: ['Harmonic minor', [0, 2, 3, 5, 7, 8, 11]], dorian: ['Dorian', [0, 2, 3, 5, 7, 9, 10]], mixo: ['Mixolydian', [0, 2, 4, 5, 7, 9, 10]], phryg: ['Phrygian', [0, 1, 3, 5, 7, 8, 10]], pmaj: ['Major pentatonic', [0, 2, 4, 7, 9]], pmin: ['Minor pentatonic', [0, 3, 5, 7, 10]], blues: ['Blues', [0, 3, 5, 6, 7, 10]] };
+const pc = p => ((p % 12) + 12) % 12;
+function partScale(c) { // the part's own scale, or else the mix key
+  const s = c.scale || (P.key ? { root: P.key.key, type: P.key.mode === 'minor' ? 'minor' : 'major' } : null);
+  if (!s || !SCALES[s.type]) return null; const steps = SCALES[s.type][1];
+  return { root: s.root, type: s.type, steps, has: p => steps.includes(pc(p - s.root)) };
+}
+function nearestInScale(sc, p) { if (!sc) return p; for (let d = 0; d < 7; d++) { if (sc.has(p - d)) return p - d; if (sc.has(p + d)) return p + d; } return p; }
+const CHORD_TOOLS = { '': 'Single notes', triad: 'Chords (3 notes, in the scale)', seventh: '7th chords (4 notes)', ninth: '9th chords (5 notes)', sus2: 'Sus2 chords', sus4: 'Sus4 chords', power: 'Power chords (root and 5th)', octave: 'Octaves' };
+function chordAt(sc, p, kind) {
+  if (kind === 'power') return [p, p + 7, p + 12];
+  if (kind === 'octave') return [p, p + 12];
+  const n = { triad: 3, seventh: 4, ninth: 5, sus2: 3, sus4: 3 }[kind]; if (!n) return [p];
+  if (!sc || sc.steps.length !== 7) return { triad: [0, 4, 7], seventh: [0, 4, 7, 10], ninth: [0, 4, 7, 10, 14], sus2: [0, 2, 7], sus4: [0, 5, 7] }[kind].map(i => p + i);
+  const deg = sc.steps.indexOf(pc(p - sc.root)); if (deg < 0) return [p];
+  const at = k => p - sc.steps[deg] + sc.steps[(deg + k) % 7] + 12 * Math.floor((deg + k) / 7); // stack notes of the scale
+  return (kind === 'sus2' ? [0, 1, 4] : kind === 'sus4' ? [0, 3, 4] : [0, 2, 4, 6, 8].slice(0, n)).map(at);
+}
+const CHORD_SHAPES = [['', [0, 4, 7]], ['m', [0, 3, 7]], ['dim', [0, 3, 6]], ['aug', [0, 4, 8]], ['sus2', [0, 2, 7]], ['sus4', [0, 5, 7]], ['7', [0, 4, 7, 10]], ['maj7', [0, 4, 7, 11]], ['m7', [0, 3, 7, 10]], ['m7♭5', [0, 3, 6, 10]], ['dim7', [0, 3, 6, 9]], ['6', [0, 4, 7, 9]], ['m6', [0, 3, 7, 9]], ['add9', [0, 2, 4, 7]], ['m(add9)', [0, 2, 3, 7]], ['9', [0, 2, 4, 7, 10]], ['maj9', [0, 2, 4, 7, 11]], ['m9', [0, 2, 3, 7, 10]], ['5', [0, 7]]];
+function chordName(ps) {
+  const pcs = [...new Set(ps.map(pc))]; if (pcs.length < 2) return null; const bass = pc(Math.min(...ps));
+  for (const r of [bass, ...pcs.filter(x => x !== bass)]) {
+    const set = pcs.map(x => pc(x - r)).sort((a, b) => a - b).join(), hit = CHORD_SHAPES.find(([, s]) => s.join() === set);
+    if (hit) return KEYS[r] + hit[0] + (r !== bass ? '/' + KEYS[bass] : '');
+  }
+  return null;
+}
+const PROGS = { pop: ['Pop anthem · 1–5–6–4', [0, 4, 5, 3]], emo: ['Emotional · 6–4–1–5', [5, 3, 0, 4]], fifties: ['Fifties · 1–6–4–5', [0, 5, 3, 4]], jazz: ['Jazz · 2–5–1', [1, 4, 0, 0]], epic: ['Epic film · 1–6–3–7 (best in a minor key)', [0, 5, 2, 6]], andal: ['Dark, Spanish · 1–7–6–5 (minor)', [0, 6, 5, 4]], house: ['Deep house vamp · 1–4', [0, 3, 0, 3]], canon: ['Canon · 1–5–6–3–4–1–4–5', [0, 4, 5, 2, 3, 0, 3, 4]], blues: ['Twelve-bar blues', [0, 0, 0, 0, 3, 3, 0, 0, 4, 3, 0, 4]] };
+const RHYTHMS = { hold: 'Held, one chord per bar', half: 'Held, two chords per bar', stabs: 'House stabs (off the beat)', pulse: 'Eighth-note pulse', arp: 'Held, with the arpeggiator on' };
+async function writeChords() {
+  const c = clipById(selClip); if (!c || c.kind !== 'midi') return toast('Select an instrument part first.');
+  let sc = partScale(c); const noKey = !sc || sc.steps.length !== 7;
+  const ch = await ask({ title: 'Write a chord progression', text: noKey ? 'This part has no 7-note scale, so the chords are in C major. Set a key or a scale in the settings to change that.' : `In ${KEYS[sc.root]} ${SCALES[sc.type][0].toLowerCase()}. The chords are spread so each one moves as little as possible from the last.`, ok: 'Write chords',
+    extra: `<fieldset class="opts"><legend>Progression</legend><select name="prog">${Object.entries(PROGS).map(([k, [n]]) => `<option value="${k}">${n}</option>`).join('')}</select></fieldset>
+      <fieldset class="opts"><legend>Rhythm</legend><select name="rh">${Object.entries(RHYTHMS).map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select></fieldset>
+      <fieldset class="opts"><legend>Sound</legend><label><input type="checkbox" name="sev"> 7th chords (richer, jazzier)</label><label><input type="checkbox" name="bass" checked> Add the root note low in the bass</label><label><input type="checkbox" name="rep" ${c.notes.length ? '' : 'checked'}> Replace the notes already in this part</label>
+      <label>Register <select name="reg"><option value="48">Low</option><option value="60" selected>Middle</option><option value="72">High</option></select></label></fieldset>`,
+    read: f => ({ prog: f.querySelector('[name=prog]').value, rh: f.querySelector('[name=rh]').value, sev: f.querySelector('[name=sev]').checked, bass: f.querySelector('[name=bass]').checked, rep: f.querySelector('[name=rep]').checked, reg: +f.querySelector('[name=reg]').value }) });
+  if (!ch || !ch.prog) return;
+  if (noKey) sc = { root: 0, type: 'major', steps: SCALES.major[1], has: p => SCALES.major[1].includes(pc(p)) };
+  const degs = PROGS[ch.prog][1], span = ch.rh === 'half' ? 2 : 4, r = c.rate || 1;
+  const at = b => { const tl = P.bpm ? timeAtBeat(beatAt(c.at) + b) : c.at + b * 0.5; return c.start + (tl - c.at) * r; };
+  const notes = ch.rep ? [] : c.notes.map(n => ({ ...n })), names = []; let prev = null;
+  degs.forEach((d, i) => {
+    const root = ch.reg + sc.root + sc.steps[d % 7], base = chordAt(sc, root, ch.sev ? 'seventh' : 'triad').sort((a, b) => a - b);
+    const cands = []; let v = base; for (let k = 0; k < base.length; k++) { for (const sh of [-12, 0, 12]) cands.push(v.map(x => x + sh)); v = [...v.slice(1), v[0] + 12]; }
+    const cost = a => prev ? a.reduce((s, x, j) => s + Math.abs(x - prev[j]), 0) : Math.abs(a[0] - ch.reg);
+    const best = cands.filter(a => a[0] >= ch.reg - 7 && a[a.length - 1] <= ch.reg + 19).sort((x, y) => cost(x) - cost(y))[0] || base; prev = best;
+    const b0 = i * span, hits = ch.rh === 'stabs' ? [0.5, 1.5, 2.5, 3.5].filter(x => x < span).map(x => [x, 0.25]) : ch.rh === 'pulse' ? [...Array(span * 2).keys()].map(k => [k / 2, 0.4]) : [[0, span * 0.98]];
+    for (const [o, len] of hits) for (const p of best) notes.push({ id: uid(), p, t: at(b0 + o), d: at(b0 + o + len) - at(b0 + o), v: ch.rh === 'stabs' ? 100 : 84 });
+    let bp = null; if (ch.bass) { bp = root - 12; while (bp >= best[0]) bp -= 12; notes.push({ id: uid(), p: bp, t: at(b0), d: at(b0 + span * 0.98) - at(b0), v: 90 }); }
+    names.push(chordName(bp == null ? best : [bp, ...best]) || '?');
+  });
+  c.notes = notes; c.end = Math.max(c.end, at(degs.length * span));
+  if (ch.rh === 'arp') c.arp = { mode: 'up', rate: '16', oct: 1, gate: 0.6, ...(c.arp || {}), on: true };
+  edOpen = true; commit(`Wrote ${names.join(' – ')}`);
+}
+function fitToScale() {
+  const c = clipById(selClip), sc = c && partScale(c); if (!sc) return toast('Set a key or a scale for this part first.');
+  let n = 0; c.notes = c.notes.map(x => { const p = nearestInScale(sc, x.p); if (p !== x.p) n++; return { ...x, p }; });
+  commit(n ? `Moved ${n} note${n === 1 ? '' : 's'} into ${KEYS[sc.root]} ${SCALES[sc.type][0].toLowerCase()}` : 'Every note is already in the scale');
+}
+/* ---- dynamics: an expression curve per part (like a mod wheel), louder and brighter as it rises ---- */
+const dynGain = v => v <= 0.001 ? 0 : Math.pow(10, -30 * (1 - clamp(v, 0, 1)) / 20); // 0 is 30 dB down, 1 is full
+const dynHz = v => 700 * Math.pow(20000 / 700, clamp(v, 0, 1));
+const brightens = inst => isOrch(inst) || ['strings', 'brass', 'pad', 'lead'].includes(inst);
+function dynamics(ac, c, src, startPos, when0) {
+  if (!c.dyn || !c.dyn.length) return src;
+  const r = c.rate || 1, raw = c.dyn.map(p => ({ t: c.at + (p.t - c.start) / r, v: p.v })).sort((a, b) => a.t - b.t);
+  // follow the curve in small steps, so a swell rises evenly in loudness (decibels) rather than jumping up early
+  const pts = []; for (let i = 0; i < raw.length; i++) { pts.push(raw[i]); const nx = raw[i + 1]; if (nx) for (let t = raw[i].t + 0.05; t < nx.t - 1e-3; t += 0.05) pts.push({ t, v: raw[i].v + (nx.v - raw[i].v) * (t - raw[i].t) / (nx.t - raw[i].t) }); }
+  const dg = ac.createGain(); src.connect(dg); scheduleAuto(dg.gain, pts.map(p => ({ t: p.t, v: dynGain(p.v) })), startPos, when0, 1);
+  if (!brightens(c.inst)) return dg;
+  const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 0.5; dg.connect(lp);
+  scheduleAuto(lp.frequency, pts.map(p => ({ t: p.t, v: dynHz(p.v) })), startPos, when0, 20000); return lp;
+}
+function dynCC(c) { // the curve as MIDI controller 1 (mod wheel) for the exported file
+  if (!c.dyn || !c.dyn.length) return [];
+  const r = c.rate || 1, pts = [...c.dyn].sort((a, b) => a.t - b.t), out = []; let last = -1;
+  for (let t = c.start; t <= c.end + 1e-6; t += 0.05 * r) { const v = Math.round(autoValue(pts, t, 1) * 127); if (v !== last) { out.push({ t: c.at + (t - c.start) / r, c: 1, v }); last = v; } }
+  return out;
+}
+const thinDyn = pts => pts.filter((p, i, a) => !i || i === a.length - 1 || Math.abs(p.t - a[i - 1].t) > 0.02);
+function dynPointer(e, wrap, c, V, rect) {
+  if (e.clientX - rect.left < V.KW) { UI.dynMode = UI.dynMode === 'vel' ? 'dyn' : 'vel'; saveUI(); drawEditor(); return; }
+  const vel = UI.dynMode === 'vel';
+  const tAt = ev => V.t0 + (ev.clientX - rect.left - V.KW) / (V.w - V.KW) * (V.t1 - V.t0), vAt = ev => clamp(1 - (ev.clientY - rect.top - V.dynY0 - 3) / (V.DH - 6), 0, 1);
+  if (!vel && e.detail >= 2) { delete c.dyn; commit('Dynamics cleared: the part plays at full volume'); return; }
+  c.notes = c.notes.map(n => ({ ...n })); if (!vel) c.dyn = (c.dyn || []).map(p => ({ ...p }));
+  let last = { t: tAt(e), v: vAt(e) };
+  const apply = ev => {
+    const t = tAt(ev), v = vAt(ev), a = Math.min(last.t, t), b = Math.max(last.t, t);
+    if (vel) { const tol = (V.t1 - V.t0) / (V.w - V.KW) * 6; for (const n of c.notes) if (n.t >= a - tol && n.t <= b + tol) n.v = Math.max(1, Math.round(v * 127)); }
+    else {
+      c.dyn = c.dyn.filter(p => p.t < a - 1e-4 || p.t > b + 1e-4);
+      if (b - a > 1e-4) c.dyn.push({ t: a, v: t < last.t ? v : last.v }, { t: b, v: t < last.t ? last.v : v }); else c.dyn.push({ t, v });
+      c.dyn.sort((p, q) => p.t - q.t);
+    }
+    last = { t, v }; drawEditor();
+  };
+  apply(e);
+  try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+  const mv = ev => apply(ev);
+  wrap.addEventListener('pointermove', mv);
+  wrap.addEventListener('pointerup', () => { wrap.removeEventListener('pointermove', mv); if (!vel) c.dyn = thinDyn(c.dyn); commit(vel ? 'Note velocities changed' : 'Dynamics drawn'); }, { once: true });
+}
 let edNote = null, rollRange = null;
 function drawPianoRoll(c, g, w, h) {
   // the pitch range holds still while you edit, and only grows when a note goes past it
@@ -1086,14 +1335,17 @@ function drawPianoRoll(c, g, w, h) {
   if (hi - lo < 24) { const mid = Math.round((hi + lo) / 2); lo = mid - 12; hi = mid + 12; }
   if (rollRange && rollRange.id === c.id) { lo = Math.min(lo, rollRange.lo); hi = Math.max(hi, rollRange.hi); if (ps.length && Math.min(...ps) >= rollRange.lo && Math.max(...ps) <= rollRange.hi) { lo = rollRange.lo; hi = rollRange.hi; } }
   lo = Math.max(0, lo); hi = Math.min(127, hi); rollRange = { id: c.id, lo, hi };
-  const KW = 38, rows = hi - lo + 1, rowH = h / rows, t0 = c.start, t1 = Math.max(c.end, t0 + 0.5);
+  const DH = h >= 120 ? Math.round(clamp(h * 0.24, 30, 80)) : 0, hr = h - DH; // the strip under the notes: dynamics or velocity
+  const KW = 38, rows = hi - lo + 1, rowH = hr / rows, t0 = c.start, t1 = Math.max(c.end, t0 + 0.5);
   const X = t => KW + (t - t0) / (t1 - t0) * (w - KW), Y = p => (hi - p) * rowH;
-  edView = { midi: true, lo, hi, KW, rowH, t0, t1, w, h, X, Y };
-  const black = p => [1, 3, 6, 8, 10].includes(p % 12), col = laneColor(c.lane);
+  edView = { midi: true, lo, hi, KW, rowH, t0, t1, w, h, X, Y, dynY0: hr, DH };
+  const black = p => [1, 3, 6, 8, 10].includes(p % 12), col = laneColor(c.lane), sc = partScale(c);
   for (let p = lo; p <= hi; p++) {
     g.fillStyle = black(p) ? 'rgba(0,0,0,.28)' : 'rgba(255,255,255,.025)'; g.fillRect(KW, Y(p), w - KW, rowH);
+    if (sc && sc.has(p)) { g.fillStyle = pc(p - sc.root) === 0 ? 'rgba(255,196,64,.14)' : 'rgba(255,196,64,.055)'; g.fillRect(KW, Y(p), w - KW, rowH); } // notes of the scale glow
     g.fillStyle = black(p) ? '#1A1E25' : '#C9CED6'; g.fillRect(0, Y(p) + 0.5, KW - 2, Math.max(1, rowH - 1));
     if (p % 12 === 0 && rowH >= 7) { g.fillStyle = '#0D0F13'; g.font = `${Math.min(10, rowH)}px ${css('--f-mono')}`; g.textBaseline = 'middle'; g.fillText(`C${p / 12 - 1}`, 3, Y(p) + rowH / 2); }
+    else if (sc && pc(p - sc.root) === 0 && rowH >= 7) { g.fillStyle = black(p) ? '#FFC440' : '#7A5A00'; g.font = `${Math.min(10, rowH)}px ${css('--f-mono')}`; g.textBaseline = 'middle'; g.fillText(KEYS[pc(p)], 3, Y(p) + rowH / 2); }
   }
   // beat lines in the part's own time
   if (P.bpm) {
@@ -1106,6 +1358,29 @@ function drawPianoRoll(c, g, w, h) {
     const x = X(n.t), x2 = X(n.t + n.d); if (x2 < KW || x > w) continue;
     g.fillStyle = withAlpha(col, 0.45 + 0.55 * n.v / 127); g.fillRect(Math.max(KW, x), Y(n.p) + 1, Math.max(3, x2 - Math.max(KW, x) - 1), Math.max(2, rowH - 2));
     if (n.id === edNote) { g.strokeStyle = css('--ink'); g.lineWidth = 1.5; g.strokeRect(Math.max(KW, x) + 0.5, Y(n.p) + 1.5, Math.max(3, x2 - Math.max(KW, x) - 2), Math.max(2, rowH - 3)); }
+    else if (sc && !sc.has(n.p)) { g.strokeStyle = 'rgba(255,110,110,.85)'; g.lineWidth = 1; g.setLineDash([2, 2]); g.strokeRect(Math.max(KW, x) + 0.5, Y(n.p) + 1.5, Math.max(3, x2 - Math.max(KW, x) - 2), Math.max(2, rowH - 3)); g.setLineDash([]); }
+  }
+  // chord names over notes that start together
+  { const groups = new Map(); for (const n of c.notes) { const k = Math.round(n.t * 50); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(n.p); }
+    g.font = `600 10px ${css('--f-mono')}`; g.textBaseline = 'top'; let lastX = -99;
+    for (const [k, st] of [...groups].sort((a, b) => a[0] - b[0])) { if (st.length < 2) continue; const tt = k / 50 + 0.01, ps = c.notes.filter(n => n.t <= tt && n.t + n.d > tt).map(n => n.p); const nm = chordName(ps), x = X(k / 50); if (!nm || x < KW || x > w - 10 || x - lastX < 34) continue; g.fillStyle = 'rgba(13,15,19,.75)'; g.fillRect(x + 1, 1, g.measureText(nm).width + 6, 13); g.fillStyle = '#FFD27A'; g.fillText(nm, x + 4, 2); lastX = x; }
+    g.textBaseline = 'alphabetic'; }
+  if (DH) { // the strip under the notes
+    const y0 = hr, vel = UI.dynMode === 'vel', Yv = v => y0 + 3 + (1 - v) * (DH - 6);
+    g.fillStyle = '#0B0D11'; g.fillRect(0, y0, w, DH); g.fillStyle = 'rgba(255,255,255,.14)'; g.fillRect(0, y0, w, 1);
+    g.fillStyle = css('--ink'); g.font = `700 9px ${css('--f-mono')}`; g.textBaseline = 'middle'; g.fillText(vel ? 'VEL' : 'DYN', 6, y0 + DH / 2 - 6);
+    g.fillStyle = css('--muted'); g.font = `8px ${css('--f-mono')}`; g.fillText(vel ? '▸ dyn' : '▸ vel', 4, y0 + DH / 2 + 6);
+    if (vel) for (const n of c.notes) { const x = Math.round(X(n.t)); if (x < KW || x > w) continue; const y = Yv(n.v / 127); g.fillStyle = withAlpha(col, .9); g.fillRect(x, y, 2, y0 + DH - y); g.fillRect(x - 2, y - 1, 6, 3); }
+    else {
+      const pts = [...(c.dyn || [])].sort((a, b) => a.t - b.t);
+      if (!pts.length) { g.strokeStyle = 'rgba(255,255,255,.25)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(KW, Yv(1)); g.lineTo(w, Yv(1)); g.stroke(); g.setLineDash([]); g.fillStyle = css('--dim'); g.fillText('Full volume. Drag here to draw swells and fades; double-click to reset.', KW + 8, y0 + DH / 2 + 2); }
+      else {
+        const line = () => { g.moveTo(KW, Yv(pts[0].v)); for (const p of pts) g.lineTo(clamp(X(p.t), KW, w), Yv(p.v)); g.lineTo(w, Yv(pts[pts.length - 1].v)); };
+        g.beginPath(); line(); g.lineTo(w, y0 + DH); g.lineTo(KW, y0 + DH); g.closePath(); g.fillStyle = withAlpha(col, .3); g.fill();
+        g.beginPath(); line(); g.strokeStyle = col; g.lineWidth = 1.5; g.stroke();
+      }
+    }
+    g.textBaseline = 'alphabetic';
   }
   const p = curPos() - c.at; if (p >= 0 && p <= dur(c)) { g.fillStyle = css('--danger'); g.fillRect(X(c.start + p * (c.rate || 1)), 0, 2, h); }
 }
@@ -1113,7 +1388,9 @@ function pianoPointer(e, wrap, c) {
   const V = edView, rect = wrap.getBoundingClientRect(), free = e.altKey;
   const tAt = ev => V.t0 + (ev.clientX - rect.left - V.KW) / (V.w - V.KW) * (V.t1 - V.t0), pAt = ev => clamp(V.hi - Math.floor((ev.clientY - rect.top) / V.rowH), 0, 127);
   const sn = t => free ? t : snapNoteT(c, t), audition = p => { if (HAS_TONE && isOrch(c.inst)) return orchAudition(c, p + (c.semi || 0)); if (HAS_TONE && TONE_INSTS[c.inst]) return toneAudition(c.inst, p + (c.semi || 0)); ctx.resume(); MixtapeMIDI.playNote(ctx, ctx.destination, c.inst || 'piano', p + (c.semi || 0), ctx.currentTime + 0.01, 0.35, 96); };
+  if (V.DH && e.clientY - rect.top >= V.dynY0) return dynPointer(e, wrap, c, V, rect);
   if (e.clientX - rect.left < V.KW) return audition(pAt(e));
+  const sc = partScale(c), sp = q => c.scaleLock && sc ? nearestInScale(sc, q) : q; let group = null;
   c.notes = c.notes.map(n => ({ ...n })); // parts split from one another share notes until one is edited
   const t = tAt(e), p = pAt(e);
   // a click can sit up to half a sixteenth before the note it snapped to, so allow for that
@@ -1122,13 +1399,17 @@ function pianoPointer(e, wrap, c) {
   if (hit && e.detail >= 2) { c.notes = c.notes.filter(n => n !== hit); edNote = null; commit('Note removed'); return; }
   let n = hit, mode = 'move';
   if (n && V.X(n.t + n.d) - (e.clientX - rect.left) < 7) mode = 'len';
-  if (!n) { n = { id: uid(), p, t: Math.max(c.start, sn(t)), d: P.bpm ? 60 / P.bpm : 0.5, v: 96 }; if (n.t >= c.end) c.end = n.t + n.d; c.notes.push(n); mode = 'len'; audition(p); }
+  if (!n) { // a new note, or a whole chord when the chord tool is on
+    const t1 = Math.max(c.start, sn(t)), d1 = P.bpm ? 60 / P.bpm : 0.5, ps = chordAt(sc, sp(p), UI.chord || '');
+    group = ps.map(q => ({ id: uid(), p: clamp(q, 0, 127), t: t1, d: d1, v: 96 })); n = group[0]; if (n.t >= c.end) c.end = n.t + n.d;
+    c.notes.push(...group); mode = 'len'; group.forEach(x => audition(x.p)); if (group.length === 1) group = null;
+  }
   edNote = n.id;
   const o = { t: n.t, p: n.p, d: n.d }, t0 = t, p0 = p;
   try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
   const mv = ev => {
-    if (mode === 'move') { n.t = Math.max(0, sn(o.t + tAt(ev) - t0)); const np = clamp(o.p + pAt(ev) - p0, 0, 127); if (np !== n.p) { n.p = np; audition(np); } }
-    else n.d = Math.max(free ? 0.02 : gridLen() * (c.rate || 1), sn(tAt(ev)) - n.t);
+    if (mode === 'move') { n.t = Math.max(0, sn(o.t + tAt(ev) - t0)); const np = clamp(sp(o.p + pAt(ev) - p0), 0, 127); if (np !== n.p) { n.p = np; audition(np); } }
+    else { n.d = Math.max(free ? 0.02 : gridLen() * (c.rate || 1), sn(tAt(ev)) - n.t); if (group) group.forEach(x => { x.d = n.d; }); }
     if (n.t + n.d > c.end) c.end = n.t + n.d;
     drawEditor();
   };
@@ -1152,24 +1433,53 @@ function midiInspectorHTML(c) {
     <div class="field"><label for="aOct">Octaves</label><select id="aOct" data-arp="oct">${[1, 2, 3].map(n => `<option value="${n}" ${c.arp.oct === n ? 'selected' : ''}>${n}</option>`).join('')}</select><span></span></div>
     <div class="field"><label for="aGate">Note length</label><input id="aGate" type="range" min="10" max="100" value="${Math.round((c.arp.gate ?? 0.6) * 100)}" data-arp="gate"><output>${Math.round((c.arp.gate ?? 0.6) * 100)}%</output></div>` : ''}
     <div class="field"><label for="cSemiM">Transpose</label><input id="cSemiM" type="range" min="-24" max="24" value="${semi}" data-cf="semi"><output>${semi > 0 ? '+' : ''}${semi}</output></div>
+    <p class="sub">Scale and chords</p>
+    ${(() => { const sc = c.scale; const fol = P.key ? keyName(P.key.key, P.key.mode) : 'not set'; return `<div class="field"><label for="cScale">Scale</label><select id="cScale" data-cscale="type"><option value="" ${!sc ? 'selected' : ''}>The mix key (${fol})</option><option value="none" ${sc && sc.type === 'none' ? 'selected' : ''}>No scale</option>${Object.entries(SCALES).map(([k, [n]]) => `<option value="${k}" ${sc && sc.type === k ? 'selected' : ''}>${n}</option>`).join('')}</select><span></span></div>
+    ${sc && SCALES[sc.type] ? `<div class="field"><label for="cRoot">Key note</label><select id="cRoot" data-cscale="root">${KEYS.map((k, i) => `<option value="${i}" ${sc.root === i ? 'selected' : ''}>${k}</option>`).join('')}</select><span></span></div>` : ''}`; })()}
+    <label class="chk"><input type="checkbox" data-cscale="lock" ${c.scaleLock ? 'checked' : ''}> Keep new and moved notes in the scale</label>
+    <div class="field"><label for="cChord">Click adds</label><select id="cChord" data-uichord>${Object.entries(CHORD_TOOLS).map(([k, v]) => `<option value="${k}" ${(UI.chord || '') === k ? 'selected' : ''}>${v}</option>`).join('')}</select><span></span></div>
+    <div class="btnrow"><button class="btn sm" data-act="writechords">Write a chord progression…</button><button class="btn sm" data-act="fitscale">Move stray notes into the scale</button></div>
+    <p class="sub">Dynamics</p>
+    <div class="btnrow"><button class="btn sm" data-act="dynp" data-k="swell" title="Start soft and grow">Swell</button><button class="btn sm" data-act="dynp" data-k="fade" title="Start full and die away">Fade</button><button class="btn sm" data-act="dynp" data-k="hairpin" title="Grow to the middle, then die away">Swell, then fade</button><button class="btn sm" data-act="dynp" data-k="clear" title="Back to full volume">Full</button></div>
+    <p class="hint">Or draw it in the strip under the notes. Softer also means darker, the way real ${isOrch(c.inst) ? 'orchestral players sound' : 'instruments sound'}. Click the strip’s label to edit each note’s velocity instead.</p>
+    <p class="sub">Play and record</p>
+    <div class="btnrow"><button class="btn sm" data-act="midiconnect">${midiNames().length ? `Keyboard: ${esc(midiNames().join(', '))}` : 'Connect a MIDI keyboard'}</button><button class="btn sm tgl" data-act="qwerty" aria-pressed="${qwerty}" title="A W S E D F T G Y H U J K play notes; Z and X change octave; Esc stops">Play with computer keys</button></div>
+    <div class="btnrow"><button class="btn sm rec${recNotes ? ' on' : ''}" data-act="recnotes"><span class="dot"></span>${recNotes ? 'Stop recording' : 'Record notes into this part'}</button></div>
+    <label class="chk"><input type="checkbox" data-uiset="recQ" ${UI.recQ ? 'checked' : ''}> Snap recorded notes to 1/16</label>
+    <label class="chk"><input type="checkbox" data-uiset="recClick" ${UI.recClick !== false ? 'checked' : ''}> Click while recording</label>
+    <p class="hint">Recording starts one bar early so you can come in on time. Press Space to stop. The sustain pedal works, and the mod wheel records into the dynamics.</p>
     <p class="hint">Double-click the part to open the note editor. Click to add a note, drag to move it, drag its right edge to lengthen it, double-click to remove it. Notes snap to sixteenths; hold Alt to place them freely. Click the keyboard to hear a pitch.</p>
     <p class="hint">These built-in sounds are for writing and placing. The production studio renders the finished parts with sampled instruments from the MIDI file.</p>
     <div class="btnrow"><button class="btn sm" data-act="quantize">Snap notes to 1/16</button><button class="btn sm" data-act="exportmidi">Export MIDI</button></div></div>`;
 }
 function buildGraph(ac, startPos, when0, opts = {}) {
   const master = ac.createGain(); master.gain.value = P.master ?? 1;
-  let out = master;
+  let out = master; const masterDevs = {}, live = ac === ctx, ms = MS(), mastered = ms.preset !== 'none' && !opts.lane;
+  if (!opts.lane) for (const dev of (P.masterChain || [])) { // the master's own effects (stems are printed before them)
+    if (!dev.on) continue; let d; try { d = buildDevice(ac, dev); } catch (e) { continue; }
+    link(out, d.in); out = d.out; masterDevs[dev.id] = d;
+  }
   if (P.polish) { // one-tap mastering: gentle compression, more level, peak catcher
     const comp = ac.createDynamicsCompressor(); comp.threshold.value = -20; comp.knee.value = 8; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.2;
     const make = ac.createGain(); make.gain.value = 1.9;
     const lim = ac.createDynamicsCompressor(); lim.threshold.value = -1.5; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.08;
-    master.connect(comp); comp.connect(make); make.connect(lim); out = lim;
+    out.connect(comp); comp.connect(make); make.connect(lim); out = lim;
   }
-  if (P.limit.on && !opts.lane) { // while playing: a fast compressor near the ceiling; saving and delivering use the exact true-peak limiter
+  if (mastered && live) { // hear it as loud as the export will be: the gain "Check the master" found, then a fast peak catcher
+    const mg = ac.createGain(); mg.gain.value = Math.pow(10, (ms.gainDb || 0) / 20);
+    const lim = ac.createDynamicsCompressor(); lim.threshold.value = ms.ceiling - 0.5; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.1;
+    out.connect(mg); mg.connect(lim); out = lim;
+  } else if (P.limit.on && !opts.lane) { // while playing: a fast compressor near the ceiling; saving and delivering use the exact true-peak limiter
     const lim = ac.createDynamicsCompressor(); lim.threshold.value = P.limit.ceiling - 0.5; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.1;
     out.connect(lim); out = lim;
   }
-  out.connect(ac.destination);
+  let monoSw = null;
+  if (live) { // the Mono button: the same mix folded to one channel, swapped in without a restart
+    const st = ac.createGain(), mono = ac.createGain(), mg = ac.createGain();
+    mono.channelCount = 1; mono.channelCountMode = 'explicit'; mono.channelInterpretation = 'speakers';
+    st.gain.value = monoOn ? 0 : 1; mg.gain.value = monoOn ? 1 : 0;
+    out.connect(st); st.connect(ac.destination); out.connect(mono); mono.connect(mg); mg.connect(ac.destination); monoSw = { st, mg };
+  } else out.connect(ac.destination);
   const lanes = new Map();
   // one track on its own (a stem) is printed through its whole path: its group and the shared effects it sends to,
   // so the stems add up to the mix. A group on its own brings the tracks that feed it.
@@ -1213,7 +1523,7 @@ function buildGraph(ac, startPos, when0, opts = {}) {
     }
     if (c.kind === 'midi') {
       const ln = lanes.get(c.lane); if (!ln || c.at + dur(c) <= startPos) continue;
-      const g = ac.createGain(); envelope(g.gain, c, startPos, when0); g.connect(ln.g);
+      const g = ac.createGain(); envelope(g.gain, c, startPos, when0); dynamics(ac, c, g, startPos, when0).connect(ln.g);
       if (HAS_TONE && (TONE_INSTS[c.inst] || isOrch(c.inst))) { // Tone.js synths and the orchestra
         const v = isOrch(c.inst) ? makeOrch(toneFor(ac), c, g) : makeToneInst(toneFor(ac), c.inst, g); toneNodes.push(...v.nodes);
         const evs = midiEvents(c).filter(e => e.tl >= startPos - 1e-6).map(e => ({ ...e, when: when0 + (e.tl - startPos) }));
@@ -1260,8 +1570,9 @@ function buildGraph(ac, startPos, when0, opts = {}) {
     srcs.push(s);
   }
   if (opts.metro) srcs.push(...scheduleClicks(ac, ac.destination, startPos, when0, projectEnd() + 1));
-  const mmeter = ac.createAnalyser(); mmeter.fftSize = 512; out.connect(mmeter); keepAlive(ac, mmeter);
-  const gr = { master, out, lanes, srcs, mmeter, toneNodes, pat, forceLane: opts.lane || null };
+  const mmeter = ac.createAnalyser(); mmeter.fftSize = 2048; out.connect(mmeter); keepAlive(ac, mmeter);
+  const worklets = [...[...lanes.values()].flatMap(x => Object.values(x.devs || {})), ...Object.values(masterDevs)].map(d => d.worklet).filter(Boolean);
+  const gr = { master, out, lanes, srcs, mmeter, toneNodes, pat, forceLane: opts.lane || null, masterDevs, monoSw, worklets };
   // saving: every hit now. Playing: the first moment now, the rest just ahead of the music (see tick)
   schedulePatterns(gr, ac === ctx ? startPos + 0.35 : startPos + 36000);
   return gr;
@@ -1281,7 +1592,7 @@ function scheduleClicks(ac, dest, startPos, when0, until) {
   for (let t = timeAtBeat(b); t < until && out.length < 4000; b++, t = timeAtBeat(b)) out.push(clickAt(ac, dest, when0 + (t - startPos), b % 4 === 0));
   return out;
 }
-const hasTails = () => P.clips.some(c => c.fxOut === 'echo') || P.lanes.some(l => l.fx.echo > 0 || l.fx.reverb > 0 || (l.chain || []).some(d => d.on && ['hall', 'pingpong'].includes(d.type)));
+const hasTails = () => P.clips.some(c => c.fxOut === 'echo') || P.lanes.some(l => l.fx.echo > 0 || l.fx.reverb > 0 || (l.chain || []).some(d => d.on && ['hall', 'pingpong'].includes(d.type))) || (P.masterChain || []).some(d => d.on && ['hall', 'pingpong'].includes(d.type));
 
 /* ---------- playback ---------- */
 let playing = false, pos0 = 0, t0 = 0, graph = null, preview = null, tickT = null, previewT = null, pendingLoop = null;
@@ -1289,6 +1600,7 @@ async function ensureAll() {
   for (const id of new Set(P.clips.map(c => c.trackId).filter(Boolean))) await ensureBuf(id);
   for (const c of P.clips) await ensureProc(c);
   for (const c of P.clips) if (c.kind === 'midi' && !c.mute) await ensureOrch(c);
+  if (laneHasFx('lofi')) await ensureLofi(ctx);
 }
 async function play() {
   stopPreview();
@@ -1299,18 +1611,19 @@ async function play() {
   if (loopActive() && (playhead < P.loop.a || playhead >= P.loop.b - 0.05)) playhead = P.loop.a;
   pendingLoop = null;
   pos0 = playhead; t0 = ctx.currentTime + 0.05;
-  graph = buildGraph(ctx, pos0, t0, { metro: P.metro }); playing = true; renderTransport(); clearInterval(tickT); tickT = setInterval(tick, 33);
+  graph = buildGraph(ctx, pos0, t0, { metro: P.metro || (!!recNotes && UI.recClick !== false) }); playing = true; renderTransport(); clearInterval(tickT); tickT = setInterval(tick, 33);
   if (P.video) { await ensureVideoEl(); syncVideo(); }
   return true;
 }
 function pause() {
+  if (recNotes) finishRecNotes(false);
   if (!playing) return;
   playhead = curPos(); playing = false; clearInterval(tickT);
   for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr) { gr.srcs.forEach(s => { try { s.stop(); } catch (e) {} }); try { gr.out.disconnect(); gr.master.disconnect(); } catch (e) {} disposeTone(gr); }
   graph = null; pendingLoop = null; if (vidFor && !vid.paused) vid.pause(); renderTransport(); drawPlayhead();
 }
 const curPos = () => playing ? pos0 + Math.max(0, ctx.currentTime - t0) : playhead;
-function disposeTone(gr) { const ns = gr.toneNodes || []; gr.toneNodes = []; setTimeout(() => ns.forEach(n => { try { n.dispose(); } catch (e) {} }), 1500); }
+function disposeTone(gr) { (gr.worklets || []).forEach(n => { try { n.port.postMessage('end'); n.disconnect(); } catch (e) {} }); gr.worklets = []; const ns = gr.toneNodes || []; gr.toneNodes = []; setTimeout(() => ns.forEach(n => { try { n.dispose(); } catch (e) {} }), 1500); }
 function restartIfPlaying() { if (playing && !rec) { pause(); play(); } }
 function tick() {
   if (!playing) return clearInterval(tickT);
@@ -1321,7 +1634,7 @@ function tick() {
       const tEnd = t0 + (L.b - pos0);
       graph.srcs.forEach(s => { try { s.stop(tEnd); } catch (e) {} });
       if (graph.pat) graph.pat.stopAt = L.b;
-      pendingLoop = { graph: buildGraph(ctx, L.a, tEnd, { metro: P.metro }), t0: tEnd };
+      pendingLoop = { graph: buildGraph(ctx, L.a, tEnd, { metro: P.metro || (!!recNotes && UI.recClick !== false) }), t0: tEnd };
     }
     if (pendingLoop && now >= pendingLoop.t0) {
       const old = graph; graph = pendingLoop.graph; pos0 = L.a; t0 = pendingLoop.t0; pendingLoop = null;
@@ -1555,18 +1868,93 @@ async function renderMix(opts = {}) {
   const from = opts.from || 0, to = opts.to ?? projectEnd();
   const end = (to - from) + (hasTails() ? (hasHall() ? 6 : 2.5) : 0), sr = ctx.sampleRate; // a big hall rings for about 5.5 s
   const oc = new OfflineAudioContext(2, Math.max(1, Math.ceil(end * sr)), sr);
+  if (laneHasFx('lofi')) await ensureLofi(oc);
   buildGraph(oc, from, 0, { lane: opts.lane });
   const out = await oc.startRendering();
   const chs = [...Array(out.numberOfChannels)].map((_, i) => out.getChannelData(i));
-  let limited = null, gainDb = opts.gainDb || 0;
-  if (!opts.lane && opts.normalizeTo != null) { const m = measureLoudness(out); if (Number.isFinite(m.lufs)) gainDb = opts.normalizeTo - m.lufs; }
+  let limited = null, gainDb = opts.gainDb || 0, lufs0 = NaN;
+  if (!opts.lane && opts.normalizeTo != null) { const m = measureLoudness(out); lufs0 = m.lufs; if (Number.isFinite(m.lufs)) gainDb = opts.normalizeTo - m.lufs; }
   // cue deliveries pass noLimit: loudness belongs to the final mix, and a limited cue leaves the mixer nothing to work with
-  if (!opts.lane && !opts.noLimit && (P.limit.on || opts.ceiling != null)) limited = MixtapeDSP.limit(chs, out.sampleRate, { gainDb, ceilingDb: opts.ceiling ?? P.limit.ceiling });
+  if (!opts.lane && !opts.noLimit && (P.limit.on || opts.ceiling != null)) {
+    if (opts.normalizeTo != null && Number.isFinite(lufs0)) { const r = limitToTarget(chs, out.sampleRate, opts.normalizeTo, opts.ceiling ?? P.limit.ceiling, lufs0); limited = { gainDb: r.gainDb, maxReductionDb: r.maxReductionDb }; gainDb = r.gainDb; }
+    else limited = MixtapeDSP.limit(chs, out.sampleRate, { gainDb, ceilingDb: opts.ceiling ?? P.limit.ceiling });
+  }
   else if (gainDb) { const g = Math.pow(10, gainDb / 20); for (const d of chs) for (let i = 0; i < d.length; i++) d[i] *= g; }
   let peak = 0; for (const d of chs) for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
   // a limited mix is already under its ceiling; anything else is turned down just enough not to clip
   const scale = !limited && !opts.noScale && peak > 0.98 ? 0.98 / peak : 1;
   return { blob: encodeWav(out, scale, opts.wav), duration: out.duration, buffer: out, scale, limited, gainDb };
+}
+const bufOf = (chs, sr) => ({ sampleRate: sr, numberOfChannels: chs.length, length: chs[0].length, getChannelData: i => chs[i] });
+function limitToTarget(chs, sr, target, ceiling, lufs0) { // limit, then nudge once or twice so the result lands on the target even though the limiter took some off
+  const orig = chs.map(c => c.slice()); let gain = target - lufs0, res = null, m = null;
+  for (let pass = 0; pass < 3; pass++) {
+    if (pass) chs.forEach((c, i) => c.set(orig[i]));
+    res = MixtapeDSP.limit(chs, sr, { gainDb: gain, ceilingDb: ceiling });
+    m = measureLoudness(bufOf(chs, sr)); if (!Number.isFinite(m.lufs) || Math.abs(m.lufs - target) < 0.15) break;
+    gain += target - m.lufs;
+  }
+  return { gainDb: Math.round(gain * 100) / 100, maxReductionDb: res.maxReductionDb, after: m };
+}
+/* ---- mastering: a loudness target per destination, a check, and a mono listen ---- */
+const MASTER_PRESETS = {
+  none: { name: 'Off (no loudness target)' },
+  stream: { name: 'Streaming: Spotify, YouTube, Tidal', lufs: -14, ceiling: -1 },
+  apple: { name: 'Apple Music', lufs: -16, ceiling: -1 },
+  club: { name: 'Club and DJ sets (loud)', lufs: -9, ceiling: -0.5 },
+  podcast: { name: 'Podcast or spoken word', lufs: -16, ceiling: -1.5 },
+  film: { name: 'Film and TV (EBU R128)', lufs: -23, ceiling: -1 },
+};
+let masterReport = null, monoOn = false;
+function masterStarter(k) { // a gentle place to start: rumble cut and a glue compressor (plus a touch of tape for club)
+  const eq = newDevice('eq'); eq.bands[0].on = true; eq.bands[0].f = 25;
+  const glue = newDevice('comp'); Object.assign(glue, { th: -16, ratio: 2, att: 30, rel: 150, knee: 6, makeup: 0, mix: 1 });
+  const ch = [eq, glue]; if (k === 'club') { const s = newDevice('sat'); s.amt = 0.15; ch.push(s); }
+  return ch;
+}
+function masteringHTML() {
+  const ms = MS(), on = ms.preset !== 'none';
+  return `<div class="sec"><h3>Mastering</h3>
+    <div class="field"><label for="mPre">Made for</label><select id="mPre" data-mpreset>${Object.entries(MASTER_PRESETS).map(([k, v]) => `<option value="${k}" ${ms.preset === k ? 'selected' : ''}>${v.name}${v.lufs ? ` · ${v.lufs} LUFS` : ''}</option>`).join('')}</select><span></span></div>
+    <p class="hint">${on ? `Exports come out at ${ms.lufs} LUFS with the true peak under ${ms.ceiling} dBTP. Press <b>Check the master</b> to hear playback at that loudness too, and to see what the limiter and a mono speaker do to your mix.` : 'Pick where the song is going, and every export is made the right loudness for it.'}</p>
+    <div class="btnrow"><button class="btn sm${on ? ' primary' : ''}" data-act="checkmaster">Check the master</button><button class="btn sm" data-act="mono" aria-pressed="${monoOn}">${monoOn ? 'Back to stereo' : 'Listen in mono'}</button></div>
+    ${masterReport || ''}
+    ${chainHTML(MASTER_L).replace('<p class="sub">Effects', '<p class="sub">Master effects')}
+    <p class="hint">Master effects work on the whole mix. Stems (one file per track) are exported before them.</p></div>`;
+}
+function masterReportHTML({ raw, after, gain, red, corr, monoLoss, ms }) {
+  const f1 = x => (x > 0 ? '+' : '') + x.toFixed(1), rows = [], notes = [];
+  rows.push(`<dt>Your mix now</dt><dd>${Number.isFinite(raw.lufs) ? raw.lufs.toFixed(1) + ' LUFS' : 'silent'} · peak ${raw.truePeakDb.toFixed(1)} dBTP</dd>`);
+  if (after) rows.push(`<dt>Mastered</dt><dd>${after.lufs.toFixed(1)} LUFS · peak ${after.truePeakDb.toFixed(1)} dBTP (${f1(gain)} dB)</dd>`, `<dt>Limiter</dt><dd>takes off up to ${red.toFixed(1)} dB</dd>`);
+  rows.push(`<dt>Range</dt><dd>${raw.lra.toFixed(1)} LU from quiet to loud</dd>`, `<dt>In mono</dt><dd>${Number.isFinite(monoLoss) ? f1(monoLoss) + ' dB' : 'cancels to silence'} · left/right match ${corr.toFixed(2)}</dd>`);
+  if (after && red > 6) notes.push(['warn', `The limiter is squashing the loudest moments by ${red.toFixed(1)} dB, which can sound flat and tiring. Turn down the loudest part, or pick a quieter target.`]);
+  else if (after) notes.push(['ok', red > 0.5 ? 'The limiter only catches the peaks: a clean master.' : 'The limiter barely has to work: a clean master.']);
+  if (after && gain < -3) notes.push(['ok', `Your mix is louder than ${ms.lufs} LUFS, so it is turned down ${(-gain).toFixed(1)} dB. The streaming service would do the same.`]);
+  if (corr < 0) notes.push(['bad', 'Left and right are fighting each other (out of phase). On a phone, in a club or on a TV in mono, parts will disappear. Press “Listen in mono” to find which.']);
+  else if (monoLoss < -3) notes.push(['warn', `It gets ${(-monoLoss).toFixed(1)} dB quieter in mono, so some parts are very wide. Listen in mono and narrow anything that vanishes.`]);
+  else notes.push(['ok', 'It holds up in mono: nothing important cancels out.']);
+  if (raw.lra > 15 && ms.preset !== 'film') notes.push(['warn', 'There is a big gap between the quiet and loud parts. On headphones on the bus, the quiet parts may get lost.']);
+  return `<dl class="kv mrep">${rows.join('')}</dl>${notes.map(([k, t]) => `<p class="mnote ${k}">${t}</p>`).join('')}`;
+}
+async function checkMaster() {
+  if (!P.clips.length) return toast('There is nothing to check yet.');
+  const ms = MS(); pause(); busy('Listening to the whole mix…');
+  try {
+    const { buffer: buf } = await renderMix({ noLimit: true, noScale: true }), n = buf.length, sr = buf.sampleRate;
+    const raw = measureLoudness(buf), L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L;
+    let lr = 0, ll = 0, rr = 0; for (let i = 0; i < n; i++) { lr += L[i] * R[i]; ll += L[i] * L[i]; rr += R[i] * R[i]; }
+    const corr = ll && rr ? lr / Math.sqrt(ll * rr) : 1, M = new Float32Array(n); for (let i = 0; i < n; i++) M[i] = (L[i] + R[i]) / 2;
+    const monoLoss = Number.isFinite(raw.lufs) ? measureLoudness(bufOf([M, M], sr)).lufs - raw.lufs : 0;
+    let after = null, red = 0, gain = 0;
+    if (ms.preset !== 'none' && Number.isFinite(raw.lufs)) {
+      const chs = [new Float32Array(L), new Float32Array(R)], r = limitToTarget(chs, sr, ms.lufs, ms.ceiling, raw.lufs);
+      after = r.after; red = r.maxReductionDb; gain = r.gainDb; ms.gainDb = Math.round(gain * 10) / 10; quietCommit();
+    }
+    masterReport = masterReportHTML({ raw, after, gain, red, corr, monoLoss, ms });
+    if (!UI.insp) { UI.insp = true; applyUI(); }
+    renderInspector(); document.querySelector('.mrep')?.scrollIntoView({ block: 'center' });
+    toast(after ? `Checked. Playback is now as loud as the export will be (${after.lufs.toFixed(1)} LUFS).` : 'Checked. Pick a target under Mastering to have exports made to it.', 5000);
+  } catch (err) { toast('Could not check the master: ' + err.message, 6000); } finally { busy(null); }
 }
 function downloadBlob(blob, name) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
@@ -1598,7 +1986,7 @@ async function saveSong() {
   const range = choice.what === 'loop' ? { from: P.loop.a, to: P.loop.b, tag: ' (loop)' } : choice.what === 'scene' ? { from: sceneFrom, to: sceneTo, tag: ' (scene)' } : { from: 0, to: projectEnd(), tag: '' };
   const jobs = choice.files === 'tracks'
     ? P.lanes.filter(l => P.clips.some(c => c.lane === l.id && !c.mute)).map(l => ({ title: `${name}${range.tag} - ${l.name}`, lane: l.id, from: range.from, to: range.to }))
-    : [{ title: name + range.tag, from: range.from, to: range.to }];
+    : [{ title: name + range.tag, from: range.from, to: range.to, ...(MS().preset !== 'none' ? { normalizeTo: MS().lufs, ceiling: MS().ceiling } : {}) }];
   pause(); let done = 0, loud = null;
   try {
     for (const j of jobs) {
@@ -1801,7 +2189,7 @@ function drawEditor() {
   if (c.kind === 'midi') {
     ['keep', 'remove', 'selappend', 'sellayer', 'selall'].forEach(a => { const b = $(`[data-act="${a}"]`); if (b) b.disabled = true; });
     $('#edTitle').textContent = midiName(c); $('#edInfo').textContent = `${c.notes.length} note${c.notes.length === 1 ? '' : 's'} · ${MixtapeMIDI.INSTRUMENTS[c.inst] || ''}${c.semi ? ` · transposed ${c.semi > 0 ? '+' : ''}${c.semi}` : ''}`;
-    $('#selInfo').textContent = 'Click to add a note · drag to move · drag the right edge to lengthen · double-click to remove · Alt: no snapping';
+    $('#selInfo').textContent = `Click to add ${UI.chord ? CHORD_TOOLS[UI.chord].toLowerCase() : 'a note'} · drag to move · drag the right edge to lengthen · double-click to remove · Alt: no snapping · bottom strip: ${UI.dynMode === 'vel' ? 'velocity' : 'dynamics'} (click its label to switch)`;
     drawPianoRoll(c, g, w, h); return;
   }
   const t = libTrack(c.trackId), e = bufs.get(c.trackId), a = ana[c.trackId];
@@ -1852,17 +2240,25 @@ function chainHTML(l) {
     if (d.type === 'eq') return `<canvas class="eqcv" data-eq="${d.id}" aria-label="EQ curve"></canvas><p class="hint eqread" data-eqread="${d.id}">Drag a dot: left and right moves it, up and down boosts or cuts. Turn the wheel on a dot to make a bell narrower or wider. Double-click a dot to switch it on or off.</p>`;
     if (d.type === 'comp') return sl(d, 'th', 'Threshold', -60, 0, 1, d.th, v => `${v} dB`) + sl(d, 'ratio', 'Ratio', 1, 20, 0.5, d.ratio, v => `${v}:1`) + sl(d, 'att', 'Attack', 0.5, 100, 0.5, d.att, v => `${v} ms`) + sl(d, 'rel', 'Release', 20, 1000, 5, d.rel, v => `${v} ms`) + sl(d, 'makeup', 'Makeup', 0, 24, 0.5, d.makeup, v => `+${v} dB`) + sl(d, 'mix', 'Mix', 0, 100, 1, pct(d.mix), v => `${v}%`)
       + `<div class="field"><label>Squeeze</label><div class="gr" title="How much the compressor is turning the sound down right now"><i data-gr="${d.id}"></i></div><output data-grv="${d.id}">0 dB</output></div>`;
+    if (d.type === 'sat') return `<div class="field"><label>Character</label><select data-dvp="mode">${[['tape', 'Tape: smooth and warm'], ['tube', 'Tube: rich, a little gritty'], ['hard', 'Hard clip: edgy']].map(([k, v]) => `<option value="${k}" ${(d.mode || 'tape') === k ? 'selected' : ''}>${v}</option>`).join('')}</select><span></span></div>`
+      + sl(d, 'amt', 'Drive', 0, 100, 1, pct(d.amt), v => `${v}%`) + sl(d, 'tone', 'Tone', 0, 100, 1, pct(d.tone), v => `${v}%`) + sl(d, 'mix', 'Mix', 0, 100, 1, pct(d.mix), v => `${v}%`);
+    if (d.type === 'lofi') return sl(d, 'bits', 'Bits', 2, 16, 1, d.bits ?? 8, v => `${v}-bit`) + sl(d, 'rate', 'Sample rate', 2000, 44100, 100, d.rate ?? 11025, v => `${(v / 1000).toFixed(1)} kHz`) + sl(d, 'tone', 'Tone', 0, 100, 1, pct(d.tone), v => `${v}%`) + sl(d, 'mix', 'Mix', 0, 100, 1, pct(d.mix), v => `${v}%`)
+      + (ctx.audioWorklet ? '' : '<p class="hint">This browser cannot run the lo-fi effect, so it only darkens the sound here.</p>');
     if (d.type === 'gate') return `<div class="field"><label>Rhythm</label><select data-dvp="gate">${Object.keys(GATES).map(k => `<option value="${k}" ${(d.gate || 'classic') === k ? 'selected' : ''}>${k[0].toUpperCase() + k.slice(1)} · ${GATES[k].replace(/x/g, '■').replace(/\./g, '·')}</option>`).join('')}</select><span></span></div>` + sl(d, 'amt', 'Depth', 0, 100, 1, pct(d.amt), v => `${v}%`);
     return sl(d, 'amt', 'Amount', 0, 100, 1, pct(d.amt), v => `${v}%`) + sl(d, 'mix', 'Mix', 0, 100, 1, pct(d.mix), v => `${v}%`);
   };
   return `<p class="sub">Effects <span class="hint" style="font-weight:400">· the sound runs through them from top to bottom</span></p>
     ${ch.map((d, i) => `<div class="dev${d.on ? '' : ' off'}" data-dev="${d.id}"><div class="dev-h"><button class="dvon" data-dv="on" aria-pressed="${d.on}" title="${d.on ? 'Switch off (bypass)' : 'Switch on'}">${d.on ? '●' : '○'}</button><b>${FX_TYPES[d.type] || d.type}</b><span class="sp"></span><button data-dv="up" ${i ? '' : 'disabled'} title="Move up">↑</button><button data-dv="down" ${i < n - 1 ? '' : 'disabled'} title="Move down">↓</button><button data-dv="del" title="Remove">✕</button></div>${d.on ? body(d) : ''}</div>`).join('')}
-    <select class="addfx" data-dvadd aria-label="Add an effect"><option value="">+ Add an effect…</option>${Object.entries(FX_TYPES).filter(([k]) => HAS_TONE || ['eq', 'comp', 'gate', 'hall'].includes(k)).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>`;
+    <select class="addfx" data-dvadd data-owner="${l.id}" aria-label="Add an effect"><option value="">+ Add an effect…</option>${Object.entries(FX_TYPES).filter(([k]) => HAS_TONE || ['eq', 'comp', 'sat', 'lofi', 'gate', 'hall'].includes(k)).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>`;
 }
 /* ---- the EQ: draw the curve over the track's live spectrum, and drag its dots ---- */
 const eqX = (f, w) => Math.log(f / 20) / Math.log(1000) * w, eqF = (x, w) => 20 * Math.pow(1000, clamp(x / w, 0, 1));
 const EQG = 18, eqY = (g, h) => h / 2 - g / EQG * (h / 2 - 8), eqG = (y, h) => clamp((h / 2 - y) / (h / 2 - 8) * EQG, -EQG, EQG);
-function findDev(id) { for (const l of P.lanes) { const d = (l.chain || []).find(x => x.id === id); if (d) return { l, d }; } return null; }
+const MS = () => P.mastering || (P.mastering = { preset: 'none', lufs: -14, ceiling: -1, gainDb: 0 });
+// the master shows up in the effect code as one more lane, whose chain is the project's master chain
+const MASTER_L = { id: 'master', name: 'Master', type: 'master', color: '#E8B931', get chain() { return P.masterChain || (P.masterChain = []); }, set chain(v) { P.masterChain = v; } };
+function findDev(id) { for (const l of P.lanes) { const d = (l.chain || []).find(x => x.id === id); if (d) return { l, d }; } const md = (P.masterChain || []).find(x => x.id === id); return md ? { l: MASTER_L, d: md } : null; }
+const devsOf = id => !graph ? null : id === 'master' ? graph.masterDevs : (graph.lanes.get(id) || {}).devs;
 function bandPos(b, w, h) { return [eqX(b.f, w), b.t === 'hp' || b.t === 'lp' ? eqY(0, h) : eqY(b.g || 0, h)]; }
 function drawEQ(cv) {
   const hit = findDev(cv.dataset.eq); if (!hit) return; const { l, d } = hit;
@@ -1873,8 +2269,8 @@ function drawEQ(cv) {
   for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000]) { const x = Math.round(eqX(f, w)) + .5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); g.fillText(f >= 1000 ? f / 1000 + 'k' : String(f), x + 2, h - 3); }
   for (const db of [-12, -6, 0, 6, 12]) { const y = Math.round(eqY(db, h)) + .5; g.strokeStyle = db ? 'rgba(255,255,255,.06)' : 'rgba(255,255,255,.18)'; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
   // the track's sound right now, behind the curve
-  const ln = graph && graph.lanes.get(l.id);
-  if (playing && ln) { const an = ln.meter, bins = new Float32Array(an.frequencyBinCount); an.getFloatFrequencyData(bins); const ny = ctx.sampleRate / 2;
+  const an = graph && (l.id === 'master' ? graph.mmeter : (graph.lanes.get(l.id) || {}).meter);
+  if (playing && an) { const bins = new Float32Array(an.frequencyBinCount); an.getFloatFrequencyData(bins); const ny = ctx.sampleRate / 2;
     g.beginPath(); g.moveTo(0, h); for (let x = 0; x <= w; x += 2) { const f = eqF(x, w), i = Math.min(bins.length - 1, Math.round(f / ny * bins.length)); const v = clamp((bins[i] + 100) / 80, 0, 1); g.lineTo(x, h - v * h * 0.9); } g.lineTo(w, h); g.closePath(); g.fillStyle = withAlpha(l.color || PALETTE[0], 0.22); g.fill(); }
   // the curve
   const N = 160, freqs = new Float32Array(N), mag = new Float32Array(N), tmp = new Float32Array(N), ph = new Float32Array(N);
@@ -1885,7 +2281,7 @@ function drawEQ(cv) {
   d.bands.forEach((b, i) => { const [x, y] = bandPos(b, w, h); g.beginPath(); g.arc(x, y, i === +cv.dataset.sel ? 6 : 5, 0, Math.PI * 2); g.fillStyle = b.on ? css('--accent') : css('--raise'); g.fill(); g.strokeStyle = css('--ink'); g.lineWidth = 1.2; g.stroke(); g.fillStyle = b.on ? css('--accent-ink') : css('--muted'); g.font = `600 8px ${css('--f-mono')}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(i + 1), x, y + 0.5); g.textAlign = 'left'; g.textBaseline = 'alphabetic'; });
 }
 function eqLive(l, d, i) { // change the playing sound straight away, without restarting
-  const ln = graph && graph.lanes.get(l.id), x = ln && ln.devs[d.id]; if (!x || !x.eqNodes) return;
+  const x = (devsOf(l.id) || {})[d.id]; if (!x || !x.eqNodes) return;
   const n = x.eqNodes[i]; if (!n) return; (Array.isArray(n) ? n : [n]).forEach(m => setBand(m, d.bands[i]));
 }
 function eqReadout(d, i) { const b = d.bands[i], el = document.querySelector(`[data-eqread="${d.id}"]`); if (!el || !b) return; el.textContent = `${i + 1} · ${BAND_NAME[b.t]} ${b.f >= 1000 ? (b.f / 1000).toFixed(2) + ' kHz' : Math.round(b.f) + ' Hz'}${b.t === 'hp' || b.t === 'lp' ? '' : ` · ${b.g > 0 ? '+' : ''}${(b.g || 0).toFixed(1)} dB`}${b.t === 'pk' ? ` · width ${(b.q || 1).toFixed(2)}` : ''}${b.on ? '' : ' · off'}`; }
@@ -1910,7 +2306,7 @@ document.addEventListener('wheel', e => {
 let meterTick = 0;
 function updateDeviceMeters() { // the compressor's squeeze and the EQ's live spectrum, while playing
   if (!UI.insp || !graph || ++meterTick % 3) return;
-  document.querySelectorAll('[data-gr]').forEach(i => { for (const [, ln] of graph.lanes) { const x = ln.devs && ln.devs[i.dataset.gr]; if (x && x.comp) { const red = x.comp.reduction || 0; i.style.width = clamp(-red / 24, 0, 1) * 100 + '%'; const o = document.querySelector(`[data-grv="${i.dataset.gr}"]`); if (o) o.textContent = `${red.toFixed(1)} dB`; } } });
+  document.querySelectorAll('[data-gr]').forEach(i => { const hit = findDev(i.dataset.gr), x = hit && (devsOf(hit.l.id) || {})[i.dataset.gr]; if (x && x.comp) { const red = x.comp.reduction || 0; i.style.width = clamp(-red / 24, 0, 1) * 100 + '%'; const o = document.querySelector(`[data-grv="${i.dataset.gr}"]`); if (o) o.textContent = `${red.toFixed(1)} dB`; } });
   document.querySelectorAll('canvas.eqcv').forEach(drawEQ);
 }
 function renderInspector() {
@@ -1979,6 +2375,7 @@ function renderInspector() {
       <label class="chk"><input type="checkbox" data-pc="limit" ${P.limit.on ? 'checked' : ''}> Limiter: keep the true peak under</label>
       <div class="field"><label for="pCeil">Ceiling</label><input id="pCeil" type="range" min="-6" max="0" step="0.1" value="${P.limit.ceiling}" data-pf="ceiling" ${P.limit.on ? '' : 'disabled'}><output>${P.limit.ceiling.toFixed(1)} dBTP</output></div>
       <div class="btnrow"><button class="btn sm" data-act="evenout">Even out volume between parts</button></div></div>
+    ${masteringHTML()}
     <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>M</kbd> hit point · <kbd>V</kbd> video · <kbd>T</kbd> tempo change<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
   html = `<button class="rail" data-act="toggleinsp" title="Show the settings (I)"><span>◂</span><span class="rl">Settings</span></button><div class="insp-top"><button class="headbtn" data-act="toggleinsp" title="Fold the settings away for more room (I)">▸</button></div>` + html;
   const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; requestAnimationFrame(() => document.querySelectorAll('canvas.eqcv').forEach(drawEQ)); ins.scrollTop = st; applyTips();
@@ -2061,7 +2458,7 @@ function renderTransport() {
   $('#metroBtn').setAttribute('aria-pressed', !!P.metro); $('#vidBtn').setAttribute('aria-pressed', !!(P.video && UI.vwin)); $('#mixBtn').setAttribute('aria-pressed', !!UI.mixer);
   $('#libBtn').setAttribute('aria-pressed', UI.lib); $('#inspBtn').setAttribute('aria-pressed', UI.insp);
   $$('.hsz button').forEach(b => b.setAttribute('aria-pressed', b.dataset.h === UI.h));
-  $('#snapBtn').setAttribute('aria-pressed', P.snap); $('#followBtn').setAttribute('aria-pressed', UI.follow !== false);
+  $('#snapBtn').setAttribute('aria-pressed', P.snap); $('#monoBtn').setAttribute('aria-pressed', monoOn); $('#followBtn').setAttribute('aria-pressed', UI.follow !== false);
   $('#tempoLbl').textContent = P.bpm ? `${Math.round(tempoAt(curPos()) * 10) / 10} BPM${(P.tempoChanges || []).length ? ' (map)' : ''}${P.key ? ' · ' + keyName(P.key.key, P.key.mode) : ''}` : '— BPM';
   $('#recBtn').classList.toggle('on', !!rec);
   $('#recLbl').textContent = rec ? `Stop recording ${fmtT((Date.now() - rec.began) / 1000).replace(/\.\d$/, '')}` : 'Record voice';
@@ -2128,6 +2525,21 @@ const acts = {
   pathouse: () => { const c = clipById(selClip); if (c && c.kind === 'pattern') { c.pat.rows = housePattern(c.pat.bars || 1); patLive(c); renderInspector(); toast('House beat: kick on every beat, clap on 2 and 4, open hats on the off-beats.'); } },
   patclear: () => { const c = clipById(selClip); if (c && c.kind === 'pattern') { for (const [k] of DRUM_ROWS) c.pat.rows[k] = Array(patN(c)).fill(0); patLive(c); } },
   drummachine: () => newDrumMachine(),
+  mono: () => {
+    monoOn = !monoOn;
+    for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr && gr.monoSw) { const now = ctx.currentTime; gr.monoSw.st.gain.setTargetAtTime(monoOn ? 0 : 1, now, 0.01); gr.monoSw.mg.gain.setTargetAtTime(monoOn ? 1 : 0, now, 0.01); }
+    renderTransport(); renderInspector(); toast(monoOn ? 'Mono: this is the mix as one speaker plays it. If a part gets much quieter or vanishes, it is out of phase.' : 'Back to stereo.', 4500);
+  },
+  checkmaster: () => checkMaster(),
+  writechords: () => writeChords(), fitscale: () => fitToScale(),
+  dynp: b => {
+    const c = clipById(selClip); if (!c || c.kind !== 'midi') return; const a = c.start, z = c.end, m = (a + z) / 2, k = b.dataset.k;
+    const d = { swell: [{ t: a, v: 0.3 }, { t: z, v: 1 }], fade: [{ t: a, v: 1 }, { t: z, v: 0.3 }], hairpin: [{ t: a, v: 0.3 }, { t: m, v: 1 }, { t: z, v: 0.3 }] }[k];
+    if (d) c.dyn = d; else delete c.dyn; edOpen = true; commit({ swell: 'Dynamics: a swell', fade: 'Dynamics: a fade', hairpin: 'Dynamics: swell, then fade' }[k] || 'Dynamics cleared: full volume');
+  },
+  midiconnect: () => connectMidi(),
+  qwerty: () => { qwerty = !qwerty; renderInspector(); toast(qwerty ? 'The computer keys play notes: A W S E D F T G Y H U J K (black keys on the row above). Z and X change octave, Shift plays louder, Esc stops.' : 'The computer keys work as shortcuts again.', 6000); },
+  recnotes: () => toggleRecNotes(),
   orchmenu: b => { if (!ORCH) return toast('The orchestra could not be found. Reload the page.'); const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [...Object.entries(SECTIONS).map(([k, v]) => ({ label: `New ${v.name.toLowerCase()} track`, act: () => newInstrumentTrack(k) })), { sep: true }, ...Object.entries(ORCH.instruments).map(([k, v]) => ({ label: `New ${v.name.toLowerCase()} track`, act: () => newInstrumentTrack('o_' + k) }))]); },
   instmenu: b => { const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [{ label: 'New drum machine (house beat)', act: newDrumMachine }, { label: 'New orchestral track…', act: () => acts.orchmenu(b) }, { label: 'New riser (build-up into the playhead)', act: () => newRiser('up') }, { label: 'New downlifter (after the playhead)', act: () => newRiser('down') }, { label: 'Import a MIDI file…', act: () => $('#midiIn').click() }, { sep: true },
     ...Object.entries(MixtapeMIDI.INSTRUMENTS).map(([k, v]) => ({ label: `New ${v.toLowerCase()} track`, act: () => newInstrumentTrack(k) }))]); },
@@ -2564,8 +2976,8 @@ $('#insp').addEventListener('input', e => {
   if (d.pf === 'xfade') { P.xfade = v; out.textContent = v.toFixed(1) + 's'; return; }
   if (e.target.matches('[data-dvp]') && out) {
     const box = e.target.closest('[data-dev]'), hit = box && findDev(box.dataset.dev), k = e.target.dataset.dvp;
-    out.textContent = { th: `${v} dB`, ratio: `${v}:1`, att: `${v} ms`, rel: `${v} ms`, makeup: `+${v} dB` }[k] || `${v}%`;
-    if (hit && hit.d.type === 'comp') { hit.d[k] = k === 'mix' ? v / 100 : v; const ln = graph && graph.lanes.get(hit.l.id), x = ln && ln.devs[hit.d.id]; if (x) applyComp(x, hit.d); } // heard straight away
+    out.textContent = { th: `${v} dB`, ratio: `${v}:1`, att: `${v} ms`, rel: `${v} ms`, makeup: `+${v} dB`, bits: `${v}-bit`, rate: `${(v / 1000).toFixed(1)} kHz` }[k] || `${v}%`;
+    if (hit && hit.d.type === 'comp') { hit.d[k] = k === 'mix' ? v / 100 : v; const x = (devsOf(hit.l.id) || {})[hit.d.id]; if (x) applyComp(x, hit.d); } // heard straight away
     return;
   }
   if (e.target.matches('[data-lsend]') && out) { const R = P.lanes.find(x => x.id === e.target.dataset.lsend); out.textContent = `${v}% → ${R ? R.name : ''}`; return; }
@@ -2592,13 +3004,28 @@ $('#insp').addEventListener('change', async e => {
   if (e.target.matches('[data-pin]')) { const pc = clipById(selClip); if (pc && !!pc.pin !== e.target.checked) togglePin(pc); return; }
   if (e.target.matches('[data-vlock]')) { if (P.video) { P.video.locked = e.target.checked; quietCommit(); renderVideoRow(); toast(P.video.locked ? 'Picture locked: it cannot be moved or trimmed.' : 'Picture unlocked.'); } return; }
   if (e.target.matches('[data-mklock]')) { P.markersLocked = e.target.checked; quietCommit(); renderRuler(); return toast(P.markersLocked ? 'Hit points locked: clicking one jumps to it, and dragging does nothing.' : 'Hit points unlocked: drag one along the ruler to move it.'); }
+  if (e.target.matches('[data-cscale]')) {
+    const c = clipById(selClip); if (!c) return; const k = e.target.dataset.cscale, v = e.target.value;
+    if (k === 'type') c.scale = v === '' ? null : v === 'none' ? { type: 'none' } : { root: c.scale && c.scale.root != null ? c.scale.root : (P.key ? P.key.key : 0), type: v };
+    else if (k === 'root') c.scale = { ...c.scale, root: +v };
+    else if (k === 'lock') c.scaleLock = e.target.checked;
+    if (!c.scale) delete c.scale; commit(); renderInspector(); return;
+  }
+  if (e.target.matches('[data-uichord]')) { UI.chord = e.target.value; saveUI(); drawEditor(); return toast(UI.chord ? `Clicking in the note editor now adds ${CHORD_TOOLS[UI.chord].toLowerCase()}.` : 'Clicking adds single notes again.'); }
+  if (e.target.matches('[data-mpreset]')) {
+    const k = e.target.value, pr = MASTER_PRESETS[k], ms = MS(), fresh = k !== 'none' && !(P.masterChain || []).length;
+    ms.preset = k; if (pr.lufs != null) { ms.lufs = pr.lufs; ms.ceiling = pr.ceiling; } ms.gainDb = 0; masterReport = null;
+    if (fresh) P.masterChain = masterStarter(k);
+    commit(k === 'none' ? 'Mastering off: exports keep the mix’s own loudness.' : `Mastering for ${pr.name}: ${pr.lufs} LUFS.${fresh ? ' A gentle starting chain was added to the master.' : ''} Press “Check the master”.`); renderInspector(); return;
+  }
+  if (d.uiset && d.uiset !== 'wheelZoom') { UI[d.uiset] = e.target.checked; saveUI(); return; }
   if (d.uiset) { UI[d.uiset] = e.target.checked; saveUI(); return toast(e.target.checked ? 'The mouse wheel now zooms over waveforms. Shift + wheel moves sideways.' : 'The mouse wheel now scrolls. Hold Ctrl to zoom.'); }
   if (d.linkset && P.link) {
     if (d.linkset === 'profile') { P.link.profileChoice = e.target.value; return commit(`Deliveries now aim at ${PROFILES[e.target.value].name}.`); }
     if (d.linkset === 'tc') { if (tcToSec(e.target.value) == null) { e.target.value = startTC(); return toast('Write the start as hh:mm:ss:ff, for example 10:00:00:00.'); } P.link.tcChoice = e.target.value.trim(); return commit(`Programme starts at ${P.link.tcChoice}.`); }
   }
-  if (e.target.matches('[data-dvadd]')) { const l = P.lanes.find(x => x.id === selLane); if (!l || !e.target.value) return; const dv = newDevice(e.target.value); if (l.type === 'return' && ['hall', 'pingpong', 'chorus'].includes(dv.type)) dv.mix = 1; l.chain = [...(l.chain || []), dv]; commit(`${FX_TYPES[dv.type]} added to “${l.name}”`); renderInspector(); return; }
-  if (e.target.matches('[data-dvp]')) { const box = e.target.closest('[data-dev]'), hit = box && findDev(box.dataset.dev); if (!hit) return; const k = e.target.dataset.dvp; hit.d[k] = k === 'gate' ? e.target.value : ['amt', 'mix'].includes(k) ? +e.target.value / 100 : +e.target.value; if (hit.d.type === 'comp') { quietCommit(); return; } commit(); return; }
+  if (e.target.matches('[data-dvadd]')) { const l = e.target.dataset.owner === 'master' ? MASTER_L : P.lanes.find(x => x.id === selLane); if (!l || !e.target.value) return; const dv = newDevice(e.target.value); if (l.type === 'return' && ['hall', 'pingpong', 'chorus'].includes(dv.type)) dv.mix = 1; l.chain = [...(l.chain || []), dv]; commit(`${FX_TYPES[dv.type]} added to “${l.name}”`); renderInspector(); return; }
+  if (e.target.matches('[data-dvp]')) { const box = e.target.closest('[data-dev]'), hit = box && findDev(box.dataset.dev); if (!hit) return; const k = e.target.dataset.dvp; hit.d[k] = ['gate', 'mode'].includes(k) ? e.target.value : ['amt', 'mix', 'tone'].includes(k) ? +e.target.value / 100 : +e.target.value; if (hit.d.type === 'comp') { quietCommit(); return; } commit(); return; }
   if (e.target.matches('[data-lroute]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.out = e.target.value || null; const gname = l.out && P.lanes.find(x => x.id === l.out).name; commit(gname ? `“${l.name}” now plays through “${gname}”.` : `“${l.name}” goes straight to the master.`); renderInspector(); return; }
   if (e.target.matches('[data-lsend]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.sends = { ...(l.sends || {}), [e.target.dataset.lsend]: +e.target.value / 100 }; commit(); return; }
   if (e.target.matches('[data-lpump]')) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; l.pump = { depth: 0.7, ...(l.pump || {}), on: e.target.checked }; commit(l.pump.on ? `“${l.name}” now ducks on every kick of the drum machine.` : 'Pump off'); renderInspector(); return; }
@@ -3668,7 +4095,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, normalize, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, normalize, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,

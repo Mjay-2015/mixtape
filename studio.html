@@ -190,6 +190,13 @@ canvas.eqcv{width:100%;height:132px;border-radius:6px;cursor:pointer;touch-actio
 .gr i{display:block;height:100%;width:0;background:#E8B931;margin-left:auto;transition:width .08s linear}
 .ltag{font:700 9px var(--f-mono);letter-spacing:.06em;padding:1px 4px;border-radius:3px;background:var(--c);color:#0D0F13;flex:none}
 .ltag.dim{background:transparent;color:var(--muted);padding:0}
+.mrep{margin:6px 0}
+.mnote{font-size:12px;line-height:1.45;margin:4px 0;padding:6px 8px;border-radius:6px;border-left:3px solid var(--line-2);background:var(--bg)}
+.mnote.ok{border-color:#4FD1A5}
+.mnote.warn{border-color:#E8B931}
+.mnote.bad{border-color:#F06A6A}
+.btn.rec.on .dot{animation:recblink 1s steps(2) infinite}
+@keyframes recblink{50%{opacity:.2}}
 .lane.group .lane-body,.lane.ret .lane-body{background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.02) 0 2px,transparent 2px 14px)}
 .tempo-picks{display:grid;gap:4px;max-height:300px;overflow:auto}
 .trow{display:grid;grid-template-columns:20px 110px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font:12px var(--f-mono);cursor:pointer}
@@ -458,6 +465,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
       <button class="btn sm tgl" data-act="looplock" id="loopLockBtn" aria-pressed="false" title="Lock the loop: clicks outside it are ignored and playback stays in the loop. Unlocked, a click outside turns the loop off and plays from there."><svg class="i" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2"/></svg>Lock</button>
       <button class="btn sm tgl" data-act="metro" id="metroBtn" aria-pressed="false" title="Metronome: a click on every beat while playing (C)">Click</button>
       <button class="btn sm tgl" data-act="snap" id="snapBtn" aria-pressed="false" title="Line parts and selections up with the beat">Snap</button>
+      <button class="btn sm tgl" data-act="mono" id="monoBtn" aria-pressed="false" title="Mono check: hear the mix as one speaker plays it (phones, clubs, TVs). If something gets quieter or vanishes, it is out of phase.">Mono</button>
       <button class="btn sm tgl" data-act="follow" id="followBtn" aria-pressed="true" title="Follow: the view scrolls along with playback (F). Off: it stays where you put it.">Follow</button>
       <button class="btn sm rec" data-act="record" id="recBtn" title="Record your voice over the mix"><span class="dot"></span><span id="recLbl">Record</span></button>
     </div>
