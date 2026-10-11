@@ -138,6 +138,10 @@ button,input,select{font:inherit;color:inherit}
 .tg.on.s{background:#4F8EF7;border-color:#4F8EF7;color:#06101F}
 .tg.x{border-color:transparent;background:transparent}
 .tg.a.has{color:#4FD1A5;border-color:#4FD1A5}
+.tempo-picks{display:grid;gap:4px;max-height:300px;overflow:auto}
+.trow{display:grid;grid-template-columns:20px 110px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font:12px var(--f-mono);cursor:pointer}
+.trow:has(input:checked){border-color:var(--accent)}
+.trow .dim{color:var(--muted)}
 .tg.on.a{background:#4FD1A5;border-color:#4FD1A5;color:#05140F}
 .auto-row select{grid-column:2;min-width:0;background:var(--bg);color:var(--ink);border:1px solid var(--line-2);border-radius:4px;font:11px var(--f-mono);padding:1px 2px}
 .auto-row .mini{width:26px;height:20px;border:1px solid var(--line-2);border-radius:4px;background:var(--raise);color:var(--muted);cursor:pointer;padding:0}

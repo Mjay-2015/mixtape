@@ -192,8 +192,9 @@ const beatLen = () => P.bpm ? 60 / P.bpm : 0;
 /* ---------- tempo map: the mix tempo (P.bpm) from 0:00, plus tempo changes later in the cue ---------- */
 function tempoSegs() {
   if (!P.bpm) return [];
-  const ch = (P.tempoChanges || []).filter(x => x.t > 0.001 && x.bpm >= 20 && x.bpm <= 400).sort((a, b) => a.t - b.t);
-  const segs = [{ t0: 0, bpm: P.bpm, b0: 0 }];
+  const g0 = P.beat0 || 0; // where bar 1 starts
+  const ch = (P.tempoChanges || []).filter(x => x.t > g0 + 0.001 && x.bpm >= 20 && x.bpm <= 400).sort((a, b) => a.t - b.t);
+  const segs = [{ t0: g0, bpm: P.bpm, b0: 0 }];
   for (const c of ch) { const s = segs[segs.length - 1]; segs.push({ t0: c.t, bpm: c.bpm, b0: s.b0 + (c.t - s.t0) * s.bpm / 60 }); }
   return segs;
 }
@@ -563,7 +564,7 @@ async function importMidi(file, at = playhead) {
   commit(`Imported “${file.name}”: ${m.tracks.length} instrument track${m.tracks.length === 1 ? '' : 's'}, ${m.tracks.reduce((s, t) => s + t.notes.length, 0)} notes.${tempoMsg}`);
   fitZoom();
 }
-function midiTickAt(ppq) { return t => Math.max(0, Math.round((P.bpm ? beatAt(t) : t * 2) * ppq)); }
+function midiTickAt(ppq) { return t => Math.max(0, Math.round((P.bpm ? beatAt(t) - beatAt(0) : t * 2) * ppq)); }
 function exportMidi() {
   const parts = P.clips.filter(c => c.kind === 'midi' && !c.mute);
   if (!parts.length) return toast('There are no instrument parts to export.');
@@ -574,7 +575,7 @@ function exportMidi() {
     const notes = cs.flatMap(c => c.notes.filter(n => n.t >= c.start && n.t < c.end).map(n => ({ p: n.p + (c.semi || 0), t: c.at + (n.t - c.start) / (c.rate || 1), d: Math.min(n.d, c.end - n.t) / (c.rate || 1), v: n.v })));
     return { name: l ? l.name : 'Instrument', channel, program: MixtapeMIDI.PROGRAM[cs[0].inst] ?? 0, notes };
   });
-  const tempos = P.bpm ? tempoSegs().map(s => ({ sec: s.t0, bpm: s.bpm })) : [{ sec: 0, bpm: 120 }];
+  const tempos = P.bpm ? tempoSegs().map((s, i) => ({ sec: i ? s.t0 : 0, bpm: s.bpm })) : [{ sec: 0, bpm: 120 }];
   const bytes = MixtapeMIDI.write({ ppq: 480, tempos, tracks, tickAt: midiTickAt(480) });
   downloadBlob(new Blob([bytes], { type: 'audio/midi' }), safeName(P.name || 'My mix') + '.mid');
   toast(`Exported ${tracks.length} instrument track${tracks.length === 1 ? '' : 's'} as a MIDI file.`);
@@ -965,19 +966,34 @@ async function splitStems() {
 
 
 /* ---------- saving the mix as a song ---------- */
-function encodeWav(buf, scale) {
+function encodeWav(buf, scale, wav) {
   const data = []; for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) data.push(buf.getChannelData(c));
-  return encodeWavData(data, buf.sampleRate, scale);
+  return encodeWavData(data, buf.sampleRate, scale, wav);
 }
-function encodeWavData(data, sr, scale = 1) {
-  const ch = data.length, n = data[0].length;
-  const ab = new ArrayBuffer(44 + n * ch * 2), v = new DataView(ab);
-  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  w(0, 'RIFF'); v.setUint32(4, 36 + n * ch * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true); v.setUint16(22, ch, true); v.setUint32(24, sr, true); v.setUint32(28, sr * ch * 2, true);
-  v.setUint16(32, ch * 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * ch * 2, true);
-  let o = 44;
-  for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) { const s = clamp(data[c][i] * scale, -1, 1); v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true); o += 2; }
+// 16-bit by default; deliveries are 24-bit with a Broadcast WAV "bext" chunk saying where the first sample sits in the programme
+function encodeWavData(data, sr, scale = 1, { bits = 16, bext = null } = {}) {
+  const ch = data.length, n = data[0].length, bps = bits / 8, dataLen = n * ch * bps, bextLen = bext ? 602 : 0;
+  const total = 12 + 24 + (bext ? 8 + bextLen : 0) + 8 + dataLen;
+  const ab = new ArrayBuffer(total), v = new DataView(ab);
+  const w = (o, s, max = s.length) => { for (let i = 0; i < Math.min(s.length, max); i++) v.setUint8(o + i, s.charCodeAt(i) & 0x7f); };
+  w(0, 'RIFF'); v.setUint32(4, total - 8, true); w(8, 'WAVE');
+  let o = 12;
+  w(o, 'fmt '); v.setUint32(o + 4, 16, true); v.setUint16(o + 8, 1, true); v.setUint16(o + 10, ch, true); v.setUint32(o + 12, sr, true);
+  v.setUint32(o + 16, sr * ch * bps, true); v.setUint16(o + 20, ch * bps, true); v.setUint16(o + 22, bits, true); o += 24;
+  if (bext) {
+    w(o, 'bext'); v.setUint32(o + 4, bextLen, true); const b = o + 8, now = new Date(), p2 = x => String(x).padStart(2, '0');
+    w(b, bext.description || '', 256); w(b + 256, bext.originator || 'Mixtape Studio', 32); w(b + 288, bext.originatorRef || '', 32);
+    w(b + 320, `${now.getFullYear()}:${p2(now.getMonth() + 1)}:${p2(now.getDate())}`, 10); w(b + 330, `${p2(now.getHours())}:${p2(now.getMinutes())}:${p2(now.getSeconds())}`, 8);
+    const tr = Math.max(0, Math.round(bext.timeReference || 0));
+    v.setUint32(b + 338, tr % 4294967296, true); v.setUint32(b + 342, Math.floor(tr / 4294967296), true); v.setUint16(b + 346, 1, true);
+    o += 8 + bextLen;
+  }
+  w(o, 'data'); v.setUint32(o + 4, dataLen, true); o += 8;
+  for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) {
+    const s = clamp(data[c][i] * scale, -1, 1);
+    if (bits === 24) { const x = Math.round(s < 0 ? s * 0x800000 : s * 0x7FFFFF); v.setUint8(o, x & 255); v.setUint8(o + 1, (x >> 8) & 255); v.setUint8(o + 2, (x >> 16) & 255); o += 3; }
+    else { v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true); o += 2; }
+  }
   return new Blob([ab], { type: 'audio/wav' });
 }
 async function renderMix(opts = {}) {
@@ -988,16 +1004,15 @@ async function renderMix(opts = {}) {
   buildGraph(oc, from, 0, { lane: opts.lane });
   const out = await oc.startRendering();
   const chs = [...Array(out.numberOfChannels)].map((_, i) => out.getChannelData(i));
-  let limited = null;
-  if (!opts.lane && (P.limit.on || opts.normalizeTo != null)) {
-    let gainDb = 0;
-    if (opts.normalizeTo != null) { const m = measureLoudness(out); if (Number.isFinite(m.lufs)) gainDb = opts.normalizeTo - m.lufs; }
-    limited = MixtapeDSP.limit(chs, out.sampleRate, { gainDb, ceilingDb: opts.ceiling ?? P.limit.ceiling });
-  } else if (opts.gainDb) { const g = Math.pow(10, opts.gainDb / 20); for (const d of chs) for (let i = 0; i < d.length; i++) d[i] *= g; }
+  let limited = null, gainDb = opts.gainDb || 0;
+  if (!opts.lane && opts.normalizeTo != null) { const m = measureLoudness(out); if (Number.isFinite(m.lufs)) gainDb = opts.normalizeTo - m.lufs; }
+  // cue deliveries pass noLimit: loudness belongs to the final mix, and a limited cue leaves the mixer nothing to work with
+  if (!opts.lane && !opts.noLimit && (P.limit.on || opts.ceiling != null)) limited = MixtapeDSP.limit(chs, out.sampleRate, { gainDb, ceilingDb: opts.ceiling ?? P.limit.ceiling });
+  else if (gainDb) { const g = Math.pow(10, gainDb / 20); for (const d of chs) for (let i = 0; i < d.length; i++) d[i] *= g; }
   let peak = 0; for (const d of chs) for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
   // a limited mix is already under its ceiling; anything else is turned down just enough not to clip
-  const scale = !limited && peak > 0.98 ? 0.98 / peak : 1;
-  return { blob: encodeWav(out, scale), duration: out.duration, buffer: out, scale, limited };
+  const scale = !limited && !opts.noScale && peak > 0.98 ? 0.98 / peak : 1;
+  return { blob: encodeWav(out, scale, opts.wav), duration: out.duration, buffer: out, scale, limited, gainDb };
 }
 function downloadBlob(blob, name) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
@@ -1136,14 +1151,14 @@ function renderRuler() {
   cv.style.width = w + 'px'; cv.width = Math.min(32000, Math.round(w * r)); cv.height = h * r;
   const g = cv.getContext('2d'); g.setTransform(cv.width / w, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
   const bl = beatLen();
-  if (bl && bl * pps >= 5) { g.fillStyle = css('--line'); for (let b = 0, x = 0; x < w && b < 20000; b++, x = timeAtBeat(b) * pps) g.fillRect(Math.round(x), b % 4 ? 23 : 19, 1, b % 4 ? 5 : 9); }
+  if (bl && bl * pps >= 5) { g.fillStyle = css('--line'); for (let b = Math.ceil(beatAt(0) - 1e-6), n = 0, x = timeAtBeat(b) * pps; x < w && n < 20000; b++, n++, x = timeAtBeat(b) * pps) g.fillRect(Math.round(x), ((b % 4) + 4) % 4 ? 23 : 19, 1, ((b % 4) + 4) % 4 ? 5 : 9); }
   for (const c of (P.tempoChanges || [])) { const x = c.t * pps; g.fillStyle = '#4FD1A5'; g.fillRect(Math.round(x), 0, 2, 30); g.font = `600 10px ${css('--f-mono')}`; g.textBaseline = 'middle'; g.fillText(`♩${Math.round(c.bpm * 10) / 10}`, x + 4, 22); }
   if (P.loop) { g.fillStyle = P.loopOn ? css('--accent') : css('--line-2'); g.fillRect(P.loop.a * pps, 0, (P.loop.b - P.loop.a) * pps, 5); }
   g.fillStyle = css('--muted'); g.strokeStyle = css('--line'); g.font = `11px ${css('--f-mono')}`; g.textBaseline = 'middle';
   const mode = clockMode();
   if (mode === 'bars') {
     const barW = 4 * 60 / Math.max(...tempoSegs().map(s => s.bpm)) * pps, every = [1, 2, 4, 8, 16, 32].find(n => n * barW >= 44) || 64;
-    for (let b = 0, x = 0; x < w && b < 5000; b += every, x = timeAtBeat(b * 4) * pps) { const xx = Math.round(x) + .5; g.beginPath(); g.moveTo(xx, 12); g.lineTo(xx, h); g.stroke(); g.fillText(String(b + 1), xx + 4, 8); }
+    for (let b = Math.ceil(beatAt(0) / 4 / every - 1e-6) * every, n = 0, x = timeAtBeat(b * 4) * pps; x < w && n < 5000; b += every, n++, x = timeAtBeat(b * 4) * pps) { const xx = Math.round(x) + .5; g.beginPath(); g.moveTo(xx, 12); g.lineTo(xx, h); g.stroke(); g.fillText(String(b + 1), xx + 4, 8); }
   } else {
     const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120]; const step = steps.find(s => s * pps >= (mode === 'tc' ? 110 : 64)) || 300;
     for (let t = 0; t * pps < w; t += step) {
@@ -1247,6 +1262,7 @@ function renderInspector() {
       <div class="field"><label for="fFil">Filter</label><input id="fFil" type="range" min="-100" max="100" value="${f}" data-lx="filter"><output>${f === 0 ? 'off' : f < 0 ? 'muffle ' + -f : 'thin ' + f}</output></div>
       <div class="field"><label for="fEcho">Echo</label><input id="fEcho" type="range" min="0" max="100" value="${fx.echo}" data-lx="echo"><output>${fx.echo}%</output></div>
       <div class="field"><label for="fRev">Reverb</label><input id="fRev" type="range" min="0" max="100" value="${fx.reverb}" data-lx="reverb"><output>${fx.reverb}%</output></div>
+      <label class="chk"><input type="checkbox" data-lrole="dialogue" ${l.role === 'dialogue' ? 'checked' : ''}> This is the dialogue (for loudness measured on speech, and for ducking)</label>
       <div class="btnrow"><button class="btn sm" data-act="fxreset">Reset effects</button><button class="btn sm" data-act="closegaps">Close gaps</button></div></div>`;
   }
   html += linkSectionHTML();
@@ -1381,7 +1397,7 @@ const acts = {
   newproj: () => newMix(),
   instmenu: b => { const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [{ label: 'Import a MIDI file…', act: () => $('#midiIn').click() }, { sep: true },
     ...Object.entries(MixtapeMIDI.INSTRUMENTS).map(([k, v]) => ({ label: `New ${v.toLowerCase()} track`, act: () => newInstrumentTrack(k) }))]); },
-  quantize, exportmidi: exportMidi,
+  quantize, exportmidi: exportMidi, findtempo: findTempo,
   projects: b => projectsMenu(b),
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && !b.disabled && acts[b.dataset.act]) acts[b.dataset.act](b, e); });
@@ -1609,6 +1625,11 @@ $('#insp').addEventListener('change', async e => {
   if (d.pf === 'xfade') return commit();
   if (d.pf === 'bpm') { const v = parseFloat(e.target.value); P.bpm = v >= 40 && v <= 240 ? Math.round(v * 10) / 10 : null; commit(P.bpm ? `Mix tempo set to ${P.bpm} BPM` : 'Mix tempo cleared'); liveLanes(); return; }
   if (d.pf === 'key') { const [k, m] = e.target.value.split('|'); P.key = e.target.value ? { key: +k, mode: m } : null; return commit(P.key ? `Mix key set to ${keyName(P.key.key, P.key.mode)}` : 'Mix key cleared'); }
+  if (d.linkset && P.link) {
+    if (d.linkset === 'profile') { P.link.profileChoice = e.target.value; return commit(`Deliveries now aim at ${PROFILES[e.target.value].name}.`); }
+    if (d.linkset === 'tc') { if (tcToSec(e.target.value) == null) { e.target.value = startTC(); return toast('Write the start as hh:mm:ss:ff, for example 10:00:00:00.'); } P.link.tcChoice = e.target.value.trim(); return commit(`Programme starts at ${P.link.tcChoice}.`); }
+  }
+  if (d.lrole) { const l = P.lanes.find(x => x.id === selLane); if (!l) return; P.lanes.forEach(x => { if (x.role === 'dialogue') x.role = null; }); if (e.target.checked) l.role = 'dialogue'; return commit(e.target.checked ? `“${l.name}” is the dialogue: Netflix-style loudness is measured where it speaks.` : 'No dialogue track marked.'); }
   if (d.pc === 'limit') { P.limit.on = e.target.checked; return commit(P.limit.on ? `Limiter on: true peak held under ${P.limit.ceiling.toFixed(1)} dBTP when you save or deliver.` : 'Limiter off'); }
   if (d.pf === 'ceiling') { P.limit.ceiling = Math.round(+e.target.value * 10) / 10; return commit(); }
   if (d.pc) { P[d.pc] = e.target.checked; return commit(); }
@@ -1811,7 +1832,7 @@ const once = (el, ev, ms = 8000) => new Promise(r => { let done = false; const f
 const vLen = () => P.video ? P.video.end - P.video.start : 0;
 const videoEnd = () => P.video ? P.video.at + vLen() : 0;
 function videoTimeAt(t) { const v = P.video; if (!v) return null; const u = t - v.at; return u < 0 || u > vLen() ? null : v.start + u; }
-const fpsOf = () => (P.video && P.video.fps) || 24;
+const fpsOf = () => (P.video && P.video.fps) || (P.link && P.link.fps) || 24;
 function tc(t) {
   const fps = fpsOf(), nom = Math.round(fps), neg = t < 0; let f = Math.floor(Math.abs(t) * fps + 1e-6);
   const ff = f % nom; f = Math.floor(f / nom); const ss = f % 60; f = Math.floor(f / 60); const mm = f % 60, hh = Math.floor(f / 60);
@@ -2068,6 +2089,42 @@ $('#vidIn').addEventListener('change', e => { const f = e.target.files[0]; e.tar
 $('#mkIn').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) importMarkers(f); });
 
 
+/* ---------- tempo from hit points ----------
+   Bar 1 starts on the first hit; every tempo from 40 to 220 BPM is tried in 0.01 steps, and each is scored by how
+   many of the other hits land within a frame of a beat (or of an eighth note), then by how far the worst one misses. */
+function solveTempo(hits, fps = fpsOf(), { min = 40, max = 220, tolFrames = 1 } = {}) {
+  hits = [...hits].sort((a, b) => a - b); if (hits.length < 2) return [];
+  const o = hits[0], rest = hits.slice(1), tol = tolFrames / fps + 1e-9, out = [];
+  for (let k = Math.round(min * 100); k <= Math.round(max * 100); k++) {
+    const bpm = k / 100, res = {};
+    for (const sub of [1, 2]) {
+      const p = 60 / bpm / sub; let caught = 0, worst = 0, sum = 0;
+      for (const h of rest) { const x = (h - o) / p, e = Math.abs(x - Math.round(x)) * p; if (e <= tol) caught++; worst = Math.max(worst, e); sum += e; }
+      res[sub] = { caught, worst: worst * fps, mean: sum / rest.length * fps };
+    }
+    out.push({ bpm, beat: res[1], eighth: res[2] });
+  }
+  // most hits on a beat first; then most on an eighth (a hit on the 'and' is still a musical hit); then the smallest average miss
+  out.sort((a, b) => b.beat.caught - a.beat.caught || b.eighth.caught - a.eighth.caught || (a.beat.mean + a.eighth.mean) - (b.beat.mean + b.eighth.mean));
+  const picks = [];
+  const near = (x, y) => Math.abs(x - y) <= Math.max(0.6, y * 0.006);
+  for (const c of out) { if (picks.some(p => near(p.bpm, c.bpm) || near(p.bpm * 2, c.bpm) || near(p.bpm / 2, c.bpm))) continue; picks.push(c); if (picks.length >= 8) break; }
+  return picks.map(c => ({ ...c, of: rest.length }));
+}
+async function findTempo() {
+  const ms = visibleMarkers(); if (ms.length < 3) return toast('Mark at least three hit points first: the first is where bar 1 starts, the others are what the tempo has to catch.', 5000);
+  const inLoop = loopActive() ? ms.filter(m => mT(m) >= P.loop.a - 1e-3 && mT(m) <= P.loop.b + 1e-3) : ms, use = inLoop.length >= 3 ? inLoop : ms;
+  const hits = use.map(mT), picks = solveTempo(hits), fps = fpsOf(), f1 = n => n.toFixed(1);
+  const rows = picks.map((c, i) => `<label class="trow"><input type="radio" name="bpm" value="${c.bpm}" ${i ? '' : 'checked'}><b>${c.bpm.toFixed(2)} BPM</b><span>${c.beat.caught}/${c.of} on a beat · worst ${f1(c.beat.worst)} fr</span><span class="dim">${c.eighth.caught}/${c.of} on an eighth</span></label>`).join('');
+  const ch = await ask({ title: 'Tempo from hit points', ok: 'Use this tempo',
+    text: `Bar 1 starts on “${use[0].label}” (${tc(hits[0])}). These tempos catch the most of the other ${hits.length - 1} hit points within one frame at ${fps} fps.${use !== ms ? ' Only the hit points inside the loop were used.' : ''}`,
+    extra: `<div class="tempo-picks">${rows}</div>`, read: f => { const v = f.querySelector('[name=bpm]:checked'); return v ? { bpm: +v.value } : undefined; } });
+  if (!ch || !ch.bpm) return;
+  const bpm = ch.bpm;
+  P.bpm = bpm; P.tempoChanges = []; P.beat0 = hits[0];
+  const c = picks.find(x => x.bpm === bpm);
+  commit(`Mix tempo ${bpm.toFixed(2)} BPM, bar 1 on “${use[0].label}”: ${c.beat.caught} of ${c.of} hit points land on a beat.`);
+}
 function sceneSectionHTML() {
   const v = P.video, ms = visibleMarkers();
   const fpsOpts = [23.976, 24, 25, 29.97, 30].map(f => `<option value="${f}" ${v && +v.fps === f ? 'selected' : ''}>${f} fps</option>`).join('');
@@ -2076,7 +2133,7 @@ function sceneSectionHTML() {
       <button data-mkgo title="Jump to this hit point">▶</button><button data-mkdel title="Remove this hit point">✕</button></div>`).join('')}</div>`
     : `<p class="hint">No hit points yet. Press <b>M</b> at the moment the music should land, for example a cut or a door slam.</p>`;
   if (!v) return `<div class="sec"><h3>Scene</h3><p class="hint">Score to picture: add the scene's video, then mark hit points the music must land on.</p>
-    <div class="btnrow"><button class="btn sm primary" data-act="video">Add a scene video</button><button class="btn sm" data-act="loadhits">Import hit points</button></div>${ms.length ? hits : ''}</div>`;
+    <div class="btnrow"><button class="btn sm primary" data-act="video">Add a scene video</button><button class="btn sm" data-act="loadhits">Import hit points</button>${ms.length >= 3 ? '<button class="btn sm" data-act="findtempo">Tempo from hits</button>' : ''}</div>${ms.length ? hits : ''}</div>`;
   const t = libTrack(v.id);
   return `<div class="sec"><h3>Scene</h3>
     <dl class="kv"><dt>Video</dt><dd>${esc(t ? t.title : 'Missing')}</dd><dt>Length</dt><dd>${tc(vLen())}</dd>${v.start > 0.05 ? `<dt>Lead-in</dt><dd>${v.start.toFixed(2)}s trimmed</dd>` : ''}</dl>
@@ -2084,7 +2141,7 @@ function sceneSectionHTML() {
     <div class="field"><label for="sVol">Scene sound</label><input id="sVol" type="range" min="0" max="100" value="${Math.round((v.vol ?? 0.8) * 100)}" data-sf="vol"><output>${Math.round((v.vol ?? 0.8) * 100)}%</output></div>
     <div class="btnrow"><button class="btn sm" data-act="video">${UI.vwin ? 'Hide video' : 'Show video'}</button><button class="btn sm" data-act="actionzero" ${v.at > 0.01 ? '' : 'disabled'}>Start the action at 0:00</button></div>
     <p class="sub">Hit points</p>${hits}
-    <div class="btnrow"><button class="btn sm primary" data-act="addhit">+ Hit point (M)</button><button class="btn sm" data-act="findcuts">Find cuts</button></div>
+    <div class="btnrow"><button class="btn sm primary" data-act="addhit">+ Hit point (M)</button><button class="btn sm" data-act="findcuts">Find cuts</button><button class="btn sm" data-act="findtempo" ${ms.length >= 3 ? '' : 'disabled'} title="Find the tempos that land the most hit points on a beat">Tempo from hits</button></div>
     <div class="btnrow"><button class="btn sm" data-act="loadhits">Import hit points</button><button class="btn sm" data-act="savehits" ${ms.length ? '' : 'disabled'}>Save hit points</button></div>
     <p class="hint">Right-click a part and choose “Fit between hit points” to make it start and end exactly on two of them. Scene sound plays while you work but is never mixed into exports.</p></div>`;
 }
@@ -2144,8 +2201,8 @@ function renderGrid() {
   let g = $('#gridlines'); if (!g) { g = document.createElement('div'); g.id = 'gridlines'; $('#tlInner').prepend(g); }
   if (!P.snap || !P.bpm) { g.innerHTML = ''; return; }
   const w = timelineWidth(), out = [];
-  for (let b = 0, t = 0; t * pps < w && b < 8000; b++, t = timeAtBeat(b)) {
-    const bar = b % 4 === 0; if (!bar && (timeAtBeat(b + 1) - t) * pps < 6) continue;
+  for (let b = Math.ceil(beatAt(0) - 1e-6), n = 0, t = timeAtBeat(b); t * pps < w && n < 8000; b++, n++, t = timeAtBeat(b)) {
+    const bar = ((b % 4) + 4) % 4 === 0; if (!bar && (timeAtBeat(b + 1) - t) * pps < 6) continue;
     out.push(`<i class="${bar ? 'bar' : ''}" style="left:${headW() + t * pps}px"></i>`);
   }
   g.innerHTML = out.join('');
@@ -2281,7 +2338,8 @@ async function syncPackage(first) {
     });
     L.shots = (pkg.shots || []).map(s => ({ id: s.id, order: s.order, sceneIndex: s.sceneIndex, startSec: +s.startSec, endSec: +s.endSec, placeholder: !!s.placeholder }));
     L.scenes = (pkg.scenes || []).map(s => ({ index: s.index, title: s.title || '', startSec: +s.startSec, endSec: +s.endSec }));
-    Object.assign(L, { folder: linkDir.name, modified, production: pkg.production || {}, cutId: pkg.cut && pkg.cut.id, cutVersion: pkg.cut && pkg.cut.version, stage: pkg.cut && pkg.cut.stage, lockedAt: pkg.cut && pkg.cut.lockedAt, runningTimeSec: pkg.cut && +pkg.cut.runningTimeSec || null });
+    Object.assign(L, { folder: linkDir.name, modified, production: pkg.production || {}, cutId: pkg.cut && pkg.cut.id, cutVersion: pkg.cut && pkg.cut.version, stage: pkg.cut && pkg.cut.stage, lockedAt: pkg.cut && pkg.cut.lockedAt, runningTimeSec: pkg.cut && +pkg.cut.runningTimeSec || null, fps: +pkg.fps || null,
+      deliveryProfile: PROFILES[pkg.deliveryProfile] ? pkg.deliveryProfile : null, timecode: pkg.timecode || null, rights: pkg.rights || null });
     P.link = L; await refreshTakes();
     // scene starts and the package's hit points become hit points that follow the picture
     P.markers = (P.markers || []).filter(m => m.src !== 'pkg');
@@ -2297,21 +2355,68 @@ async function syncPackage(first) {
   finally { linkBusy = false; }
 }
 /* EBU R128 / ITU-R BS.1770 integrated loudness, sample peak and true peak (4x oversampled) of a rendered buffer */
-function measureLoudness(buf) {
+/* K-weighted energy per 100 ms hop, summed over the first two channels (shared by everything below) */
+function kHops(buf) {
   const sr = buf.sampleRate, chs = []; for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chs.push(buf.getChannelData(c));
   const biq = (b0, b1, b2, a1, a2) => x => { const y = new Float64Array(x.length); let x1 = 0, x2 = 0, y1 = 0, y2 = 0; for (let i = 0; i < x.length; i++) { const v = x[i], o = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = v; y2 = y1; y1 = o; y[i] = o; } return y; };
   let K = Math.tan(Math.PI * 1681.974450955533 / sr), Q = 0.7071752369554196, Vh = Math.pow(10, 3.999843853973347 / 20), Vb = Math.pow(Vh, 0.4996667741545416), a0 = 1 + K / Q + K * K;
   const shelf = biq((Vh + Vb * K / Q + K * K) / a0, 2 * (K * K - Vh) / a0, (Vh - Vb * K / Q + K * K) / a0, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0);
   K = Math.tan(Math.PI * 38.13547087602444 / sr); Q = 0.5003270373238773; a0 = 1 + K / Q + K * K;
   const hp = biq(1, -2, 1, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0);
-  const w = chs.map(x => hp(shelf(x))), block = Math.round(0.4 * sr), hop = Math.round(0.1 * sr), z = [];
-  for (let s = 0; s + block <= w[0].length; s += hop) { let sum = 0; for (const y of w) { let e = 0; for (let i = s; i < s + block; i++) e += y[i] * y[i]; sum += e / block; } z.push(sum); }
-  const L = v => -0.691 + 10 * Math.log10(v + 1e-20);
-  const truePeakDb = MixtapeDSP.truePeak(chs);
-  const abs = z.filter(v => L(v) > -70); if (!abs.length) return { lufs: -Infinity, peakDb: -Infinity, truePeakDb };
-  const rel = L(abs.reduce((a, b) => a + b, 0) / abs.length) - 10, gated = abs.filter(v => L(v) > rel);
+  const w = chs.map(x => hp(shelf(x))), hop = Math.round(0.1 * sr), H = Math.floor((w[0] ? w[0].length : 0) / hop), E = new Float64Array(H);
+  for (let k = 0; k < H; k++) { let e = 0; for (const y of w) for (let i = k * hop; i < (k + 1) * hop; i++) e += y[i] * y[i]; E[k] = e; }
+  return { E, hop, chs };
+}
+const LK = v => -0.691 + 10 * Math.log10(v + 1e-20);
+const r1 = x => Math.round(x * 10) / 10;
+/* mean-square of each window of `span` hops, stepping one hop (400 ms blocks = 4 hops, 3 s short-term = 30 hops) */
+function windows(E, hop, span) { const out = []; let acc = 0; for (let k = 0; k < E.length; k++) { acc += E[k]; if (k >= span) acc -= E[k - span]; if (k >= span - 1) out.push(acc / (span * hop)); } return out; }
+/* EBU R128 / ITU-R BS.1770 integrated loudness, true peak (4x), and EBU Tech 3342 loudness range of a rendered buffer */
+function measureLoudness(buf) {
+  const { E, hop, chs } = kHops(buf), z = windows(E, hop, 4), st = windows(E, hop, 30);
+  const truePeakDb = MixtapeDSP.truePeak(chs), mean = a => a.reduce((x, y) => x + y, 0) / a.length;
   let peak = 0; for (const x of chs) for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > peak) peak = a; }
-  return { lufs: Math.round(L(gated.reduce((a, b) => a + b, 0) / gated.length) * 10) / 10, peakDb: Math.round(20 * Math.log10(peak + 1e-12) * 10) / 10, truePeakDb };
+  const peakDb = r1(20 * Math.log10(peak + 1e-12));
+  const abs = z.filter(v => LK(v) > -70); if (!abs.length) return { lufs: -Infinity, peakDb, truePeakDb, lra: 0, maxMomentary: -Infinity, maxShortTerm: -Infinity };
+  const rel = LK(mean(abs)) - 10, gated = abs.filter(v => LK(v) > rel);
+  // loudness range: short-term values, absolute gate −70, relative gate 20 LU under their energy mean, 95th minus 10th percentile
+  let lra = 0; const sa = st.filter(v => LK(v) > -70);
+  if (sa.length) { const g2 = LK(mean(sa)) - 20, kept = sa.map(LK).filter(x => x > g2).sort((a, b) => a - b); if (kept.length) { const at = p => kept[Math.max(0, Math.ceil(p * kept.length) - 1)]; lra = r1(at(0.95) - at(0.10)); } }
+  return { lufs: r1(LK(mean(gated))), peakDb, truePeakDb, lra, maxMomentary: r1(Math.max(...z.map(LK))), maxShortTerm: st.length ? r1(Math.max(...st.map(LK))) : null };
+}
+/* Loudness of the mix measured only where someone is speaking: blocks where the marked dialogue track is above −70 LUFS
+   and within 10 LU of its own gated level. Our approximation of Dolby Dialogue Intelligence, which Netflix and US broadcast use. */
+function dialogueGated(mixBuf, dlgBuf) {
+  const m = kHops(mixBuf), d = kHops(dlgBuf), zm = windows(m.E, m.hop, 4), zd = windows(d.E, d.hop, 4), mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  const absd = zd.filter(v => LK(v) > -70); if (!absd.length) return null;
+  const gate = LK(mean(absd)) - 10, speech = [];
+  for (let k = 0; k < Math.min(zm.length, zd.length); k++) if (LK(zd[k]) > -70 && LK(zd[k]) > gate) speech.push(zm[k]);
+  return speech.length ? r1(LK(mean(speech))) : null;
+}
+/* ---------- delivery profiles: where the film is going decides how loud the final mix must be ---------- */
+const PROFILES = {
+  sabc: { name: 'SABC (South Africa)', target: -23, tol: 1, ceiling: -1, dialogue: false, lra: 18, start: '10:00:00:00' },
+  r128: { name: 'EBU R128 (Europe)', target: -23, tol: 0.5, ceiling: -1, dialogue: false },
+  netflix: { name: 'Netflix', target: -27, tol: 2, ceiling: -2, dialogue: true },
+  atsc: { name: 'US broadcast (ATSC A/85)', target: -24, tol: 2, ceiling: -2, dialogue: true },
+  paramount: { name: 'Paramount', target: -24, tol: 2, ceiling: -2, dialogue: false },
+};
+const profileId = () => (P.link && (P.link.profileChoice || P.link.deliveryProfile)) || 'sabc';
+const startTC = () => (P.link && (P.link.tcChoice || (P.link.timecode && P.link.timecode.start))) || (PROFILES[profileId()].start || '01:00:00:00');
+/* Programme timecode to seconds; correct at 23.976 (01:00:00:00 there is 3603.6 s of real time) */
+function tcToSec(s, fps = fpsOf()) {
+  const m = /^(\d{1,2}):(\d{2}):(\d{2})[:;](\d{2})$/.exec(String(s || '').trim()); if (!m) return null;
+  const nom = Math.round(fps); return (((+m[1] * 60 + +m[2]) * 60 + +m[3]) * nom + +m[4]) / fps;
+}
+const dialogueLane = () => P.lanes.find(l => l.role === 'dialogue');
+/* What a person did to this stretch, so the studio can show human authorship alongside generated material */
+function humanEdits(a, b) {
+  const cs = P.clips.filter(c => !c.mute && c.at < b && c.at + dur(c) > a);
+  const trimmed = cs.filter(c => c.kind === 'midi' ? false : (c.start > 0.01 || c.end < ((bufs.get(c.trackId) && bufs.get(c.trackId).buffer.duration) || c.end) - 0.01)).length;
+  const lanes = new Set(cs.map(c => c.lane));
+  const autos = P.lanes.filter(l => lanes.has(l.id)).reduce((n, l) => n + [...l.auto.vol, ...l.auto.pan].filter(p => p.t >= a && p.t <= b).length, 0);
+  const notes = cs.filter(c => c.kind === 'midi').reduce((n, c) => n + c.notes.filter(x => x.t >= c.start && x.t < c.end).length, 0);
+  return { parts: cs.length, trimmedParts: trimmed, fades: cs.filter(c => (c.fadeIn || 0) > 0 || (c.fadeOut || 0) > 0).length, automationPoints: autos, midiNotes: notes, tracks: lanes.size };
 }
 /* Generated takes: music the production studio made for a cue, waiting in generated/<cue>/takes.json */
 let takesSig = '';
@@ -2344,8 +2449,8 @@ async function placeTake(cue, take) {
     const e = await ensureBuf(id), { a, b } = cueRange(cue);
     const l = newLane(`${cue.ref} ${take.model}`, PALETTE[P.lanes.length % PALETTE.length]); P.lanes.push(l);
     const c = newClip(id, l.id, a, 0, Math.min(e.buffer.duration, b - a + 2)); P.clips.push(c); selClip = c.id; selLane = l.id;
-    const terms = take.terms && take.terms.commercial;
-    commit(`Placed the ${take.model} take at ${cue.ref}.${terms === 'check' ? ' Its terms still need clearing before the film is sold; the delivery will say so.' : terms === 'no' ? ' Its terms do not allow a sold film: the production studio will refuse a delivery that uses it.' : ''}`);
+    const terms = take.terms && take.terms.commercial, forSale = P.link.rights && P.link.rights.forSale;
+    commit(`Placed the ${take.model} take at ${cue.ref}.${forSale && terms !== 'yes' ? ' This film is marked for sale and this model is not cleared for that: the production studio will refuse a delivery that uses it.' : terms === 'check' ? ' Its terms still need clearing before the film is sold; the delivery will say so.' : terms === 'no' ? ' Its terms do not allow a sold film: the production studio will refuse a delivery that uses it.' : ''}`);
   } catch (err) { toast(`Could not bring in that take: ${err.message}`, 6000); }
   finally { busy(null); }
 }
@@ -2360,27 +2465,48 @@ async function deliverFinal() {
   const L = P.link; if (!L || !linkDir) return toast('Link the score folder first.');
   if (!L.runningTimeSec) return toast('The score package does not say how long the cut is. Ask for it to be written again.');
   if (!P.clips.some(c => !c.mute)) return toast('There is nothing on the timeline to deliver yet.');
-  const ok = await ask({ title: 'Deliver the final mix', text: `The whole cut, ${fmtT(L.runningTimeSec)}, mixed and brought to −23 LUFS with the true peak held under −1 dBTP (EBU R128), plus a file per track. It goes into the score folder for the production studio to check.`, ok: 'Deliver' });
-  if (!ok) return;
-  const a = cutOffset(), b = a + L.runningTimeSec, lanes = P.lanes.filter(l => P.clips.some(c => c.lane === l.id && !c.mute && c.at < b && c.at + dur(c) > a));
+  const opts = Object.entries(PROFILES).map(([k, p]) => `<option value="${k}" ${k === profileId() ? 'selected' : ''}>${p.name}: ${p.target} LUFS${p.dialogue ? ' on dialogue' : ''}, peak ${p.ceiling} dBTP</option>`).join('');
+  const choice = await ask({ title: 'Deliver the final mix', ok: 'Deliver',
+    text: `The whole cut, ${fmtT(L.runningTimeSec)}, brought to the loudness the destination asks for, with a 24-bit file per track stamped with its programme timecode.`,
+    extra: `<fieldset class="opts"><legend>Destination</legend><select name="prof">${opts}</select></fieldset><fieldset class="opts"><legend>Programme starts at</legend><input name="tc" value="${esc(startTC())}" style="font-family:var(--f-mono)"></fieldset>`,
+    read: f => { const prof = f.querySelector('[name=prof]').value, tcs = f.querySelector('[name=tc]').value.trim(); if (tcToSec(tcs) == null) { toast('Write the start as hh:mm:ss:ff, for example 10:00:00:00.'); return undefined; } return { prof, tcs }; } });
+  if (!choice) return;
+  L.profileChoice = choice.prof; L.tcChoice = choice.tcs;
+  const prof = PROFILES[choice.prof], a = cutOffset(), b = a + L.runningTimeSec, dl = dialogueLane();
+  if (prof.dialogue && !dl) return toast(`${prof.name} measures loudness on the dialogue. Mark the dialogue track first: select it and tick “This is the dialogue” in Settings.`, 7000);
+  const lanes = P.lanes.filter(l => P.clips.some(c => c.lane === l.id && !c.mute && c.at < b && c.at + dur(c) > a));
   pause();
   try {
-    busy('Final mix: mixing and bringing it to −23 LUFS…', { progress: 0 });
-    const mix = await renderMix({ from: a, to: b, normalizeTo: -23, ceiling: -1 }), loud = measureLoudness(mix.buffer);
-    const stems = [], gainDb = mix.limited ? mix.limited.gainDb : 0;
+    busy(`Final mix: measuring against ${prof.name}…`, { progress: 0 });
+    const raw = await renderMix({ from: a, to: b, noLimit: true, noScale: true });
+    let measured = measureLoudness(raw.buffer).lufs;
+    if (prof.dialogue) { const d = await renderMix({ from: a, to: b, lane: dl.id, noScale: true }); measured = dialogueGated(raw.buffer, d.buffer); if (measured == null) return toast('The dialogue track is silent across the cut, so there is nothing to measure on.', 6000); }
+    if (!Number.isFinite(measured)) return toast('The mix is silent.');
+    const gain = prof.target - measured;
+    busy(`Final mix: bringing it to ${prof.target} LUFS…`, { progress: 0.2 });
+    const sr = ctx.sampleRate, t0 = tcToSec(choice.tcs), tr = Math.round(t0 * sr);
+    const wav = name => ({ bits: 24, bext: { timeReference: tr, description: `${L.production?.title || 'Film'} final mix ${name}`, originatorRef: 'final' } });
+    const mix = await renderMix({ from: a, to: b, gainDb: gain, ceiling: prof.ceiling - 0.1, wav: wav('mix') }), loud = measureLoudness(mix.buffer);
+    const stems = []; let dlgBuf = null;
     for (const [i, l] of lanes.entries()) {
-      busy(`Final mix: track ${i + 1} of ${lanes.length} (${l.name})…`, { progress: (i + 1) / (lanes.length + 1) });
-      const s = await renderMix({ from: a, to: b, lane: l.id, gainDb }); stems.push({ name: l.name, file: `stems/${safeName(l.name)}.wav`, blob: s.blob });
+      busy(`Final mix: track ${i + 1} of ${lanes.length} (${l.name})…`, { progress: 0.2 + 0.8 * (i + 1) / (lanes.length + 1) });
+      const s = await renderMix({ from: a, to: b, lane: l.id, gainDb: gain, noScale: true, wav: wav(l.name) });
+      stems.push({ name: l.name, file: `stems/${safeName(l.name)}.wav`, blob: s.blob, lane: l.id }); if (dl && l.id === dl.id) dlgBuf = s.buffer;
     }
-    const manifest = { format: 'mindcraft.mix-delivery/1', production: L.production, cutId: L.cutId, cutVersion: L.cutVersion, startSec: 0, endSec: L.runningTimeSec, sampleRate: mix.buffer.sampleRate,
+    const dg = dlgBuf ? dialogueGated(mix.buffer, dlgBuf) : null, judged = prof.dialogue ? dg : loud.lufs;
+    const manifest = { format: 'mindcraft.mix-delivery/1', production: L.production, cutId: L.cutId, cutVersion: L.cutVersion, startSec: 0, endSec: L.runningTimeSec, sampleRate: sr,
       mix: 'mix.wav', stems: stems.map(s => ({ name: s.name, file: s.file })),
-      loudness: { integratedLUFS: loud.lufs, samplePeakDbFS: loud.peakDb, truePeakDbTP: loud.truePeakDb, method: 'ITU-R BS.1770-4 integrated, gated; true peak 4x oversampled' },
-      normalisedTo: -23, sources: sourcesIn(a, b), deliveredAt: new Date().toISOString(), deliveredBy: 'Mixtape Studio' };
+      loudness: { integratedLUFS: loud.lufs, samplePeakDbFS: loud.peakDb, truePeakDbTP: loud.truePeakDb, loudnessRangeLU: loud.lra, maxMomentaryLUFS: loud.maxMomentary, maxShortTermLUFS: loud.maxShortTerm,
+        dialogueGatedLUFS: dg, dialogueStem: dlgBuf ? stems.find(s => s.lane === dl.id).file : null, method: 'ITU-R BS.1770-4 integrated, gated; true peak 4x oversampled; EBU Tech 3342 range; dialogue gating approximates Dolby Dialogue Intelligence' },
+      profile: choice.prof, normalisedTo: prof.target, ceilingDbTP: prof.ceiling,
+      bwf: { timeReference: tr, startTimecode: choice.tcs, fps: fpsOf(), sampleRate: sr, bitDepth: 24 },
+      humanEdits: humanEdits(a, b), sources: sourcesIn(a, b), deliveredAt: new Date().toISOString(), deliveredBy: 'Mixtape Studio' };
     await writeFile(linkDir, 'deliveries/_final/mix.wav', mix.blob);
     for (const s of stems) await writeFile(linkDir, `deliveries/_final/${s.file}`, s.blob);
     await writeFile(linkDir, 'deliveries/_final/delivery.json', new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }));
-    L.finalDelivered = { at: manifest.deliveredAt, lufs: loud.lufs, truePeak: loud.truePeakDb };
-    commit(`Final mix delivered: ${loud.lufs} LUFS, true peak ${loud.truePeakDb} dBTP, ${stems.length} track file${stems.length === 1 ? '' : 's'}.`);
+    L.finalDelivered = { at: manifest.deliveredAt, lufs: judged, truePeak: loud.truePeakDb, profile: prof.name };
+    const off = Math.abs(judged - prof.target) > prof.tol, wide = prof.lra && loud.lra > prof.lra;
+    commit(`Final mix for ${prof.name}: ${judged} LUFS${prof.dialogue ? ' on dialogue' : ''}, true peak ${loud.truePeakDb} dBTP, range ${loud.lra} LU.${off ? ` The limiter pulled it outside ±${prof.tol}: turn the loudest moments down and deliver again.` : ''}${wide ? ` The loudness range is over ${prof.lra} LU, which ${prof.name} will reject.` : ''}`);
   } catch (e) { toast('Could not deliver the final mix: ' + e.message, 6000); }
   finally { busy(null); }
 }
@@ -2405,24 +2531,32 @@ async function writeFile(dir, path, blob) {
 async function deliverCue(ref) {
   const L = P.link, cue = L && L.cues.find(c => c.ref === ref); if (!cue) return;
   if (!P.clips.some(c => !c.mute)) return toast('There is no music on the timeline to deliver yet.');
-  const { a, b } = cueRange(cue), folder = `deliveries/${safeName(cue.ref)}`;
+  const { a, b } = cueRange(cue), folder = `deliveries/${safeName(cue.ref)}`, dl = dialogueLane();
   const lanes = P.lanes.filter(l => P.clips.some(c => c.lane === l.id && !c.mute && c.at < b && c.at + dur(c) > a));
+  const sr = ctx.sampleRate, tcs = startTC(), tr = Math.round(((tcToSec(tcs) || 0) + cue.startSec) * sr);
+  const wav = name => ({ bits: 24, bext: { timeReference: tr, description: `${cue.ref} ${cue.title} ${name}`, originatorRef: cue.ref } });
   pause();
   try {
     busy(`Delivering ${cue.ref}: mixing…`, { progress: 0 });
-    const mix = await renderMix({ from: a, to: b }), loud = measureLoudness(mix.buffer);
-    // The file was turned down to stop it clipping, so state the loudness of the file, not of the mix before it
-    if (mix.scale !== 1) { const db = 20 * Math.log10(mix.scale); loud.lufs = Math.round((loud.lufs + db) * 10) / 10; loud.peakDb = Math.round((loud.peakDb + db) * 10) / 10; loud.truePeakDb = Math.round((loud.truePeakDb + db) * 10) / 10; }
-    const stems = [];
+    // not limited and not normalised: the re-recording mixer sets the level in the final mix
+    const mix = await renderMix({ from: a, to: b, noLimit: true, wav: wav('mix') }), loud = measureLoudness(mix.buffer);
+    // if the file was turned down to stop it clipping, state the loudness of the file, not of the mix before it
+    if (mix.scale !== 1) { const db = 20 * Math.log10(mix.scale); for (const k of ['lufs', 'peakDb', 'truePeakDb', 'maxMomentary', 'maxShortTerm']) if (Number.isFinite(loud[k])) loud[k] = r1(loud[k] + db); }
+    const stems = []; let dlgBuf = null;
     for (const [i, l] of lanes.entries()) {
       busy(`Delivering ${cue.ref}: stem ${i + 1} of ${lanes.length} (${l.name})…`, { progress: (i + 1) / (lanes.length + 1) });
-      const s = await renderMix({ from: a, to: b, lane: l.id }); stems.push({ name: l.name, file: `stems/${safeName(l.name)}.wav`, blob: s.blob });
+      const s = await renderMix({ from: a, to: b, lane: l.id, gainDb: mix.scale !== 1 ? 20 * Math.log10(mix.scale) : 0, noScale: true, wav: wav(l.name) });
+      stems.push({ name: l.name, file: `stems/${safeName(l.name)}.wav`, blob: s.blob, lane: l.id }); if (dl && l.id === dl.id) dlgBuf = s.buffer;
     }
+    const dg = dlgBuf ? dialogueGated(mix.buffer, dlgBuf) : null;
     const manifest = { format: 'mindcraft.cue-delivery/1', cueRef: cue.ref, title: cue.title, origin: cue.origin, production: L.production, cutId: L.cutId, cutVersion: L.cutVersion,
-      startSec: cue.startSec, endSec: cue.endSec, durationSec: +(cue.endSec - cue.startSec).toFixed(3), sampleRate: mix.buffer.sampleRate,
-      mix: 'mix.wav', stems: stems.map(s => ({ name: s.name, file: s.file })), loudness: { integratedLUFS: loud.lufs, samplePeakDbFS: loud.peakDb, truePeakDbTP: loud.truePeakDb, method: 'ITU-R BS.1770-4 integrated, gated; true peak 4x oversampled' },
-      sources: sourcesIn(a, b),
-      tempo: P.bpm ? { startBpm: P.bpm, changes: (P.tempoChanges || []).map(c => ({ atSec: +(c.t - cutOffset()).toFixed(3), bpm: c.bpm })) } : null,
+      startSec: cue.startSec, endSec: cue.endSec, durationSec: +(cue.endSec - cue.startSec).toFixed(3), sampleRate: sr,
+      mix: 'mix.wav', stems: stems.map(s => ({ name: s.name, file: s.file })),
+      loudness: { integratedLUFS: loud.lufs, samplePeakDbFS: loud.peakDb, truePeakDbTP: loud.truePeakDb, loudnessRangeLU: loud.lra, maxMomentaryLUFS: loud.maxMomentary, maxShortTermLUFS: loud.maxShortTerm,
+        dialogueGatedLUFS: dg, dialogueStem: dlgBuf ? stems.find(s => s.lane === dl.id).file : null, method: 'ITU-R BS.1770-4 integrated, gated; true peak 4x oversampled; EBU Tech 3342 range' },
+      bwf: { timeReference: tr, startTimecode: tcs, fps: fpsOf(), sampleRate: sr, bitDepth: 24 },
+      humanEdits: humanEdits(a, b), sources: sourcesIn(a, b),
+      tempo: P.bpm ? { startBpm: P.bpm, barOneAtSec: +((P.beat0 || 0) - cutOffset()).toFixed(3), changes: (P.tempoChanges || []).map(c => ({ atSec: +(c.t - cutOffset()).toFixed(3), bpm: c.bpm })) } : null,
       deliveredAt: new Date().toISOString(), deliveredBy: 'Mixtape Studio' };
     if (linkDir) {
       await writeFile(linkDir, `${folder}/mix.wav`, mix.blob);
@@ -2433,7 +2567,7 @@ async function deliverCue(ref) {
       downloadBlob(new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }), `${safeName(cue.ref)} delivery.json`);
     }
     cue.delivered = (cue.delivered || 0) + 1; cue.stale = []; cue.lastLoudness = loud.lufs;
-    commit(`Delivered ${cue.ref} with ${stems.length} stem${stems.length === 1 ? '' : 's'}: ${loud.lufs} LUFS, peak ${loud.peakDb} dBFS${linkDir ? ' — written to the score folder' : ' — downloaded'}.`);
+    commit(`Delivered ${cue.ref} with ${stems.length} stem${stems.length === 1 ? '' : 's'} at ${tc(tr / sr)}: ${loud.lufs} LUFS, peak ${loud.truePeakDb} dBTP, not limited${linkDir ? ' — written to the score folder' : ' — downloaded'}.`);
   } catch (e) { toast(`Could not deliver ${cue.ref}: ${e.message}`, 6000); }
   finally { busy(null); }
 }
@@ -2449,7 +2583,10 @@ function linkSectionHTML() {
     ${L.cues.length ? `<div class="hits">${L.cues.map(c => `<div class="hit cuerow${c.stale && c.stale.length ? ' stale' : ''}" data-cue="${esc(c.ref)}" title="${esc(c.notes || '')}">
       <span class="tc" data-cuego title="Loop this cue">${esc(c.ref)}</span><span class="cuetitle">${esc(c.title)} · ${fmt(c.startSec)}–${fmt(c.endSec)}${c.stale && c.stale.length ? `<b>Picture moved: ${esc(c.stale.join('; '))}</b>` : c.delivered ? `<em>Delivered${c.lastLoudness != null ? ' · ' + c.lastLoudness + ' LUFS' : ''}</em>` : ''}</span>
       ${(L.takes && L.takes[c.ref] || []).length ? `<button data-cuetakes title="Music the production studio generated for this cue">♪${L.takes[c.ref].length}</button>` : ''}<button data-cuego title="Loop this cue">⟲</button><button data-cuedeliver title="Deliver this cue: mix, stems and loudness into the folder">⇪</button></div>`).join('')}</div>` : '<p class="hint">The package has no cue placements yet.</p>'}
-    ${L.finalDelivered ? `<p class="hint">Final mix delivered ${new Date(L.finalDelivered.at).toLocaleString()}: ${L.finalDelivered.lufs} LUFS, true peak ${L.finalDelivered.truePeak} dBTP.</p>` : ''}
+    <div class="field"><label for="lProf">Delivers to</label><select id="lProf" data-linkset="profile">${Object.entries(PROFILES).map(([k, p]) => `<option value="${k}" ${k === profileId() ? 'selected' : ''}>${p.name}</option>`).join('')}</select><span></span></div>
+    <div class="field"><label for="lTc">Starts at</label><input id="lTc" data-linkset="tc" value="${esc(startTC())}" style="font-family:var(--f-mono);height:28px;border-radius:6px;border:1px solid var(--line);background:var(--raise);padding:0 6px;width:100%"><span></span></div>
+    ${L.rights && L.rights.forSale ? '<p class="hint">This film is marked for sale: only music models cleared for that can go into deliveries.</p>' : ''}
+    ${L.finalDelivered ? `<p class="hint">Final mix delivered ${new Date(L.finalDelivered.at).toLocaleString()}${L.finalDelivered.profile ? ` for ${esc(L.finalDelivered.profile)}` : ''}: ${L.finalDelivered.lufs} LUFS, true peak ${L.finalDelivered.truePeak} dBTP.</p>` : ''}
     <div class="btnrow"><button class="btn sm primary" data-act="deliverfinal" ${linkDir ? '' : 'disabled'} title="The whole cut at −23 LUFS, true peak under −1 dBTP, with a file per track">Deliver final mix</button><button class="btn sm" data-act="syncnow">Check now</button><button class="btn sm" data-act="unlink">Unlink</button></div></div>`;
 }
 $('#insp').addEventListener('click', e => {
@@ -2532,7 +2669,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, refreshTakes, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,
