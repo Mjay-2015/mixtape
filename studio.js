@@ -220,9 +220,30 @@ function adoptTempoKey() {
 }
 /* What a locked track holds: its parts and its automation. Volume, pan, mute and solo stay free for mixing. */
 function lockedSig(p, ids) { return JSON.stringify(ids.map(id => { const l = p.lanes.find(x => x.id === id); return [id, !!l, l ? l.auto : null, p.clips.filter(c => c.lane === id).map(c => JSON.stringify(c)).sort()]; })); }
+/* A pinned part is anchored to a moment of the picture (or of the timeline, with no picture) */
+const pinAnchor = c => ({ id: c.id, vt: P.video ? c.at - P.video.at + P.video.start : null, at: c.at });
+function holdPins(prev) {
+  let snapped = 0;
+  // a locked picture keeps its place and its trims, whatever tried to move it
+  if (prev && prev.video && prev.video.locked && P.video && P.video.id === prev.video.id && ['at', 'start', 'end'].some(k => Math.abs((P.video[k] || 0) - (prev.video[k] || 0)) > 1e-6)) {
+    P.video.at = prev.video.at; P.video.start = prev.video.start; P.video.end = prev.video.end; snapped = -1;
+  }
+  for (const c of P.clips) {
+    if (!c.pin) continue;
+    if (c.pin.id !== c.id) { c.pin = pinAnchor(c); continue; } // a piece cut or copied from a pinned part is pinned where it now sits
+    if (P.video && c.pin.vt == null) c.pin = pinAnchor(c);
+    const want = P.video && c.pin.vt != null ? P.video.at + (c.pin.vt - P.video.start) : c.pin.at;
+    if (Math.abs(c.at - want) > 1e-6) { const moverWasPicture = prev && prev.video && P.video && Math.abs(prev.video.at - P.video.at) > 1e-6; c.at = Math.max(0, want); c.pin.at = c.at; if (!moverWasPicture && snapped >= 0) snapped++; }
+  }
+  return snapped;
+}
 function commit(msg) {
   adoptTempoKey();
   P.clips.forEach(fixFades);
+  { let prev = null; try { prev = JSON.parse(last); } catch (e) {}
+    const s = holdPins(prev);
+    if (s === -1) msg = 'The picture is locked, so it stayed where it was. Unlock it on the Picture track to move or trim it.';
+    else if (s > 0) msg = `${s === 1 ? 'A pinned part' : `${s} pinned parts`} stayed on ${P.video ? 'the picture' : 'its spot'}. Unpin it (right-click) to move it.`; }
   // a change that touches a locked track is undone, whatever made it
   const lockedIds = P.lanes.filter(l => l.locked).map(l => l.id);
   if (lockedIds.length) {
@@ -241,7 +262,7 @@ function commit(msg) {
 function undo() { if (!hist.length) return; fut.push(last); last = hist.pop(); P = normalize(JSON.parse(last)); fixSel(); persist(); renderAll(); restartIfPlaying(); toast('Undone'); }
 function redo() { if (!fut.length) return; hist.push(last); last = fut.pop(); P = normalize(JSON.parse(last)); fixSel(); persist(); renderAll(); restartIfPlaying(); toast('Redone'); }
 function ripple(laneId, from, shift, skip = []) {
-  for (const c of P.clips) if (c.lane === laneId && !skip.includes(c.id) && c.at >= from - 1e-3) c.at = Math.max(0, c.at + shift);
+  for (const c of P.clips) if (c.lane === laneId && !c.pin && !skip.includes(c.id) && c.at >= from - 1e-3) c.at = Math.max(0, c.at + shift);
 }
 const newClip = (trackId, lane, at, start, end, extra = {}) => ({ id: uid(), trackId, lane, at, start, end, gain: 1, fadeIn: 0, fadeOut: 0, rate: 1, semi: 0, keepPitch: true, fxIn: 'fade', fxOut: 'fade', ...extra });
 
@@ -365,8 +386,12 @@ function restoreWhole(c) {
   if (songStartAt < 0) c.start = -songStartAt * r;
   commit('The whole song is back on this part. Ctrl + Z undoes it.');
 }
+function togglePin(c) {
+  if (c.pin) { delete c.pin; commit('Unpinned: the part moves freely again.'); }
+  else { c.pin = pinAnchor(c); commit(P.video ? `Pinned at ${tc(c.pin.vt)} on the picture. Cuts, gap-closing and repeats around it leave it there, and it moves with the picture.` : 'Pinned: edits around it leave it where it is.'); }
+}
 function closeGaps(laneId) {
-  let t = 0; for (const c of laneClips(laneId)) { if (c.at > t) c.at = t; t = Math.max(t, c.at + dur(c)); }
+  let t = 0; for (const c of laneClips(laneId)) { if (c.at > t && !c.pin) c.at = t; t = Math.max(t, c.at + dur(c)); }
   commit('Gaps closed');
 }
 async function deleteLane(id) {
@@ -698,6 +723,7 @@ function midiInspectorHTML(c) {
     <dl class="kv"><dt>Part</dt><dd>${esc(midiName(c))}</dd><dt>Notes</dt><dd>${inWin}</dd><dt>Starts at</dt><dd>${fmtT(c.at)}</dd><dt>Length</dt><dd>${fmtT(dur(c))}</dd></dl>
     <div class="field"><label for="cInst">Sound</label><select id="cInst" data-cf="inst">${opts}</select><span></span></div>
     <div class="field"><label for="cGain">Volume</label><input id="cGain" type="range" min="0" max="300" value="${Math.round((c.gain ?? 1) * 100)}" data-cf="gain"><output>${Math.round((c.gain ?? 1) * 100)}%</output></div>
+    <label class="chk"><input type="checkbox" data-pin ${c.pin ? 'checked' : ''}> Pin to the picture (stays on its cut)</label>
     <div class="field"><label for="cSemiM">Transpose</label><input id="cSemiM" type="range" min="-24" max="24" value="${semi}" data-cf="semi"><output>${semi > 0 ? '+' : ''}${semi}</output></div>
     <p class="hint">Double-click the part to open the note editor. Click to add a note, drag to move it, drag its right edge to lengthen it, double-click to remove it. Notes snap to sixteenths; hold Alt to place them freely. Click the keyboard to hear a pitch.</p>
     <p class="hint">These built-in sounds are for writing and placing. The production studio renders the finished parts with sampled instruments from the MIDI file.</p>
@@ -1186,7 +1212,7 @@ function renderLanes() {
         ${P.clips.filter(c => c.lane === l.id).map(c => {
           const t = libTrack(c.trackId), name = c.kind === 'midi' ? midiName(c) : t ? t.title : 'Missing song';
           const sel = tlSel && tlSel.clipId === c.id ? `<span class="tlsel" style="left:${(tlSel.a - c.at) * pps}px;width:${(tlSel.b - tlSel.a) * pps}px"></span>` : '';
-          return `<div class="clip${c.id === selClip ? ' sel' : ''}${c.mute ? ' muted' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px">
+          return `<div class="clip${c.id === selClip ? ' sel' : ''}${c.mute ? ' muted' : ''}${c.pin ? ' pinned' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px">
             <canvas></canvas><span class="cl" title="Drag here to move · ${esc(name)} · ${fmtT(dur(c))}${esc(clipBadge(c))}">${esc(name)}${esc(clipBadge(c))}</span>${sel}
             <span class="fh l" data-fade="in" style="left:${(c.fadeIn || 0) * pps}px" title="Drag to fade in"></span><span class="fh r" data-fade="out" style="right:${(c.fadeOut || 0) * pps}px" title="Drag to fade out"></span>
             <span class="h l" data-h="l" title="Drag to trim the start"></span><span class="h r" data-h="r" title="Drag to trim the end"></span></div>`;
@@ -1326,6 +1352,7 @@ function renderInspector() {
       <dl class="kv"><dt>Song</dt><dd>${esc(t ? t.title : 'Missing song')}</dd><dt>Starts at</dt><dd>${fmtT(c.at)}</dd><dt>Length</dt><dd>${fmtT(d)}</dd>
       <dt>Song is</dt><dd>${a ? `${songBpm ? songBpm + ' BPM' : 'no steady beat'} · ${esc(a.keyName)}` : analyzing.has(c.trackId) ? 'working it out…' : '—'}</dd></dl>
       <div class="field"><label for="cGain">Volume</label><input id="cGain" type="range" min="0" max="300" value="${Math.round((c.gain ?? 1) * 100)}" data-cf="gain"><output>${Math.round((c.gain ?? 1) * 100)}%</output></div>
+    <label class="chk"><input type="checkbox" data-pin ${c.pin ? 'checked' : ''}> Pin to the picture (stays on its cut)</label>
       <div class="field"><label for="cFi">Fade in</label><input id="cFi" type="range" min="0" max="${Math.min(10, d).toFixed(1)}" step="0.1" value="${(c.fadeIn || 0).toFixed(1)}" data-cf="fadeIn"><output>${(c.fadeIn || 0).toFixed(1)}s</output></div>
       <div class="field"><label for="cFo">Fade out</label><input id="cFo" type="range" min="0" max="${Math.min(10, d).toFixed(1)}" step="0.1" value="${(c.fadeOut || 0).toFixed(1)}" data-cf="fadeOut"><output>${(c.fadeOut || 0).toFixed(1)}s</output></div>
       <div class="field"><label for="cFxIn">Start style</label><select id="cFxIn" data-cs="fxIn"><option value="fade">Fade</option><option value="filter">Filter sweep</option></select><span></span></div>
@@ -1484,7 +1511,7 @@ const acts = {
   vwclose: force => { UI.vwin = force === true ? !UI.vwin : false; saveUI(); renderVideoWindow(); renderTransport(); if (UI.vwin) ensureVideoEl().then(() => scrubVideo(curPos())); },
   vfull: () => { const w = $('#vwin'); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); else w.requestFullscreen?.().catch(() => toast('Full screen is not available here.')); },
   addhit: () => addMarker(curPos()), findcuts: findCuts, savehits: exportMarkers, loadhits: () => $('#mkIn').click(), fit: fitBetween,
-  actionzero: () => { if (!P.video) return; const d = P.video.at; P.video.at = 0; P.clips.forEach(c => { c.at = Math.max(0, c.at - d); }); (P.markers || []).forEach(m => { if (m.vt == null) m.t = Math.max(0, m.t - d); }); commit('The action now starts at 0:00. Export can put the lead-in back.'); },
+  actionzero: () => { if (!P.video) return; if (P.video.locked) return toast('The picture is locked. Unlock it first.'); const d = P.video.at; P.video.at = 0; P.clips.forEach(c => { c.at = Math.max(0, c.at - d); }); (P.markers || []).forEach(m => { if (m.vt == null) m.t = Math.max(0, m.t - d); }); commit('The action now starts at 0:00. Export can put the lead-in back.'); },
   togglemixer: () => { UI.mixer = !UI.mixer; saveUI(); renderMixer(); renderTransport(); requestAnimationFrame(() => { renderLanes(); }); },
   metro: () => { if (!P.bpm) return toast('Set the mix tempo first: add a song with a beat, or type a tempo under Mix on the right.', 5000); P.metro = !P.metro; quietCommit(); renderTransport(); restartIfPlaying(); toast(P.metro ? `Click on at ${P.bpm} BPM` : 'Click off'); },
   rulermode: () => {
@@ -1786,6 +1813,10 @@ $('#lanes').addEventListener('pointerdown', e => {
     if (e.target.dataset.h || e.target.dataset.fade || e.target.classList.contains('cl')) toast(`“${lockedLane.name}” is locked. Click its padlock to move or trim its parts.`, 3000);
     return;
   }
+  if (c.pin && (e.target.classList.contains('cl') || e.target.dataset.h === 'l')) {
+    selClip = c.id; markSelected(el, c); seekClick(c.at + clamp((e.clientX - el.getBoundingClientRect().left) / pps, 0, dur(c))); renderInspector();
+    return toast(`This part is pinned to ${P.video ? 'the picture' : 'its place'}, so it cannot be moved. Right-click it and choose Unpin to move it.`, 3500);
+  }
   const mode = e.target.dataset.h || (e.target.dataset.fade ? 'fade-' + e.target.dataset.fade : e.target.classList.contains('cl') ? 'move' : 'select');
   if (selClip !== c.id) { selClip = c.id; edSel = null; }
   if (mode === 'select') return selectStretch(e, el, c);
@@ -1949,6 +1980,8 @@ $('#insp').addEventListener('change', async e => {
   if (d.pf === 'xfade') return commit();
   if (d.pf === 'bpm') { const v = parseFloat(e.target.value); P.bpm = v >= 40 && v <= 240 ? Math.round(v * 10) / 10 : null; commit(P.bpm ? `Mix tempo set to ${P.bpm} BPM` : 'Mix tempo cleared'); liveLanes(); return; }
   if (d.pf === 'key') { const [k, m] = e.target.value.split('|'); P.key = e.target.value ? { key: +k, mode: m } : null; return commit(P.key ? `Mix key set to ${keyName(P.key.key, P.key.mode)}` : 'Mix key cleared'); }
+  if (e.target.matches('[data-pin]')) { const pc = clipById(selClip); if (pc && !!pc.pin !== e.target.checked) togglePin(pc); return; }
+  if (e.target.matches('[data-vlock]')) { if (P.video) { P.video.locked = e.target.checked; quietCommit(); renderVideoRow(); toast(P.video.locked ? 'Picture locked: it cannot be moved or trimmed.' : 'Picture unlocked.'); } return; }
   if (e.target.matches('[data-mklock]')) { P.markersLocked = e.target.checked; quietCommit(); renderRuler(); return toast(P.markersLocked ? 'Hit points locked: clicking one jumps to it, and dragging does nothing.' : 'Hit points unlocked: drag one along the ruler to move it.'); }
   if (d.uiset) { UI[d.uiset] = e.target.checked; saveUI(); return toast(e.target.checked ? 'The mouse wheel now zooms over waveforms. Shift + wheel moves sideways.' : 'The mouse wheel now scrolls. Hold Ctrl to zoom.'); }
   if (d.linkset && P.link) {
@@ -2149,6 +2182,7 @@ $('#lanes').addEventListener('contextmenu', e => {
     { sep: 1 },
     { label: c.mute ? 'Unmute part' : 'Mute part', act: toggleMutePart },
     { label: 'Paste at the playhead   Ctrl+V', act: pasteAtPlayhead, disabled: !clipboard },
+    { label: c.pin ? 'Unpin from the picture' : (P.video ? 'Pin to the picture (stays on its cut)' : 'Pin in place'), act: () => togglePin(c) },
     { label: 'Delete part', danger: 1, act: deleteClip },
   ]);
 });
@@ -2256,7 +2290,7 @@ function renderVideoRow() {
   const t = libTrack(v.id), name = t ? t.title : 'Missing video';
   row.hidden = false;
   row.innerHTML = `<div class="vlane"><div class="lane-head"><div class="lh-top"><span class="vname">Picture</span>
-      <button class="tg" data-vact="win" title="Show or hide the video window (V)">▣</button><button class="tg x" data-vact="remove" title="Remove the scene video">✕</button></div>
+      <button class="tg" data-vact="win" title="Show or hide the video window (V)">▣</button><button class="tg lk${v.locked ? ' on' : ''}" data-vact="lock" aria-pressed="${!!v.locked}" title="${v.locked ? 'Unlock the picture' : 'Lock the picture: it cannot be moved or trimmed by accident'}"><svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg></button><button class="tg x" data-vact="remove" title="Remove the scene video">✕</button></div>
       <div class="lh-row vsub"><span title="${esc(name)}">${esc(name)} · ${fpsOf()} fps</span></div></div>
     <div class="lane-body" style="width:${timelineWidth()}px"><div class="vclip" style="left:${v.at * pps}px;width:${Math.max(4, vLen() * pps)}px">
       <span class="vcl" title="Drag to move the scene · ${esc(name)}">${esc(name)}${v.start > 0.05 ? ` · lead-in trimmed ${v.start.toFixed(1)}s` : ''}</span><canvas></canvas>
@@ -2266,13 +2300,15 @@ function renderVideoRow() {
 $('#vrow').addEventListener('click', e => {
   const b = e.target.closest('[data-vact]'); if (!b) return;
   if (b.dataset.vact === 'win') acts.vwclose(true);
-  if (b.dataset.vact === 'remove') removeVideo();
+  if (b.dataset.vact === 'remove') { if (P.video.locked) return toast('The picture is locked. Unlock it first to remove it.'); removeVideo(); }
+  if (b.dataset.vact === 'lock') { P.video.locked = !P.video.locked; quietCommit(); renderVideoRow(); renderInspector(); toast(P.video.locked ? 'Picture locked: it cannot be moved or trimmed. Music can still be edited around it.' : 'Picture unlocked.'); }
 });
 $('#vrow').addEventListener('pointerdown', e => {
   const v = P.video; if (!v || e.button !== 0) return;
   const body = e.target.closest('.lane-body'); if (!body) return;
   const vh = e.target.dataset.vh, isBar = e.target.classList.contains('vcl');
-  if (!vh && !isBar) { seek(clamp((e.clientX - body.getBoundingClientRect().left) / pps, 0, projectEnd())); return; }
+  if (!vh && !isBar) { seekClick(clamp((e.clientX - body.getBoundingClientRect().left) / pps, 0, projectEnd())); return; }
+  if (v.locked) { seekClick(clamp((e.clientX - body.getBoundingClientRect().left) / pps, 0, projectEnd())); return toast('The picture is locked. Click its padlock to move or trim it.', 3000); }
   const el = e.target.closest('.vclip'); try { el.setPointerCapture(e.pointerId); } catch (_) {}
   const x0 = e.clientX, o = { at: v.at, start: v.start, end: v.end }; let moved = false;
   const mv = ev => {
@@ -2469,6 +2505,7 @@ function sceneSectionHTML() {
     <dl class="kv"><dt>Video</dt><dd>${esc(t ? t.title : 'Missing')}</dd><dt>Length</dt><dd>${tc(vLen())}</dd>${v.start > 0.05 ? `<dt>Lead-in</dt><dd>${v.start.toFixed(2)}s trimmed</dd>` : ''}</dl>
     <div class="field"><label for="sFps">Frame rate</label><select id="sFps" data-sf="fps">${fpsOpts}</select><span></span></div>
     <div class="field"><label for="sVol">Scene sound</label><input id="sVol" type="range" min="0" max="100" value="${Math.round((v.vol ?? 0.8) * 100)}" data-sf="vol"><output>${Math.round((v.vol ?? 0.8) * 100)}%</output></div>
+    <label class="chk"><input type="checkbox" data-vlock ${v.locked ? 'checked' : ''}> Lock the picture (it cannot be moved or trimmed)</label>
     <div class="btnrow"><button class="btn sm" data-act="video">${UI.vwin ? 'Hide video' : 'Show video'}</button><button class="btn sm" data-act="actionzero" ${v.at > 0.01 ? '' : 'disabled'}>Start the action at 0:00</button></div>
     <p class="sub">Hit points</p>${hits}
     <label class="chk"><input type="checkbox" data-mklock ${P.markersLocked ? 'checked' : ''}> Lock hit points (they cannot be dragged or removed; you can still add new ones)</label>
@@ -3001,7 +3038,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,

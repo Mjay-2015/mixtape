@@ -168,6 +168,9 @@ button,input,select{font:inherit;color:inherit}
 .tg.lk{display:inline-grid;place-items:center}
 .tg.on.lk{background:#9AA4B2;border-color:#9AA4B2;color:#0D0F13}
 .lane.locked .clip{cursor:default}
+.clip.pinned .cl::after{content:"  · pinned";opacity:.75}
+.clip.pinned .cl{cursor:not-allowed}
+.clip.pinned .h.l{display:none}
 .lane.locked .clip .h,.lane.locked .clip .fh{display:none}
 .lane.locked .clip .cl::after{content:"  · locked";opacity:.7}
 .lane.locked .lane-body{background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.025) 0 6px,transparent 6px 12px)}
