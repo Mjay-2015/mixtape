@@ -1244,6 +1244,8 @@ function drawEditor() {
   const c = clipById(selClip), cv = $('#edCanvas'), wrap = $('#edWrap');
   $('#edEmpty').hidden = !!c;
   const show = !!c && edOpen, ed = $('.editor'); if (ed.hidden !== !show) { ed.hidden = !show; requestAnimationFrame(() => { renderRuler(); renderLoop(); }); }
+  ed.classList.toggle('folded', !!UI.edFold); ed.style.setProperty('--ed-h', (UI.edH || 112) + 'px');
+  { const b = $('#edFoldBtn'); b.textContent = UI.edFold ? '▸' : '▾'; b.setAttribute('aria-pressed', !!UI.edFold); b.title = UI.edFold ? 'Open the part editor again' : 'Fold the part editor down to this bar for more room'; }
   ['keep', 'remove', 'selappend', 'sellayer'].forEach(a => { const b = $(`[data-act="${a}"]`); if (b) b.disabled = !c || !edSel; });
   $('[data-act="selall"]').disabled = $('[data-act="prevsel"]').disabled = !c;
   if (!preview) $('[data-act="prevsel"]').textContent = edSel ? 'Play selection' : 'Play part';
@@ -1435,6 +1437,7 @@ function renderAll() { $('#projName').value = P.name; $('#ampBtn').textContent =
 const acts = {
   play: () => playing ? (rec ? stopRecord() : pause()) : play(), stop: () => { if (rec) return stopRecord(); pause(); seek(0); $('#tl').scrollLeft = 0; },
   undo, redo, save: saveSong, record: toggleRecord,
+  edfold: () => { UI.edFold = !UI.edFold; saveUI(); drawEditor(); requestAnimationFrame(() => { renderRuler(); renderLoop(); drawOverview(); }); },
   slimhead: () => { UI.slimHead = !UI.slimHead; saveUI(); renderLanes(); renderVideoRow(); toast(UI.slimHead ? 'Track names folded away. Hover a track’s colour to see its name; click ▸ to bring them back.' : 'Track names back.'); },
   zin: () => { pushZoom(true); zoom(1.5); }, zout: () => { pushZoom(true); zoom(1 / 1.5); }, fit: fitZoom, zsel: zoomToSelection, zprev: prevZoom, amp: cycleAmp, demo: () => loadDemo(), shortcuts: showShortcuts, tour: () => startTour(true),
   edzin: () => edZoom(1 / 1.6), edzout: () => edZoom(1.6), edfit: () => edFit('part'), edall: () => edFit('all'),
@@ -1840,10 +1843,19 @@ function dragFade(e, el, c, isIn) {
 $('#lanes').addEventListener('dblclick', e => {
   const el = e.target.closest('.clip'); if (!el || e.target.closest('.h,.fh')) return;
   const c = clipById(el.dataset.clip); if (!c) return;
-  selClip = c.id; edOpen = true;
+  selClip = c.id; edOpen = true; if (UI.edFold) { UI.edFold = false; saveUI(); }
   const s = selSource(); edSel = s && s.c.id === c.id ? { a: s.a, b: s.b } : null;
   ensureBuf(c.trackId).then(() => drawEditor()).catch(() => {});
   drawEditor(); renderInspector();
+});
+/* Drag the top edge of the part editor to make it taller or shorter */
+$('#edGrip').addEventListener('pointerdown', e => {
+  const g = e.currentTarget, y0 = e.clientY, h0 = UI.edH || 112; try { g.setPointerCapture(e.pointerId); } catch (_) {}
+  if (UI.edFold) { UI.edFold = false; }
+  g.classList.add('on');
+  const mv = ev => { UI.edH = Math.round(clamp(h0 - (ev.clientY - y0), 60, Math.max(120, innerHeight * 0.6))); drawEditor(); };
+  g.addEventListener('pointermove', mv);
+  g.addEventListener('pointerup', () => { g.removeEventListener('pointermove', mv); g.classList.remove('on'); saveUI(); renderRuler(); renderLoop(); drawOverview(); }, { once: true });
 });
 $('#edWrap').addEventListener('wheel', e => {
   const c = clipById(selClip); if (!c || !edView || edView.midi) return;

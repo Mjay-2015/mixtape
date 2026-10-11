@@ -296,7 +296,11 @@ svg.auto .aread{fill:#4FD1A5;font:600 11px var(--f-mono);pointer-events:none}
 .dropmark span{position:absolute;left:6px;top:4px;font:600 11px var(--f-mono);color:var(--accent);white-space:nowrap}
 
 /* part editor dock */
-.editor{border-top:1px solid var(--line);background:var(--panel);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.editor{border-top:1px solid var(--line);background:var(--panel);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px;position:relative}
+.ed-grip{position:absolute;left:0;right:0;top:-4px;height:8px;cursor:ns-resize;z-index:5}
+.ed-grip:hover,.ed-grip.on{background:linear-gradient(transparent 3px,var(--accent) 3px,var(--accent) 5px,transparent 5px)}
+.editor.folded{padding:6px 14px;gap:0}
+.editor.folded .ed-wrap,.editor.folded .ed-acts,.editor.folded .edzoom,.editor.folded .info{display:none}
 .ed-head{display:flex;align-items:center;gap:6px 12px;min-width:0;flex-wrap:wrap}
 .ed-head .edzoom{margin-left:auto}
 .saved{font:11px var(--f-mono);color:var(--muted);opacity:0;transition:opacity .4s}
@@ -319,7 +323,7 @@ body{padding-bottom:22px}
 .ed-head h2{font:600 14px var(--f-ui);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .ed-head .info{font:11px var(--f-mono);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}
 .ed-head .sp{flex:1}
-.ed-wrap{position:relative;height:112px;border-radius:8px;background:var(--bg);border:1px solid var(--line);overflow:hidden;cursor:crosshair}
+.ed-wrap{position:relative;height:var(--ed-h,112px);border-radius:8px;background:var(--bg);border:1px solid var(--line);overflow:hidden;cursor:crosshair}
 #edCanvas{width:100%;height:100%;display:block}
 .ed-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);text-align:center;padding:0 24px;cursor:default}
 .ed-acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
@@ -484,7 +488,8 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 
       <div class="mixer" id="mixer" hidden aria-label="Mixer"><div class="mx-head"><span class="ed-tag">Mixer</span><span class="sp"></span><button class="ib" data-act="togglemixer" aria-label="Close the mixer" title="Close the mixer (X)"><svg class="i"><use href="#i-close"/></svg></button></div><div class="strips" id="strips"></div></div>
       <div class="editor" hidden>
-        <div class="ed-head"><span class="ed-tag">Part editor</span><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span><span class="sp"></span><span class="edzoom" role="group" aria-label="Part editor zoom"><button class="ib" data-act="edzout" aria-label="Zoom out" title="Zoom out (or turn the wheel over the waveform)"><svg class="i"><use href="#i-zout"/></svg></button><span class="zl" id="edZoomLbl"></span><button class="ib" data-act="edzin" aria-label="Zoom in" title="Zoom in (or turn the wheel over the waveform)"><svg class="i"><use href="#i-zin"/></svg></button><button class="btn sm ghost" data-act="edfit" title="Show just this part">Part</button><button class="btn sm ghost" data-act="edall" title="Show the whole song">Whole song</button></span><button class="ib" data-act="edclose" aria-label="Close the part editor" title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
+        <div class="ed-grip" id="edGrip" title="Drag to make the part editor taller or shorter"></div>
+        <div class="ed-head"><button class="headbtn" id="edFoldBtn" data-act="edfold" aria-pressed="false" title="Fold the part editor down to this bar for more room">▾</button><span class="ed-tag">Part editor</span><h2 id="edTitle">Part editor</h2><span class="info" id="edInfo"></span><span class="sp"></span><span class="edzoom" role="group" aria-label="Part editor zoom"><button class="ib" data-act="edzout" aria-label="Zoom out" title="Zoom out (or turn the wheel over the waveform)"><svg class="i"><use href="#i-zout"/></svg></button><span class="zl" id="edZoomLbl"></span><button class="ib" data-act="edzin" aria-label="Zoom in" title="Zoom in (or turn the wheel over the waveform)"><svg class="i"><use href="#i-zin"/></svg></button><button class="btn sm ghost" data-act="edfit" title="Show just this part">Part</button><button class="btn sm ghost" data-act="edall" title="Show the whole song">Whole song</button></span><button class="ib" data-act="edclose" aria-label="Close the part editor" title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
         <div class="ed-wrap" id="edWrap">
           <canvas id="edCanvas"></canvas>
           <div class="ed-empty" id="edEmpty">Click a part on the timeline to edit it here.</div>
