@@ -1,5 +1,5 @@
 // Mixtape offline cache. Bump VERSION whenever app files change so installed copies pick up the new version.
-const VERSION = 'mixtape-v30';
+const VERSION = 'mixtape-v31';
 const CORE = ['./', './index.html', './app.js', './studio.html', './studio.js', './dsp-worker.js', './dsp-shared.js', './midi.js', './lofi-worklet.js', './vendor/tone/Tone.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 // The AI stem splitter is large and changes rarely, so it lives in its own caches that app updates don't clear.
 const STEMS_RUNTIME = 'mixtape-stems-runtime-v1';   // ONNX Runtime + splitter code, saved on first use
@@ -28,7 +28,7 @@ self.addEventListener('fetch', e => {
   if (url.origin !== location.origin) return;
   const path = url.pathname;
   // Orchestra recordings: saved the first time each one is used, so the orchestra also works offline.
-  if (path.includes('/orch/')) {
+  if (path.includes('/orch/') || path.includes('/piano/') || path.includes('/gm/')) {
     e.respondWith(caches.open(ORCH_CACHE).then(async c => { const hit = await c.match(req); if (hit) return hit; const r = await fetch(req); if (r.ok) c.put(req, r.clone()); return r; }));
     return;
   }

@@ -734,6 +734,120 @@ function makeOrch(tctx, c, dest) {
     on(p, t, vel) { const x = pick(p); if (x) try { x.s.triggerAttack(hzOf(p), t, clamp(vel / 127, 0.05, 1)); } catch (e) {} },
     off(p, t) { const x = pick(p); if (x && !x.ring) try { x.s.triggerRelease(hzOf(p), t); } catch (e) {} } }; // short and plucked notes ring out by themselves
 }
+/* ---------- recorded instruments: the Salamander grand piano (CC-BY 3.0, Alexander Holm) and the
+   GeneralUser GS bank (S. Christian Collins), every General MIDI sound and 13 drum kits ----------
+   An instrument downloads the first time a part uses it, and is then kept for offline use. */
+const SAMP = {};
+const isSamp = inst => !!(inst && inst.startsWith('s_') && SAMP[inst.slice(2)]);
+const isKit = inst => inst === 'drums' || (isSamp(inst) && SAMP[inst.slice(2)].kind === 'drums');
+const sampName = k => k === 'piano' ? 'Grand piano · recorded' : SAMP[k].kind === 'drums' ? `${SAMP[k].name} drum kit · recorded` : `${SAMP[k].name} · recorded`;
+for (const url of ['piano/index.json', 'gm/index.json']) fetch(url).then(r => r.ok ? r.json() : null).then(j => {
+  if (!j || !j.instruments) return;
+  for (const [k, v] of Object.entries(j.instruments)) {
+    SAMP[k] = { ...v, credit: v.credit || j.credit }; MixtapeMIDI.INSTRUMENTS['s_' + k] = sampName(k); MixtapeMIDI.PROGRAM['s_' + k] = k === 'piano' ? 0 : v.program;
+    if (v.kind === 'drums') KITS['s:' + k] = `${v.name} (recorded)`;
+  }
+  renderInspector();
+}).catch(() => {});
+const sampBufs = new Map(), sampLoading = new Map();
+const sampReady = id => !!SAMP[id] && SAMP[id].zones.every(z => sampBufs.has(SAMP[id].dir + z.file));
+function loadSamp(id) {
+  const def = SAMP[id]; if (!def) return Promise.resolve();
+  if (sampLoading.has(id)) return sampLoading.get(id);
+  const files = [...new Set(def.zones.map(z => def.dir + z.file))].filter(f => !sampBufs.has(f)); if (!files.length) return Promise.resolve();
+  const p = (async () => {
+    busy(`Loading the ${id === 'piano' ? 'grand piano' : def.name.toLowerCase()}…`);
+    try { let i = 0; await Promise.all(Array.from({ length: 6 }, async () => { while (i < files.length) { const f = files[i++]; const r = await fetch(f); if (!r.ok) throw new Error(`missing ${f}`); sampBufs.set(f, await ctx.decodeAudioData(await r.arrayBuffer())); } })); }
+    finally { busy(null); sampLoading.delete(id); }
+  })();
+  sampLoading.set(id, p); return p;
+}
+const ensureSamp = c => c && isSamp(c.inst) ? loadSamp(c.inst.slice(2)) : Promise.resolve();
+// a MIDI file's instrument, played by the matching recorded General MIDI sound when there is one
+function gmFor(tr) {
+  if (!SAMP.gm0) return tr.inst;
+  if (tr.channel === 9) return 's_kit0';
+  if (tr.program == null || tr.program <= 1) return SAMP.piano ? 's_piano' : 's_gm0';
+  return SAMP['gm' + tr.program] ? 's_gm' + tr.program : tr.inst;
+}
+// SoundFont modulator curves, so harder playing is louder and brighter the way the bank intends
+const conc = x => x <= 0 ? 0 : x >= 1 ? 1 : Math.min(1, -20 / 96 * Math.log10((1 - x) ** 2));
+const sCurve = (x, type) => { x = clamp(x, 0, 1); return type === 1 ? conc(x) : type === 2 ? 1 - conc(1 - x) : type === 3 ? (x >= 0.5 ? 1 : 0) : x; };
+function zoneMods(z, p, vel) {
+  let att = 0, fc = 0, mfc = 0;
+  for (const [dst, src, flip, bip, curve, amt] of (z.mods || [])) {
+    let x = src === 2 ? vel / 127 : p / 127; if (flip) x = 1 - x; let y = sCurve(x, curve); if (bip) y = 2 * y - 1;
+    if (dst === 48) att += amt * y; else if (dst === 8) fc += amt * y; else if (dst === 11) mfc += amt * y;
+  }
+  return { att, fc, mfc };
+}
+function makeSampled(ac, id, dest) {
+  const def = SAMP[id], drums = def.kind === 'drums', held = new Map(), excl = new Map();
+  const out = ac.createGain(); out.gain.value = id === 'piano' ? 0.8 : 1; out.connect(dest);
+  const hz = c => clamp(8.176 * Math.pow(2, c / 1200), 20, Math.min(20000, ac.sampleRate / 2 - 100));
+  function voice(z, p, t, vel) {
+    const buf = sampBufs.get(def.dir + z.file); if (!buf) return null;
+    const m = zoneMods(z, p, vel), env = z.env || [0.002, 0, 0, 1, def.release || 0.3], [a, h, d, s, r] = env;
+    const src = ac.createBufferSource(); src.buffer = buf;
+    src.playbackRate.value = Math.pow(2, ((p - z.root) * (z.track ?? 1) * 100 + (z.tune || 0)) / 1200);
+    if (z.loop) { src.loop = true; src.loopStart = z.loop[0]; src.loopEnd = z.loop[1]; }
+    let peak = Math.pow(10, -((z.att || 0) + m.att / 10) / 20);
+    if (!z.mods) peak *= Math.pow(clamp(vel / 127, 0.01, 1), 2 * (def.veltrack ?? 0.73));
+    let node = src, f = null;
+    if (z.fcc != null) {
+      f = ac.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = z.q || 0; src.connect(f); node = f;
+      const base = z.fcc + m.fc, top = base + (z.mfc || 0) + m.mfc;
+      if (z.menv && Math.abs(top - base) > 1) { // the filter envelope: brighter at the attack, mellowing as the note rings
+        const [md, ma, mh, mdc, ms] = z.menv, sus = base + (top - base) * ms;
+        f.frequency.setValueAtTime(hz(base), t); f.frequency.setValueAtTime(hz(base), t + md); f.frequency.linearRampToValueAtTime(hz(top), t + md + ma);
+        f.frequency.setValueAtTime(hz(top), t + md + ma + mh); f.frequency.setTargetAtTime(hz(sus), t + md + ma + mh, Math.max(0.001, mdc) / 5);
+      } else f.frequency.value = hz(base);
+    }
+    const g = ac.createGain(); node.connect(g);
+    if (z.pan) { const pn = ac.createStereoPanner(); pn.pan.value = z.pan; g.connect(pn); pn.connect(out); } else g.connect(out);
+    const t0 = t + (z.del || 0), tauD = Math.max(0.001, d) / 11.5;
+    g.gain.setValueAtTime(0, t); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(peak, t0 + a); g.gain.setValueAtTime(peak, t0 + a + h);
+    if (s < 1) g.gain.setTargetAtTime(peak * s, t0 + a + h, tauD);
+    src.start(t, z.off || 0); if (!z.loop) src.stop(t + buf.duration / src.playbackRate.value + 0.05);
+    const v = { src, g, t0, a, h, s, r, peak, tauD, z, ended: false };
+    if (z.excl) { for (const o of (excl.get(z.excl) || [])) release(o, t, 0.02); excl.set(z.excl, [v]); } // an open hi-hat is cut by the closed one
+    return v;
+  }
+  const level = (v, u) => u <= 0 ? 0 : u < v.a ? v.peak * u / v.a : u < v.a + v.h || v.s >= 1 ? v.peak : v.peak * v.s + (v.peak - v.peak * v.s) * Math.exp(-(u - v.a - v.h) / v.tauD);
+  function release(v, T, fast) { // fast: a choke (a closed hi-hat cutting an open one), which also cuts a note already fading out
+    if (!v || (v.ended && !fast)) return;
+    const r = fast || Math.max(0.01, v.r), now = v.ended && T > v.relT ? v.relLvl * Math.exp(-(T - v.relT) / (v.relR / 6)) : level(v, T - v.t0);
+    v.ended = true; v.relT = T; v.relLvl = now; v.relR = r;
+    try { v.g.gain.cancelScheduledValues(T); v.g.gain.setValueAtTime(now, T); v.g.gain.setTargetAtTime(0, T, r / 6); v.src.stop(T + r + 0.1); } catch (e) {}
+  }
+  const zonesFor = (p, vel) => def.zones.filter(z => p >= z.lo && p <= z.hi && vel >= z.vlo && vel <= z.vhi);
+  const start = (p, t, vel) => zonesFor(p, clamp(Math.round(vel), 1, 127)).map(z => voice(z, p, t, vel)).filter(Boolean);
+  return { nodes: [],
+    play(p, t, d, vel) { const vs = start(p, t, vel); if (!drums || vs.some(v => v.z.loop)) vs.forEach(v => release(v, t + Math.max(0.02, d))); },
+    on(p, t, vel) { const vs = start(p, t, vel); if (!drums) held.set(p, [...(held.get(p) || []), ...vs]); },
+    off(p, t) { (held.get(p) || []).forEach(v => release(v, t)); held.delete(p); } };
+}
+// the drum machine's rows on a recorded kit
+const KIT_NOTES = { kick: 36, snare: 38, clap: 39, chh: 42, ohh: 46, tom: 45, rim: 37, cow: 56 };
+function sampKit(ac, id, dest) { const g = ac.createGain(); g.gain.value = 0.8; g.connect(dest); const k = makeSampled(ac, id, g); return { nodes: [], hit(row, t, v) { k.play(KIT_NOTES[row] || 38, t, 0.1, v); } }; }
+function sampAudition(inst, p) {
+  const id = inst.slice(2); ctx.resume(); sampAudition.v = sampAudition.v || {};
+  if (!sampReady(id)) { loadSamp(id).then(() => sampAudition(inst, p)).catch(() => {}); return; }
+  if (!sampAudition.v[id]) sampAudition.v[id] = makeSampled(ctx, id, ctx.destination);
+  sampAudition.v[id].play(p, ctx.currentTime + 0.02, 0.7, 100);
+}
+function instOptions(cur) { // the Sound list, in groups
+  const I = MixtapeMIDI.INSTRUMENTS, opt = k => `<option value="${k}" ${cur === k ? 'selected' : ''}>${esc(I[k])}</option>`, grp = (label, ks) => ks.length ? `<optgroup label="${label}">${ks.map(opt).join('')}</optgroup>` : '';
+  const FAM = ['Pianos', 'Bells and mallets', 'Organs', 'Guitars', 'Basses', 'Solo strings', 'String and choir ensembles', 'Brass', 'Reeds', 'Pipes and flutes', 'Synth leads', 'Synth pads', 'Synth effects', 'World', 'Percussive', 'Sound effects'];
+  const ks = Object.keys(I), gm = ks.filter(k => isSamp(k) && SAMP[k.slice(2)].kind === 'gm');
+  return grp('Grand piano (recorded)', ks.filter(k => k === 's_piano'))
+    + grp('Orchestra (recorded)', ks.filter(k => k.startsWith('o_')))
+    + FAM.map((f, i) => grp(`${f} (recorded)`, gm.filter(k => Math.floor(SAMP[k.slice(2)].program / 8) === i))).join('')
+    + grp('Drum kits (recorded)', ks.filter(k => isSamp(k) && SAMP[k.slice(2)].kind === 'drums'))
+    + grp('Synths', ks.filter(k => TONE_INSTS[k]))
+    + grp('Simple built-in sounds (light, instant)', ks.filter(k => !k.startsWith('o_') && !k.startsWith('s_') && !TONE_INSTS[k]))
+    + (ks.includes(cur) ? '' : opt(cur));
+}
 function makeToneInst(tctx, inst, dest) {
   const o = { context: tctx }, nodes = [];
   const add = n => { nodes.push(n); return n; };
@@ -776,7 +890,8 @@ function monitorVoice(c) {
   if (mon && mon.key === key && !mon.stale) return mon;
   if (mon) { const old = mon; setTimeout(() => { (old.v.nodes || []).forEach(n => { try { n.dispose(); } catch (e) {} }); try { old.bus.disconnect(); } catch (e) {} }, 3000); }
   const bus = ctx.createGain(); bus.connect(ctx.destination); let v;
-  if (HAS_TONE && c && isOrch(inst)) { v = makeOrch(toneFor(ctx), c, bus); if (!v.nodes.length) ensureOrch(c).then(() => { if (mon) mon.stale = true; }).catch(() => {}); }
+  if (isSamp(inst)) { v = makeSampled(ctx, inst.slice(2), bus); if (!sampReady(inst.slice(2))) loadSamp(inst.slice(2)).then(() => { if (mon) mon.stale = true; }).catch(() => {}); }
+  else if (HAS_TONE && c && isOrch(inst)) { v = makeOrch(toneFor(ctx), c, bus); if (!v.nodes.length) ensureOrch(c).then(() => { if (mon) mon.stale = true; }).catch(() => {}); }
   else if (HAS_TONE && TONE_INSTS[inst]) v = makeToneInst(toneFor(ctx), inst, bus);
   else v = builtinVoice(inst, bus);
   mon = { key, v, bus }; return mon;
@@ -1044,6 +1159,7 @@ function schedulePatterns(gr, until) {
   S.upto = end;
 }
 function drumAudition(row, kit) {
+  if (String(kit).startsWith('s:')) return sampAudition('s_' + kit.slice(2), KIT_NOTES[row] || 38);
   if (!HAS_TONE) return; ctx.resume();
   drumAudition.kits = drumAudition.kits || {};
   if (!drumAudition.kits[kit]) { const g = ctx.createGain(); g.connect(ctx.destination); drumAudition.kits[kit] = makeKit(toneFor(ctx), kit, g); }
@@ -1168,7 +1284,7 @@ function loadDemo() {
   openProject(uid(), p);
   toast('Demo loaded. Press Space to play it, then try dragging parts, zooming with Ctrl + scroll, or double-click a part to edit its notes.', 7000);
 }
-function newInstrumentTrack(inst = 'piano') {
+function newInstrumentTrack(inst = SAMP.piano ? 's_piano' : 'piano') {
   const l = newLane((MixtapeMIDI.INSTRUMENTS[inst] || 'Instrument').replace(' · orchestra', '')); P.lanes.push(l);
   const c = newMidiClip(l.id, playhead, [], { inst, name: MixtapeMIDI.INSTRUMENTS[inst] });
   P.clips.push(c); selLane = l.id; selClip = c.id; edOpen = true;
@@ -1185,7 +1301,7 @@ async function importMidi(file, at = playhead) {
   let first = null; const emptyFirst = P.lanes.length === 1 && !P.clips.some(c => c.lane === P.lanes[0].id) ? P.lanes[0].id : null;
   m.tracks.forEach((tr, i) => {
     const l = newLane(tr.name, PALETTE[(P.lanes.length + i) % PALETTE.length]); P.lanes.push(l);
-    const c = newMidiClip(l.id, at, tr.notes.map(n => ({ id: uid(), ...n })), { inst: tr.inst, name: tr.name, ...(tr.dyn ? { dyn: tr.dyn } : {}) });
+    const c = newMidiClip(l.id, at, tr.notes.map(n => ({ id: uid(), ...n })), { inst: gmFor(tr), name: tr.name, ...(tr.dyn ? { dyn: tr.dyn } : {}) });
     c.end = tr.notes.reduce((mx, n) => Math.max(mx, n.t + n.d), 0.5);
     P.clips.push(c); if (!first) first = c;
   });
@@ -1201,7 +1317,7 @@ function exportMidi() {
   const byLane = new Map(); for (const c of parts) { if (!byLane.has(c.lane)) byLane.set(c.lane, []); byLane.get(c.lane).push(c); }
   let ch = 0;
   const tracks = [...byLane].map(([laneId, cs]) => {
-    const l = P.lanes.find(x => x.id === laneId), drums = cs[0].inst === 'drums', channel = drums ? 9 : (ch === 9 ? ++ch : ch++) % 16;
+    const l = P.lanes.find(x => x.id === laneId), drums = isKit(cs[0].inst), channel = drums ? 9 : (ch === 9 ? ++ch : ch++) % 16;
     const notes = cs.flatMap(c => c.notes.filter(n => n.t >= c.start && n.t < c.end).map(n => ({ p: n.p + (c.semi || 0), t: c.at + (n.t - c.start) / (c.rate || 1), d: Math.min(n.d, c.end - n.t) / (c.rate || 1), v: n.v })));
     return { name: l ? l.name : 'Instrument', channel, program: MixtapeMIDI.PROGRAM[cs[0].inst] ?? 0, notes, cc: cs.flatMap(dynCC) };
   });
@@ -1287,7 +1403,7 @@ function fitToScale() {
 /* ---- dynamics: an expression curve per part (like a mod wheel), louder and brighter as it rises ---- */
 const dynGain = v => v <= 0.001 ? 0 : Math.pow(10, -30 * (1 - clamp(v, 0, 1)) / 20); // 0 is 30 dB down, 1 is full
 const dynHz = v => 700 * Math.pow(20000 / 700, clamp(v, 0, 1));
-const brightens = inst => isOrch(inst) || ['strings', 'brass', 'pad', 'lead'].includes(inst);
+const brightens = inst => isOrch(inst) || ['strings', 'brass', 'pad', 'lead'].includes(inst) || (isSamp(inst) && SAMP[inst.slice(2)].kind === 'gm' && SAMP[inst.slice(2)].program >= 40 && SAMP[inst.slice(2)].program < 80);
 function dynamics(ac, c, src, startPos, when0) {
   if (!c.dyn || !c.dyn.length) return src;
   const r = c.rate || 1, raw = c.dyn.map(p => ({ t: c.at + (p.t - c.start) / r, v: p.v })).sort((a, b) => a.t - b.t);
@@ -1387,7 +1503,7 @@ function drawPianoRoll(c, g, w, h) {
 function pianoPointer(e, wrap, c) {
   const V = edView, rect = wrap.getBoundingClientRect(), free = e.altKey;
   const tAt = ev => V.t0 + (ev.clientX - rect.left - V.KW) / (V.w - V.KW) * (V.t1 - V.t0), pAt = ev => clamp(V.hi - Math.floor((ev.clientY - rect.top) / V.rowH), 0, 127);
-  const sn = t => free ? t : snapNoteT(c, t), audition = p => { if (HAS_TONE && isOrch(c.inst)) return orchAudition(c, p + (c.semi || 0)); if (HAS_TONE && TONE_INSTS[c.inst]) return toneAudition(c.inst, p + (c.semi || 0)); ctx.resume(); MixtapeMIDI.playNote(ctx, ctx.destination, c.inst || 'piano', p + (c.semi || 0), ctx.currentTime + 0.01, 0.35, 96); };
+  const sn = t => free ? t : snapNoteT(c, t), audition = p => { if (isSamp(c.inst)) return sampAudition(c.inst, p + (c.semi || 0)); if (HAS_TONE && isOrch(c.inst)) return orchAudition(c, p + (c.semi || 0)); if (HAS_TONE && TONE_INSTS[c.inst]) return toneAudition(c.inst, p + (c.semi || 0)); ctx.resume(); MixtapeMIDI.playNote(ctx, ctx.destination, c.inst || 'piano', p + (c.semi || 0), ctx.currentTime + 0.01, 0.35, 96); };
   if (V.DH && e.clientY - rect.top >= V.dynY0) return dynPointer(e, wrap, c, V, rect);
   if (e.clientX - rect.left < V.KW) return audition(pAt(e));
   const sc = partScale(c), sp = q => c.scaleLock && sc ? nearestInScale(sc, q) : q; let group = null;
@@ -1418,7 +1534,7 @@ function pianoPointer(e, wrap, c) {
   drawEditor();
 }
 function midiInspectorHTML(c) {
-  const opts = Object.entries(MixtapeMIDI.INSTRUMENTS).map(([k, v]) => `<option value="${k}" ${c.inst === k ? 'selected' : ''}>${v}</option>`).join('');
+  const opts = instOptions(c.inst);
   const semi = c.semi || 0, inWin = c.notes.filter(n => n.t >= c.start && n.t < c.end).length;
   return `<div class="sec"><h3>Instrument part</h3>
     <dl class="kv"><dt>Part</dt><dd>${esc(midiName(c))}</dd><dt>Notes</dt><dd>${inWin}</dd><dt>Starts at</dt><dd>${fmtT(c.at)}</dd><dt>Length</dt><dd>${fmtT(dur(c))}</dd></dl>
@@ -1427,6 +1543,7 @@ function midiInspectorHTML(c) {
     <p class="hint">Recorded orchestra: VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell), public domain (CC0). Free to use in anything you make. Long notes last up to about 4 seconds.</p>` : ''}
     <div class="field"><label for="cGain">Volume</label><input id="cGain" type="range" min="0" max="300" value="${Math.round((c.gain ?? 1) * 100)}" data-cf="gain"><output>${Math.round((c.gain ?? 1) * 100)}%</output></div>
     <label class="chk"><input type="checkbox" data-pin ${c.pin ? 'checked' : ''}> Pin to the picture (stays on its cut)</label>
+    ${isSamp(c.inst) ? `<p class="hint">Recorded: ${esc(SAMP[c.inst.slice(2)].credit)}. Free to use in anything you make.</p>` : ''}
     <label class="chk"><input type="checkbox" data-arp="on" ${c.arp && c.arp.on ? 'checked' : ''}> Arpeggiator: play held chords as rolling notes</label>
     ${c.arp && c.arp.on ? `<div class="field"><label for="aMode">Pattern</label><select id="aMode" data-arp="mode">${Object.entries(ARP.modes).map(([k, v]) => `<option value="${k}" ${c.arp.mode === k ? 'selected' : ''}>${v}</option>`).join('')}</select><span></span></div>
     <div class="field"><label for="aRate">Speed</label><select id="aRate" data-arp="rate">${[['4', 'Quarter notes'], ['8', '8ths'], ['16', '16ths'], ['32', '32nds'], ['8t', '8th triplets'], ['16t', '16th triplets']].map(([k, v]) => `<option value="${k}" ${c.arp.rate === k ? 'selected' : ''}>${v}</option>`).join('')}</select><span></span></div>
@@ -1519,11 +1636,16 @@ function buildGraph(ac, startPos, when0, opts = {}) {
     if (c.kind === 'pattern') {
       const ln = lanes.get(c.lane); if (!ln || !HAS_TONE || c.at + dur(c) <= startPos) continue;
       const g = ac.createGain(); envelope(g.gain, c, startPos, when0); g.connect(ln.g);
-      const kit = makeKit(toneFor(ac), c.pat.kit || '909', g); pat.voices.set(c.id, kit); toneNodes.push(...kit.nodes); continue;
+      const kit = String(c.pat.kit).startsWith('s:') && SAMP[c.pat.kit.slice(2)] ? sampKit(ac, c.pat.kit.slice(2), g) : makeKit(toneFor(ac), c.pat.kit || '909', g); pat.voices.set(c.id, kit); toneNodes.push(...kit.nodes); continue;
     }
     if (c.kind === 'midi') {
       const ln = lanes.get(c.lane); if (!ln || c.at + dur(c) <= startPos) continue;
       const g = ac.createGain(); envelope(g.gain, c, startPos, when0); dynamics(ac, c, g, startPos, when0).connect(ln.g);
+      if (isSamp(c.inst)) { // recorded instruments
+        const v = makeSampled(ac, c.inst.slice(2), g);
+        for (const e of midiEvents(c)) if (e.tl >= startPos - 1e-6) v.play(e.p, when0 + (e.tl - startPos), e.d, e.v);
+        continue;
+      }
       if (HAS_TONE && (TONE_INSTS[c.inst] || isOrch(c.inst))) { // Tone.js synths and the orchestra
         const v = isOrch(c.inst) ? makeOrch(toneFor(ac), c, g) : makeToneInst(toneFor(ac), c.inst, g); toneNodes.push(...v.nodes);
         const evs = midiEvents(c).filter(e => e.tl >= startPos - 1e-6).map(e => ({ ...e, when: when0 + (e.tl - startPos) }));
@@ -1600,6 +1722,7 @@ async function ensureAll() {
   for (const id of new Set(P.clips.map(c => c.trackId).filter(Boolean))) await ensureBuf(id);
   for (const c of P.clips) await ensureProc(c);
   for (const c of P.clips) if (c.kind === 'midi' && !c.mute) await ensureOrch(c);
+  for (const c of P.clips) if (!c.mute) { if (c.kind === 'midi') await ensureSamp(c); if (c.kind === 'pattern' && String(c.pat.kit).startsWith('s:')) await loadSamp(c.pat.kit.slice(2)); }
   if (laneHasFx('lofi')) await ensureLofi(ctx);
 }
 async function play() {
@@ -2542,7 +2665,8 @@ const acts = {
   recnotes: () => toggleRecNotes(),
   orchmenu: b => { if (!ORCH) return toast('The orchestra could not be found. Reload the page.'); const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [...Object.entries(SECTIONS).map(([k, v]) => ({ label: `New ${v.name.toLowerCase()} track`, act: () => newInstrumentTrack(k) })), { sep: true }, ...Object.entries(ORCH.instruments).map(([k, v]) => ({ label: `New ${v.name.toLowerCase()} track`, act: () => newInstrumentTrack('o_' + k) }))]); },
   instmenu: b => { const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [{ label: 'New drum machine (house beat)', act: newDrumMachine }, { label: 'New orchestral track…', act: () => acts.orchmenu(b) }, { label: 'New riser (build-up into the playhead)', act: () => newRiser('up') }, { label: 'New downlifter (after the playhead)', act: () => newRiser('down') }, { label: 'Import a MIDI file…', act: () => $('#midiIn').click() }, { sep: true },
-    ...Object.entries(MixtapeMIDI.INSTRUMENTS).map(([k, v]) => ({ label: `New ${v.toLowerCase()} track`, act: () => newInstrumentTrack(k) }))]); },
+    ...[['s_piano', 'grand piano'], ['s_gm4', 'electric piano'], ['s_gm25', 'acoustic guitar'], ['s_gm33', 'bass guitar'], ['s_gm48', 'string ensemble'], ['s_gm52', 'choir'], ['s_gm89', 'warm pad'], ['s_kit0', 'drum kit']].filter(([k]) => MixtapeMIDI.INSTRUMENTS[k]).map(([k, n]) => ({ label: `New ${n} track (recorded)`, act: () => newInstrumentTrack(k) })),
+    { label: 'New track with any other sound… (pick it in the track’s settings)', act: () => newInstrumentTrack() }]); },
   quantize, exportmidi: exportMidi, findtempo: findTempo,
   projects: b => projectsMenu(b),
 };
@@ -2597,6 +2721,8 @@ function showShortcuts() {
   <div class="credits"><h4>Made with</h4>
     <p>Tone.js by Yotam Mann (MIT licence): drum machine, synths and effects.</p>
     <p>VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell) (CC0, public domain): the orchestra.</p>
+    <p>Salamander Grand Piano V3 by Alexander Holm (CC-BY 3.0): the grand piano.</p>
+    <p>GeneralUser GS by S. Christian Collins (GeneralUser GS licence v2.0): the recorded General MIDI instruments and drum kits.</p>
     <p>ONNX Runtime Web (MIT) and Demucs by Meta AI, via demucs-web (MIT): splitting songs into stems.</p>
     <p>Everything you make with these is yours to release and sell.</p></div>` });
 }
@@ -3049,6 +3175,7 @@ $('#insp').addEventListener('change', async e => {
     if (d.arp === 'on') c.arp.on = e.target.checked; else if (d.arp === 'gate') c.arp.gate = +e.target.value / 100; else if (d.arp === 'oct') c.arp.oct = +e.target.value; else c.arp[d.arp] = e.target.value;
     commit(d.arp === 'on' ? (c.arp.on ? 'Arpeggiator on: hold a chord in the note editor and it rolls.' : 'Arpeggiator off') : undefined); renderInspector(); return;
   }
+  if (d.cf === 'inst' && isSamp(e.target.value)) { c.inst = e.target.value; try { await loadSamp(c.inst.slice(2)); } catch (err) { return toast('Could not load that instrument: ' + err.message, 5000); } return commit(`Now plays as ${MixtapeMIDI.INSTRUMENTS[c.inst]}`); }
   if (d.cf === 'inst' && isOrch(e.target.value)) { c.inst = e.target.value; try { await ensureOrch(c); } catch (err) { return toast('Could not load that instrument: ' + err.message, 5000); } return commit(`Now plays as ${MixtapeMIDI.INSTRUMENTS[c.inst]}`); }
   if (d.cf === 'inst') { c.inst = e.target.value; return commit(`Now plays as ${MixtapeMIDI.INSTRUMENTS[c.inst]}`); }
   if (d.cf === 'rate') return setRate(c, +e.target.value / 100, `Speed set to ${e.target.value}%`);
@@ -4095,7 +4222,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, normalize, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, normalize, SAMP, loadSamp, makeSampled, isSamp, sampReady, gmFor, sampAudition, instOptions, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,
