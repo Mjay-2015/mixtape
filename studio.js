@@ -741,7 +741,8 @@ const SAMP = {};
 const isSamp = inst => !!(inst && inst.startsWith('s_') && SAMP[inst.slice(2)]);
 const isKit = inst => inst === 'drums' || (isSamp(inst) && SAMP[inst.slice(2)].kind === 'drums');
 const sampName = k => k === 'piano' ? 'Grand piano · recorded' : SAMP[k].kind === 'drums' ? `${SAMP[k].name} drum kit · recorded` : `${SAMP[k].name} · recorded`;
-for (const url of ['piano/index.json', 'gm/index.json']) fetch(url).then(r => r.ok ? r.json() : null).then(j => {
+const takeOf = (p, t) => { const x = Math.sin(p * 12.9898 + t * 78.233) * 43758.5453; return x - Math.floor(x); }; // which of several recorded takes plays: varies note to note, the same on every render
+for (const url of ['piano/index.json', 'gm/index.json', 'drums/index.json']) fetch(url).then(r => r.ok ? r.json() : null).then(j => {
   if (!j || !j.instruments) return;
   for (const [k, v] of Object.entries(j.instruments)) {
     SAMP[k] = { ...v, credit: v.credit || j.credit }; MixtapeMIDI.INSTRUMENTS['s_' + k] = sampName(k); MixtapeMIDI.PROGRAM['s_' + k] = k === 'piano' ? 0 : v.program;
@@ -783,7 +784,7 @@ function zoneMods(z, p, vel) {
 }
 function makeSampled(ac, id, dest) {
   const def = SAMP[id], drums = def.kind === 'drums', held = new Map(), excl = new Map();
-  const out = ac.createGain(); out.gain.value = id === 'piano' ? 0.8 : 1; out.connect(dest);
+  const out = ac.createGain(); out.gain.value = def.gain ?? (id === 'piano' ? 0.8 : 1); out.connect(dest);
   const hz = c => clamp(8.176 * Math.pow(2, c / 1200), 20, Math.min(20000, ac.sampleRate / 2 - 100));
   function voice(z, p, t, vel) {
     const buf = sampBufs.get(def.dir + z.file); if (!buf) return null;
@@ -792,7 +793,7 @@ function makeSampled(ac, id, dest) {
     src.playbackRate.value = Math.pow(2, ((p - z.root) * (z.track ?? 1) * 100 + (z.tune || 0)) / 1200);
     if (z.loop) { src.loop = true; src.loopStart = z.loop[0]; src.loopEnd = z.loop[1]; }
     let peak = Math.pow(10, -((z.att || 0) + m.att / 10) / 20);
-    if (!z.mods) peak *= Math.pow(clamp(vel / 127, 0.01, 1), 2 * (def.veltrack ?? 0.73));
+    if (!z.mods) peak *= Math.pow(clamp(vel / 127, 0.01, 1), 2 * (z.vt ?? def.veltrack ?? 0.73));
     let node = src, f = null;
     if (z.fcc != null) {
       f = ac.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = z.q || 0; src.connect(f); node = f;
@@ -821,7 +822,11 @@ function makeSampled(ac, id, dest) {
     try { v.g.gain.cancelScheduledValues(T); v.g.gain.setValueAtTime(now, T); v.g.gain.setTargetAtTime(0, T, r / 6); v.src.stop(T + r + 0.1); } catch (e) {}
   }
   const zonesFor = (p, vel) => def.zones.filter(z => p >= z.lo && p <= z.hi && vel >= z.vlo && vel <= z.vhi);
-  const start = (p, t, vel) => zonesFor(p, clamp(Math.round(vel), 1, 127)).map(z => voice(z, p, t, vel)).filter(Boolean);
+  const start = (p, t, vel) => {
+    let zs = zonesFor(p, clamp(Math.round(vel), 1, 127));
+    if (zs.some(z => z.rlo != null)) { const r = takeOf(p, t); zs = zs.filter(z => z.rlo == null || (r >= z.rlo && (r < z.rhi || z.rhi >= 1))); } // alternate takes, so repeated hits are not identical
+    return zs.map(z => voice(z, p, t, vel)).filter(Boolean);
+  };
   return { nodes: [],
     play(p, t, d, vel) { const vs = start(p, t, vel); if (!drums || vs.some(v => v.z.loop)) vs.forEach(v => release(v, t + Math.max(0.02, d))); },
     on(p, t, vel) { const vs = start(p, t, vel); if (!drums) held.set(p, [...(held.get(p) || []), ...vs]); },
@@ -829,7 +834,13 @@ function makeSampled(ac, id, dest) {
 }
 // the drum machine's rows on a recorded kit
 const KIT_NOTES = { kick: 36, snare: 38, clap: 39, chh: 42, ohh: 46, tom: 45, rim: 37, cow: 56 };
-function sampKit(ac, id, dest) { const g = ac.createGain(); g.gain.value = 0.8; g.connect(dest); const k = makeSampled(ac, id, g); return { nodes: [], hit(row, t, v) { k.play(KIT_NOTES[row] || 38, t, 0.1, v); } }; }
+const kitHas = (id, n) => SAMP[id].zones.some(z => n >= z.lo && n <= z.hi);
+const kitGaps = id => Object.values(KIT_NOTES).some(n => !kitHas(id, n)); // e.g. the Salamander kit has no hand clap
+function sampKit(ac, id, dest) {
+  const g = ac.createGain(); g.gain.value = 0.8; g.connect(dest); const k = makeSampled(ac, id, g);
+  const fb = id !== 'kit0' && SAMP.kit0 && kitGaps(id) ? makeSampled(ac, 'kit0', g) : null; // borrow what this kit lacks from the standard kit
+  return { nodes: [], hit(row, t, v) { const n = KIT_NOTES[row] || 38; (kitHas(id, n) || !fb ? k : fb).play(n, t, 0.1, v); } };
+}
 function sampAudition(inst, p) {
   const id = inst.slice(2); ctx.resume(); sampAudition.v = sampAudition.v || {};
   if (!sampReady(id)) { loadSamp(id).then(() => sampAudition(inst, p)).catch(() => {}); return; }
@@ -896,21 +907,57 @@ function monitorVoice(c) {
   else v = builtinVoice(inst, bus);
   mon = { key, v, bus }; return mon;
 }
+/* ---- an outside instrument (Spitfire LABS, Splice INSTRUMENT, any synth) played over MIDI ----
+   A track can send its notes out of a MIDI port (a loopback cable such as loopMIDI or a Windows MIDI
+   loopback) to another app that makes the sound. Mixtape times each note to when its own audio is heard. */
+const moutOf = l => { if (!l || !l.mout || !midiAccess) return null; const o = midiAccess.outputs.get(l.mout.id) || [...midiAccess.outputs.values()].find(x => x.name === l.mout.name); return o ? { o, ch: clamp((l.mout.ch || 1) - 1, 0, 15), delay: l.mout.delay || 0, inside: !!l.mout.inside } : null; };
+const moutNames = () => new Set(P.lanes.filter(l => l.mout).map(l => l.mout.name));
+// when Mixtape's own sound for that moment reaches the speakers: the browser pairs its audio clock with real time at the output
+const outStamp = () => { const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null; return ts && ts.performanceTime > 0 && ts.contextTime > 0 && performance.now() - ts.performanceTime < 100 ? ts : null; }; // a stamp left over from before a pause is stale
+const ctxToPerf = when => { const ts = outStamp(); return ts ? ts.performanceTime + (when - ts.contextTime) * 1000 : performance.now() + (when - ctx.currentTime) * 1000 + ((ctx.outputLatency || ctx.baseLatency || 0) * 1000); };
+function msend(mo, data, perf) { const at = perf == null ? undefined : Math.max(performance.now(), perf + mo.delay); try { mo.o.send(data, at); } catch (e) {} return at || performance.now(); }
+function scheduleMidiOut(gr, horizon) { // like the drum machine: a third of a second ahead, so a pause stops it cleanly
+  if (ctx.getOutputTimestamp && !outStamp()) return; // the audio clock has not started yet: wait, or the first notes go out early
+  for (const m of gr.mout || []) {
+    const stopWhen = gr.pat ? gr.pat.when0 + (gr.pat.stopAt - gr.pat.startPos) : Infinity;
+    while (m.i < m.evs.length && m.evs[m.i].when < horizon) {
+      const e = m.evs[m.i++]; let when = e.when;
+      if (when >= stopWhen) { if (e.kind !== 'off') continue; when = stopWhen; } // past the loop's end: only let held notes go
+      if (e.kind === 'on') { m.on.set(e.p, (m.on.get(e.p) || 0) + 1); m.last = Math.max(m.last || 0, msend(m.mo, [0x90 | m.mo.ch, e.p, clamp(e.v, 1, 127)], ctxToPerf(when))); }
+      else if (e.kind === 'off') { if (!m.on.get(e.p)) continue; m.on.set(e.p, m.on.get(e.p) - 1); msend(m.mo, [0x80 | m.mo.ch, e.p, 0], ctxToPerf(when)); }
+      else msend(m.mo, [0xb0 | m.mo.ch, e.cc, clamp(Math.round(e.v), 0, 127)], ctxToPerf(when));
+    }
+  }
+}
+function midiOutSilence(gr) { // stop: let every held note go, then "all notes off", after any note already sent ahead
+  for (const m of gr.mout || []) { const at = Math.max(performance.now(), (m.last || 0) + 2) - m.mo.delay; for (const [p, n] of m.on) if (n > 0) msend(m.mo, [0x80 | m.mo.ch, p, 0], at); m.on.clear(); msend(m.mo, [0xb0 | m.mo.ch, 123, 0], at); m.i = m.evs.length; }
+}
+async function ensureMidiAccess(quiet) {
+  if (midiAccess) return midiAccess; if (!navigator.requestMIDIAccess) { if (!quiet) toast('This browser cannot use MIDI. Use Chrome or Edge.', 5000); return null; }
+  try { midiAccess = await navigator.requestMIDIAccess(); } catch (e) { if (!quiet) toast('MIDI was not allowed. Click the keyboard icon in the address bar to allow it, then try again.', 7000); return null; }
+  const hook = () => { for (const inp of midiAccess.inputs.values()) inp.onmidimessage = e => { if (!moutNames().has(inp.name)) onMidiMsg(e); }; }; // never listen to the cable Mixtape is sending into
+  hook(); midiAccess.onstatechange = () => { hook(); renderInspector(); };
+  return midiAccess;
+}
+function liveLaneOut() { const c = livePart(), l = P.lanes.find(x => x.id === (c ? c.lane : selLane)); return moutOf(l); }
 function noteIn(p, vel, on) {
-  ctx.resume(); const c = livePart(), m = monitorVoice(c), now = ctx.currentTime + 0.005, q = clamp(p + (c ? c.semi || 0 : 0), 0, 127);
+  ctx.resume(); const c = livePart(), mo = liveLaneOut(), m = mo && !mo.inside ? null : monitorVoice(c), now = ctx.currentTime + 0.005, q = clamp(p + (c ? c.semi || 0 : 0), 0, 127);
   if (on) {
     if (liveHeld.has(p)) release(p); sustained.delete(p); liveHeld.add(p);
-    try { m.v.on ? m.v.on(q, now, vel) : m.v.play(q, now, 0.6, vel); } catch (e) {}
+    if (mo) msend(mo, [0x90 | mo.ch, q, clamp(vel, 1, 127)]);
+    if (m) try { m.v.on ? m.v.on(q, now, vel) : m.v.play(q, now, 0.6, vel); } catch (e) {}
     if (recNotes && playing) recNotes.open.set(p, { p, v: vel, tl: curPos() });
   } else if (sustain) sustained.add(p); else release(p);
 }
 function release(p) {
-  const c = livePart(); liveHeld.delete(p);
+  const c = livePart(), mo = liveLaneOut(); liveHeld.delete(p);
+  if (mo) msend(mo, [0x80 | mo.ch, clamp(p + (c ? c.semi || 0 : 0), 0, 127), 0]);
   try { mon && mon.v.off && mon.v.off(clamp(p + (c ? c.semi || 0 : 0), 0, 127), ctx.currentTime + 0.005); } catch (e) {}
   closeRecNote(p);
 }
-function pedal(down) { sustain = down; if (!down) { [...sustained].forEach(release); sustained.clear(); } }
+function pedal(down) { const mo = liveLaneOut(); if (mo) msend(mo, [0xb0 | mo.ch, 64, down ? 127 : 0]); sustain = down; if (!down) { [...sustained].forEach(release); sustained.clear(); } }
 function ccIn(v) { // the mod wheel: heard at once, and recorded into the part's dynamics
+  const mo = liveLaneOut(); if (mo) msend(mo, [0xb0 | mo.ch, 1, Math.round(v * 127)]);
   if (mon) mon.bus.gain.setTargetAtTime(dynGain(v), ctx.currentTime, 0.02);
   if (!recNotes || !playing) return; const c = clipById(recNotes.clip); if (!c) return;
   const t = c.start + (curPos() - c.at) * (c.rate || 1), last = recNotes.dyn[recNotes.dyn.length - 1];
@@ -923,12 +970,10 @@ function onMidiMsg(e) {
   else if (cmd === 0xb0 && a === 64) pedal(b >= 64);
   else if (cmd === 0xb0 && (a === 1 || a === 11)) ccIn(b / 127);
 }
-const midiNames = () => midiAccess ? [...midiAccess.inputs.values()].map(i => i.name) : [];
+const midiNames = () => midiAccess ? [...midiAccess.inputs.values()].map(i => i.name).filter(n => !moutNames().has(n)) : [];
 async function connectMidi() {
   if (!navigator.requestMIDIAccess) return toast('This browser cannot use MIDI keyboards. Use Chrome or Edge, or play with the computer keys.', 6000);
-  try { midiAccess = await navigator.requestMIDIAccess(); } catch (e) { return toast('The MIDI keyboard was not allowed. Click the keyboard icon in the address bar to allow it, then try again.', 7000); }
-  const hook = () => { for (const inp of midiAccess.inputs.values()) inp.onmidimessage = onMidiMsg; };
-  hook(); midiAccess.onstatechange = () => { hook(); renderInspector(); };
+  if (!(await ensureMidiAccess())) return;
   const n = midiNames(); toast(n.length ? `Keyboard connected: ${n.join(', ')}. Play it to hear the selected part’s sound.` : 'No MIDI keyboard found yet. Plug one in and it connects by itself.', 5000); renderInspector();
 }
 async function toggleRecNotes() {
@@ -1159,7 +1204,7 @@ function schedulePatterns(gr, until) {
   S.upto = end;
 }
 function drumAudition(row, kit) {
-  if (String(kit).startsWith('s:')) return sampAudition('s_' + kit.slice(2), KIT_NOTES[row] || 38);
+  if (String(kit).startsWith('s:')) { const id = kit.slice(2), n = KIT_NOTES[row] || 38; return sampAudition('s_' + (SAMP[id] && !kitHas(id, n) && SAMP.kit0 ? 'kit0' : id), n); }
   if (!HAS_TONE) return; ctx.resume();
   drumAudition.kits = drumAudition.kits || {};
   if (!drumAudition.kits[kit]) { const g = ctx.createGain(); g.connect(ctx.destination); drumAudition.kits[kit] = makeKit(toneFor(ctx), kit, g); }
@@ -1622,7 +1667,7 @@ function buildGraph(ac, startPos, when0, opts = {}) {
       const s = ac.createGain(); s.gain.value = lv; ln.pan.connect(s); s.connect(rl.g);
     }
   }
-  const srcs = [], toneNodes = [...lanes.values()].flatMap(x => x.toneFx || []);
+  const srcs = [], toneNodes = [...lanes.values()].flatMap(x => x.toneFx || []), mouts = [];
   const pat = { startPos, when0, upto: startPos, stopAt: Infinity, voices: new Map(), pumps: new Map(), gates: new Map() };
   for (const l of P.lanes) { const ln = lanes.get(l.id); if (!ln) continue; for (const dev of (l.chain || [])) { const d = ln.devs[dev.id]; if (d && d.gate) pat.gates.set(dev.id, { node: d.gate, steps: GATES[dev.gate || 'classic'] || GATES.classic, depth: clamp(dev.amt ?? 0.9, 0.1, 1) }); } }
   for (const l of P.lanes) { const ln = lanes.get(l.id); if (ln && l.pump && l.pump.on) pat.pumps.set(l.id, { pg: ln.pg, depth: clamp(l.pump.depth ?? 0.7, 0.1, 0.95), release: 0.45 * 60 / (P.bpm || 124) }); }
@@ -1640,6 +1685,15 @@ function buildGraph(ac, startPos, when0, opts = {}) {
     }
     if (c.kind === 'midi') {
       const ln = lanes.get(c.lane); if (!ln || c.at + dur(c) <= startPos) continue;
+      const mo = ac === ctx && laneAudible(P.lanes.find(x => x.id === c.lane) || {}) ? moutOf(P.lanes.find(x => x.id === c.lane)) : null;
+      if (mo) { // played by the outside instrument (saving still uses Mixtape's own sound for this part)
+        const evs = [];
+        for (const e of midiEvents(c)) if (e.tl >= startPos - 1e-6) { const w = when0 + (e.tl - startPos), p = clamp(e.p, 0, 127); evs.push({ kind: 'on', when: w, p, v: e.v }, { kind: 'off', when: w + Math.max(0.01, e.d) - 0.001, p }); }
+        for (const x of dynCC(c)) if (x.t >= startPos - 0.05) evs.push({ kind: 'cc', when: when0 + Math.max(0, x.t - startPos), cc: x.c, v: x.v });
+        evs.sort((a, b) => a.when - b.when || (a.kind === 'off' ? -1 : 1));
+        mouts.push({ mo, evs, i: 0, on: new Map() });
+        if (!mo.inside) continue;
+      }
       const g = ac.createGain(); envelope(g.gain, c, startPos, when0); dynamics(ac, c, g, startPos, when0).connect(ln.g);
       if (isSamp(c.inst)) { // recorded instruments
         const v = makeSampled(ac, c.inst.slice(2), g);
@@ -1694,9 +1748,10 @@ function buildGraph(ac, startPos, when0, opts = {}) {
   if (opts.metro) srcs.push(...scheduleClicks(ac, ac.destination, startPos, when0, projectEnd() + 1));
   const mmeter = ac.createAnalyser(); mmeter.fftSize = 2048; out.connect(mmeter); keepAlive(ac, mmeter);
   const worklets = [...[...lanes.values()].flatMap(x => Object.values(x.devs || {})), ...Object.values(masterDevs)].map(d => d.worklet).filter(Boolean);
-  const gr = { master, out, lanes, srcs, mmeter, toneNodes, pat, forceLane: opts.lane || null, masterDevs, monoSw, worklets };
+  const gr = { master, out, lanes, srcs, mmeter, toneNodes, pat, forceLane: opts.lane || null, masterDevs, monoSw, worklets, mout: mouts };
   // saving: every hit now. Playing: the first moment now, the rest just ahead of the music (see tick)
   schedulePatterns(gr, ac === ctx ? startPos + 0.35 : startPos + 36000);
+  if (mouts.length) scheduleMidiOut(gr, when0 + 0.35);
   return gr;
 }
 // Level meters must be wired through to the output (silently) or the browser skips measuring them
@@ -1722,7 +1777,7 @@ async function ensureAll() {
   for (const id of new Set(P.clips.map(c => c.trackId).filter(Boolean))) await ensureBuf(id);
   for (const c of P.clips) await ensureProc(c);
   for (const c of P.clips) if (c.kind === 'midi' && !c.mute) await ensureOrch(c);
-  for (const c of P.clips) if (!c.mute) { if (c.kind === 'midi') await ensureSamp(c); if (c.kind === 'pattern' && String(c.pat.kit).startsWith('s:')) await loadSamp(c.pat.kit.slice(2)); }
+  for (const c of P.clips) if (!c.mute) { if (c.kind === 'midi') await ensureSamp(c); if (c.kind === 'pattern' && String(c.pat.kit).startsWith('s:') && SAMP[c.pat.kit.slice(2)]) { await loadSamp(c.pat.kit.slice(2)); if (kitGaps(c.pat.kit.slice(2))) await loadSamp('kit0'); } }
   if (laneHasFx('lofi')) await ensureLofi(ctx);
 }
 async function play() {
@@ -1733,7 +1788,7 @@ async function play() {
   if (playhead >= projectEnd() - 0.02) playhead = 0;
   if (loopActive() && (playhead < P.loop.a || playhead >= P.loop.b - 0.05)) playhead = P.loop.a;
   pendingLoop = null;
-  pos0 = playhead; t0 = ctx.currentTime + 0.05;
+  pos0 = playhead; t0 = ctx.currentTime + (P.lanes.some(l => moutOf(l)) ? 0.3 : 0.05); // an outside instrument needs a moment so its first notes are not late
   graph = buildGraph(ctx, pos0, t0, { metro: P.metro || (!!recNotes && UI.recClick !== false) }); playing = true; renderTransport(); clearInterval(tickT); tickT = setInterval(tick, 33);
   if (P.video) { await ensureVideoEl(); syncVideo(); }
   return true;
@@ -1742,7 +1797,7 @@ function pause() {
   if (recNotes) finishRecNotes(false);
   if (!playing) return;
   playhead = curPos(); playing = false; clearInterval(tickT);
-  for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr) { gr.srcs.forEach(s => { try { s.stop(); } catch (e) {} }); try { gr.out.disconnect(); gr.master.disconnect(); } catch (e) {} disposeTone(gr); }
+  for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr) { midiOutSilence(gr); gr.srcs.forEach(s => { try { s.stop(); } catch (e) {} }); try { gr.out.disconnect(); gr.master.disconnect(); } catch (e) {} disposeTone(gr); }
   graph = null; pendingLoop = null; if (vidFor && !vid.paused) vid.pause(); renderTransport(); drawPlayhead();
 }
 const curPos = () => playing ? pos0 + Math.max(0, ctx.currentTime - t0) : playhead;
@@ -1766,6 +1821,7 @@ function tick() {
   }
   // drum machine hits, scheduled a third of a second ahead of the music
   for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr && gr.pat) schedulePatterns(gr, gr.pat.startPos + (ctx.currentTime + 0.35 - gr.pat.when0));
+  for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr && gr.mout && gr.mout.length) scheduleMidiOut(gr, ctx.currentTime + 0.35);
   const p = curPos();
   if (edOpen && clipById(selClip)?.kind === 'pattern') drawEditor();
   if (p >= projectEnd() && !rec && !loopActive()) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
@@ -2346,6 +2402,32 @@ function drawEditor() {
   $('#edZoomLbl').textContent = span >= D - 0.01 ? 'whole song' : `${span < 10 ? span.toFixed(2) : fmtT(span)} shown`;
 }
 
+function moutHTML(l) {
+  const has = P.clips.some(c => c.lane === l.id && c.kind === 'midi'); if (!has && !l.mout) return '';
+  const m = l.mout, outs = midiAccess ? [...midiAccess.outputs.values()] : [], found = m && outs.some(o => o.id === m.id || o.name === m.name);
+  let h = `<p class="sub">Outside instrument <span class="hint" style="font-weight:400">· LABS, Splice INSTRUMENT or any synth app</span></p>`;
+  if (!midiAccess) h += `<div class="btnrow"><button class="btn sm" data-act="midiouts">Play this track with an outside instrument…</button><button class="btn sm ghost" data-act="labshelp">How to set up LABS</button></div>`;
+  else {
+    h += `<div class="field"><label for="mOut">Send to</label><select id="mOut" data-mout="port"><option value="">Off: Mixtape’s own sound</option>${outs.map(o => `<option value="${esc(o.id)}" ${m && (m.id === o.id || m.name === o.name) ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}${m && !found ? `<option value="__missing" selected>${esc(m.name)} (not connected)</option>` : ''}</select><span></span></div>`;
+    if (!outs.length) h += `<p class="hint">No MIDI outputs yet. Make a loopback cable first (see How to set up LABS), then press Look again.</p>`;
+    if (m) h += `<div class="field"><label for="mCh">Channel</label><select id="mCh" data-mout="ch">${Array.from({ length: 16 }, (_, i) => `<option value="${i + 1}" ${(m.ch || 1) === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select><span></span></div>
+      <div class="field"><label for="mDel">Line up</label><input id="mDel" type="range" min="-200" max="200" step="5" value="${m.delay || 0}" data-mout="delay" title="If the outside instrument sounds late, move this left; if early, move it right"><output>${(m.delay || 0) > 0 ? '+' : ''}${m.delay || 0} ms</output></div>
+      <label class="chk"><input type="checkbox" data-mout="inside" ${m.inside ? 'checked' : ''}> Also play Mixtape’s own sound</label>
+      <p class="hint">Mixtape sends the notes, velocity, dynamics (as the mod wheel), the sustain pedal and live keyboard playing. The sound comes out of the other app, so exports use Mixtape’s own sound for this track; record the other app’s output there for the real thing.</p>`;
+    h += `<div class="btnrow"><button class="btn sm" data-act="midiouts">Look again</button><button class="btn sm" data-act="mouttest" ${m && found ? '' : 'disabled'}>Send a test note</button><button class="btn sm ghost" data-act="labshelp">How to set up LABS</button></div>`;
+  }
+  return h;
+}
+function labsHelp() {
+  ask({ title: 'Playing Spitfire LABS from Mixtape', ok: 'Got it', text: 'LABS runs as its own app, so Mixtape sends it the notes through a virtual MIDI cable and LABS plays them out of your speakers. Set this up once:',
+    extra: `<ol class="steps">
+      <li><b>Get the sounds.</b> Install <b>Splice INSTRUMENT</b> (free, splice.com/instrument). It is LABS’s replacement and includes the LABS sounds. Spitfire stops LABS itself on 31 October 2026, so download every LABS pack you want before then.</li>
+      <li><b>Make a virtual MIDI cable.</b> Either open Windows’ <b>MIDI Settings</b> app and add a loopback, or install the free <b>loopMIDI</b> (tobias-erichsen.de) and press + to add a port.</li>
+      <li><b>Open INSTRUMENT on its own</b> (no DAW needed), pick a LABS sound, and in its settings choose the virtual cable as the MIDI input.</li>
+      <li><b>In Mixtape,</b> select the track, press <i>Play this track with an outside instrument</i>, and choose the same cable under <i>Send to</i>. Press <i>Send a test note</i>: you should hear INSTRUMENT play it.</li>
+      <li><b>Line up.</b> Play with the click on. If the outside sound is late, drag <i>Line up</i> to the left until it sits on the beat.</li></ol>
+      <p class="hint">If INSTRUMENT’s own window has no MIDI input setting, load it as a plugin in a free host such as Carla, set the host’s MIDI input to the cable, and it works the same way. The sounds may be used in your music, including film, but may not be copied into other apps or sample libraries.</p>` });
+}
 function routingHTML(l) {
   const groups = P.lanes.filter(x => x.type === 'group' && x.id !== l.id), returns = P.lanes.filter(x => x.type === 'return' && x.id !== l.id);
   let h = '';
@@ -2477,6 +2559,7 @@ function renderInspector() {
       <div class="field"><label for="fEcho">Echo</label><input id="fEcho" type="range" min="0" max="100" value="${fx.echo}" data-lx="echo"><output>${fx.echo}%</output></div>
       <div class="field"><label for="fRev">Reverb</label><input id="fRev" type="range" min="0" max="100" value="${fx.reverb}" data-lx="reverb"><output>${fx.reverb}%</output></div>
       ${routingHTML(l)}
+      ${l.type !== 'group' && l.type !== 'return' ? moutHTML(l) : ''}
       ${chainHTML(l)}
       ${HAS_TONE ? `<label class="chk"><input type="checkbox" data-lpump ${l.pump && l.pump.on ? 'checked' : ''}> Pump to the drum machine’s kick (sidechain)</label>
       ${l.pump && l.pump.on ? `<div class="field"><label for="tPump">Depth</label><input id="tPump" type="range" min="10" max="95" value="${Math.round((l.pump.depth ?? 0.7) * 100)}" data-lpumpd><output>${Math.round((l.pump.depth ?? 0.7) * 100)}%</output></div>` : ''}` : ''}
@@ -2648,6 +2731,9 @@ const acts = {
   pathouse: () => { const c = clipById(selClip); if (c && c.kind === 'pattern') { c.pat.rows = housePattern(c.pat.bars || 1); patLive(c); renderInspector(); toast('House beat: kick on every beat, clap on 2 and 4, open hats on the off-beats.'); } },
   patclear: () => { const c = clipById(selClip); if (c && c.kind === 'pattern') { for (const [k] of DRUM_ROWS) c.pat.rows[k] = Array(patN(c)).fill(0); patLive(c); } },
   drummachine: () => newDrumMachine(),
+  midiouts: async () => { if (await ensureMidiAccess()) { const n = midiAccess.outputs.size; toast(n ? `Found ${n} MIDI output${n === 1 ? '' : 's'}: ${[...midiAccess.outputs.values()].map(o => o.name).join(', ')}.` : 'No MIDI outputs found. Make a loopback cable first: see How to set up LABS.', 6000); } renderInspector(); },
+  labshelp: () => labsHelp(),
+  mouttest: () => { const l = P.lanes.find(x => x.id === selLane), mo = moutOf(l); if (!mo) return toast('That MIDI output is not connected.'); [60, 64, 67].forEach((p, i) => { msend(mo, [0x90 | mo.ch, p, 96], performance.now() + i * 250); msend(mo, [0x80 | mo.ch, p, 0], performance.now() + i * 250 + 600); }); toast(`Sent C, E, G to ${l.mout.name} on channel ${l.mout.ch || 1}. If you heard nothing, check the other app’s MIDI input.`, 6000); },
   mono: () => {
     monoOn = !monoOn;
     for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr && gr.monoSw) { const now = ctx.currentTime; gr.monoSw.st.gain.setTargetAtTime(monoOn ? 0 : 1, now, 0.01); gr.monoSw.mg.gain.setTargetAtTime(monoOn ? 1 : 0, now, 0.01); }
@@ -2723,6 +2809,7 @@ function showShortcuts() {
     <p>VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell) (CC0, public domain): the orchestra.</p>
     <p>Salamander Grand Piano V3 by Alexander Holm (CC-BY 3.0): the grand piano.</p>
     <p>GeneralUser GS by S. Christian Collins (GeneralUser GS licence v2.0): the recorded General MIDI instruments and drum kits.</p>
+    <p>Salamander Drumkit by Alexander Holm, kinwie and Jesse Chappell (CC BY-SA 3.0): the Salamander acoustic kit.</p>
     <p>ONNX Runtime Web (MIT) and Demucs by Meta AI, via demucs-web (MIT): splitting songs into stems.</p>
     <p>Everything you make with these is yours to release and sell.</p></div>` });
 }
@@ -3130,6 +3217,15 @@ $('#insp').addEventListener('change', async e => {
   if (e.target.matches('[data-pin]')) { const pc = clipById(selClip); if (pc && !!pc.pin !== e.target.checked) togglePin(pc); return; }
   if (e.target.matches('[data-vlock]')) { if (P.video) { P.video.locked = e.target.checked; quietCommit(); renderVideoRow(); toast(P.video.locked ? 'Picture locked: it cannot be moved or trimmed.' : 'Picture unlocked.'); } return; }
   if (e.target.matches('[data-mklock]')) { P.markersLocked = e.target.checked; quietCommit(); renderRuler(); return toast(P.markersLocked ? 'Hit points locked: clicking one jumps to it, and dragging does nothing.' : 'Hit points unlocked: drag one along the ruler to move it.'); }
+  if (e.target.matches('[data-mout]')) {
+    const l = P.lanes.find(x => x.id === selLane); if (!l) return; const k = e.target.dataset.mout, v = e.target.value;
+    if (k === 'port') { if (v === '__missing') return; if (!v) { l.mout = null; commit(`“${l.name}” plays Mixtape’s own sound again.`); renderInspector(); return; }
+      const o = midiAccess && midiAccess.outputs.get(v); l.mout = { ch: 1, delay: 0, inside: false, ...(l.mout || {}), id: v, name: o ? o.name : v };
+      commit(`“${l.name}” now plays through ${l.mout.name}. Press “Send a test note”.`); renderInspector(); return; }
+    if (!l.mout) return;
+    if (k === 'ch') l.mout.ch = +v; else if (k === 'delay') l.mout.delay = +v; else if (k === 'inside') l.mout.inside = e.target.checked;
+    commit(); return;
+  }
   if (e.target.matches('[data-cscale]')) {
     const c = clipById(selClip); if (!c) return; const k = e.target.dataset.cscale, v = e.target.value;
     if (k === 'type') c.scale = v === '' ? null : v === 'none' ? { type: 'none' } : { root: c.scale && c.scale.root != null ? c.scale.root : (P.key ? P.key.key : 0), type: v };
@@ -4222,7 +4318,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, normalize, SAMP, loadSamp, makeSampled, isSamp, sampReady, gmFor, sampAudition, instOptions, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, normalize, set midiAccess(v) { midiAccess = v; }, get midiAccess() { return midiAccess; }, scheduleMidiOut, moutOf, SAMP, loadSamp, makeSampled, isSamp, sampReady, gmFor, sampAudition, instOptions, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,
