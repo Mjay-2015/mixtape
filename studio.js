@@ -1850,7 +1850,9 @@ function tick() {
   for (const gr of [graph, pendingLoop && pendingLoop.graph]) if (gr && gr.mout && gr.mout.length) scheduleMidiOut(gr, ctx.currentTime + 0.35);
   const p = curPos();
   if (edOpen && clipById(selClip)?.kind === 'pattern') drawEditor();
-  if (p >= projectEnd() && !rec && !loopActive()) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
+  // playback stops at the end of the mix, except while recording (voice or notes): a short part reached its end in seconds and
+  // stopped the composer's note recording while she was still playing
+  if (p >= projectEnd() && !rec && !recNotes && !loopActive()) { pause(); playhead = projectEnd(); drawPlayhead(); return; }
   drawPlayhead(p); followPlayhead(p); if (rec || (P.tempoChanges || []).length) renderTransport(); if (P.video) syncVideo();
   if (UI.mixer) updateMeters();
   updateDeviceMeters();
