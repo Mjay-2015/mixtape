@@ -218,6 +218,14 @@ canvas.eqcv{width:100%;height:132px;border-radius:6px;cursor:pointer;touch-actio
 .ltag{font:700 9px var(--f-mono);letter-spacing:.06em;padding:1px 4px;border-radius:3px;background:var(--c);color:#0D0F13;flex:none}
 .ltag.dim{background:transparent;color:var(--muted);padding:0}
 .mrep{margin:6px 0}
+.recbanner{position:fixed;left:50%;top:60px;transform:translateX(-50%);z-index:40;display:flex;align-items:center;gap:10px;padding:8px 10px 8px 14px;border-radius:10px;background:#3A1416;border:1px solid #F06A6A;color:#FFE2E2;font:13px var(--f-ui);box-shadow:0 8px 24px rgba(0,0,0,.45);max-width:min(760px,92vw)}
+.recbanner.live{background:#5A1418}
+.recbanner .dot{width:10px;height:10px;border-radius:50%;background:#F06A6A;flex:none}
+.recbanner.live .dot{animation:recblink 1s steps(2) infinite}
+.recbanner .sp{flex:1}
+.recbanner kbd{background:rgba(255,255,255,.12);border-radius:4px;padding:0 5px;font:12px var(--f-mono)}
+.recbanner button{border:1px solid rgba(255,226,226,.4);background:transparent;color:inherit;border-radius:6px;padding:4px 9px;cursor:pointer;font:12px var(--f-ui)}
+.recbanner button[aria-pressed="true"]{background:rgba(255,226,226,.15)}
 ol.steps{margin:8px 0 8px 18px;padding:0;display:grid;gap:6px;font-size:13px;line-height:1.45}
 .mnote{font-size:12px;line-height:1.45;margin:4px 0;padding:6px 8px;border-radius:6px;border-left:3px solid var(--line-2);background:var(--bg)}
 .mnote.ok{border-color:#4FD1A5}
@@ -528,6 +536,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
     </div>
   </header>
 
+  <div class="recbanner" id="recBanner" role="status" aria-live="polite" hidden></div>
   <div class="work">
     <aside class="panel" aria-label="Library">
       <button class="rail" data-act="togglelib" title="Show the library (B)"><span>▸</span><span class="rl">Library</span></button>

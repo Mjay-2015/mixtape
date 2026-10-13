@@ -1,5 +1,5 @@
 // Mixtape offline cache. Bump VERSION whenever app files change so installed copies pick up the new version.
-const VERSION = 'mixtape-v37';
+const VERSION = 'mixtape-v38';
 const CORE = ['./', './index.html', './app.js', './studio.html', './studio.js', './dsp-worker.js', './dsp-shared.js', './midi.js', './lofi-worklet.js', './vendor/tone/Tone.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 // The AI stem splitter is large and changes rarely, so it lives in its own caches that app updates don't clear.
 const STEMS_RUNTIME = 'mixtape-stems-runtime-v1';   // ONNX Runtime + splitter code, saved on first use
@@ -7,7 +7,9 @@ const KEEP = k => k === VERSION || k.startsWith('mixtape-stems-') || k.startsWit
 const ORCH_CACHE = 'mixtape-orch-v1'; // the orchestra's recordings, saved on first use
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's own HTTP cache: GitHub Pages lets it keep files for 10 minutes, so a new version
+  // installed soon after publishing could otherwise store the previous version's files
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => !KEEP(k)).map(k => caches.delete(k)))).then(() => self.clients.claim()));

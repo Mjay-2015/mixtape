@@ -977,8 +977,28 @@ async function connectMidi() {
   if (!(await ensureMidiAccess())) return;
   const n = midiNames(); toast(n.length ? `Keyboard connected: ${n.join(', ')}. Play it to hear the selected part’s sound.` : 'No MIDI keyboard found yet. Plug one in and it connects by itself.', 5000); renderInspector();
 }
+/* Recording notes works the way DAWs do: Record arms the part, Space starts (with a bar to come in), Space stops.
+   (It used to start at once, so the Space a composer pressed to begin stopped it, and what she played went unrecorded.) */
+let recArm = null;
+function recBanner() {
+  const b = $('#recBanner'); if (!b) return;
+  if (!recArm && !recNotes) { b.hidden = true; return; }
+  const c = clipById((recArm || recNotes).clip), click = P.metro || UI.recClick !== false;
+  b.hidden = false; b.classList.toggle('live', !!recNotes);
+  const sw = `<button data-act="recclick" aria-pressed="${click}" title="The click while recording (the top-bar Click, if on, always plays)">Click ${click ? 'on' : 'off'}</button>`;
+  b.innerHTML = recNotes
+    ? `<span class="dot"></span><b>Recording notes</b> into “${esc(c ? midiName(c) : '')}” · ${fmtT((performance.now() - recNotes.began) / 1000).replace(/\.\d$/, '')} · ${recNotes.n} note${recNotes.n === 1 ? '' : 's'} <span class="sp"></span>${sw}<button data-act="recnotes">Stop (Space)</button>`
+    : `<span class="dot"></span><b>Armed:</b> press <kbd>Space</kbd> to start recording into “${esc(c ? midiName(c) : '')}”${P.bpm ? ' (one bar to come in)' : ''} <span class="sp"></span>${sw}<button data-act="recnotes">Cancel</button>`;
+}
+function startArmed() { // play() calls this: the armed part starts recording
+  const c = clipById(recArm.clip); recArm = null; if (!c) return;
+  c.notes = c.notes.map(n => ({ ...n }));
+  recNotes = { clip: c.id, open: new Map(), n: 0, dyn: [], began: performance.now() };
+  if (P.bpm) playhead = Math.max(0, playhead - 4 * 60 / tempoAt(playhead)); // one bar to come in on
+}
 async function toggleRecNotes() {
   if (recNotes) return finishRecNotes(true);
+  if (recArm) { recArm = null; recBanner(); renderInspector(); return toast('Recording cancelled.'); }
   let c = clipById(selClip);
   if (!c || c.kind !== 'midi') {
     const l = P.lanes.find(x => x.id === selLane && x.type !== 'group' && x.type !== 'return'); if (!l) return toast('Select an instrument part, or a track to record a new part onto.');
@@ -986,23 +1006,21 @@ async function toggleRecNotes() {
   }
   if (!midiAccess && !qwerty) { await connectMidi(); if (!midiNames().length) { qwerty = true; toast('No MIDI keyboard, so the computer keys play notes: A W S E D F T G Y H U J K. Z and X change octave.', 7000); } }
   if (playing) pause();
-  c.notes = c.notes.map(n => ({ ...n }));
-  recNotes = { clip: c.id, open: new Map(), n: 0, dyn: [] };
-  if (P.bpm) playhead = Math.max(0, playhead - 4 * 60 / tempoAt(playhead)); // one bar to come in on
-  renderInspector(); await play();
+  recArm = { clip: c.id }; recBanner(); renderInspector();
+  toast('Armed. Press Space to start recording; press Space again to stop.', 5000);
 }
 function closeRecNote(p) {
   const r = recNotes, o = r && r.open.get(p); if (!o) return; r.open.delete(p);
   const c = clipById(r.clip); if (!c) return; const rate = c.rate || 1;
   let t = c.start + (o.tl - c.at) * rate; if (t < c.start - 0.05) return; // played during the count-in
   t = Math.max(c.start, UI.recQ ? snapNoteT(c, t) : t); const d = Math.max(0.03, (curPos() - o.tl) * rate);
-  c.notes.push({ id: uid(), p: o.p, t, d, v: o.v }); r.n++; if (t + d > c.end) c.end = t + d;
+  c.notes.push({ id: uid(), p: o.p, t, d, v: o.v }); r.n++; if (t + d > c.end) c.end = t + d; recBanner();
   if (edOpen) drawEditor(); const el = $(`.clip[data-clip="${c.id}"] canvas`); if (el) drawClipCanvas(el, c);
 }
 function finishRecNotes(stopPlay) {
   const r = recNotes; if (!r) return;
   for (const p of [...r.open.keys()]) closeRecNote(p);
-  recNotes = null; if (stopPlay && playing) pause();
+  recNotes = null; recArm = null; recBanner(); if (stopPlay && playing) pause();
   const c = clipById(r.clip);
   if (c && r.dyn.length) { const a = r.dyn[0].t, b = r.dyn[r.dyn.length - 1].t; c.dyn = thinDyn([...(c.dyn || []).filter(x => x.t < a || x.t > b), ...r.dyn].sort((x, y) => x.t - y.t)); }
   setTimeout(() => commit(r.n ? `Recorded ${r.n} note${r.n === 1 ? '' : 's'} into “${c ? midiName(c) : 'the part'}”.` : 'Recording stopped. No notes were played.'), 0); // after playback has fully stopped
@@ -1607,10 +1625,10 @@ function midiInspectorHTML(c) {
     <p class="hint">Or draw it in the strip under the notes. Softer also means darker, the way real ${isOrch(c.inst) ? 'orchestral players sound' : 'instruments sound'}. Click the strip’s label to edit each note’s velocity instead.</p>
     <p class="sub">Play and record</p>
     <div class="btnrow"><button class="btn sm" data-act="midiconnect">${midiNames().length ? `Keyboard: ${esc(midiNames().join(', '))}` : 'Connect a MIDI keyboard'}</button><button class="btn sm tgl" data-act="qwerty" aria-pressed="${qwerty}" title="A W S E D F T G Y H U J K play notes; Z and X change octave; Esc stops">Play with computer keys</button></div>
-    <div class="btnrow"><button class="btn sm rec${recNotes ? ' on' : ''}" data-act="recnotes"><span class="dot"></span>${recNotes ? 'Stop recording' : 'Record notes into this part'}</button></div>
+    <div class="btnrow"><button class="btn sm rec${recNotes || recArm ? ' on' : ''}" data-act="recnotes"><span class="dot"></span>${recNotes ? 'Stop recording' : recArm ? 'Armed: press Space to start (click to cancel)' : 'Record notes into this part'}</button></div>
     <label class="chk"><input type="checkbox" data-uiset="recQ" ${UI.recQ ? 'checked' : ''}> Snap recorded notes to 1/16</label>
     <label class="chk"><input type="checkbox" data-uiset="recClick" ${UI.recClick !== false ? 'checked' : ''}> Click while recording</label>
-    <p class="hint">Recording starts one bar early so you can come in on time. Press Space to stop. The sustain pedal works, and the mod wheel records into the dynamics.</p>
+    <p class="hint">Press Record, then Space to start: you get one bar to come in. Space again stops. The sustain pedal works, and the mod wheel records into the dynamics.</p>
     <p class="hint">Double-click the part to open the note editor. Click to add a note, drag to move it, drag its right edge to lengthen it, double-click to remove it. Notes snap to sixteenths; hold Alt to place them freely. Click the keyboard to hear a pitch.</p>
     <p class="hint">These built-in sounds are for writing and placing. The production studio renders the finished parts with sampled instruments from the MIDI file.</p>
     <div class="btnrow"><button class="btn sm" data-act="quantize">Snap notes to 1/16</button><button class="btn sm" data-act="exportmidi">Export MIDI</button></div></div>`;
@@ -1783,6 +1801,7 @@ async function ensureAll() {
 }
 async function play() {
   stopPreview();
+  if (recArm && !playing) { startArmed(); recBanner(); renderInspector(); }
   if (!P.clips.length && !P.video) { toast('Add a song from the left to start.'); return false; }
   try { await ensureAll(); } catch (err) { toast(err.message, 5000); return false; }
   await ctx.resume();
@@ -1835,6 +1854,7 @@ function tick() {
   drawPlayhead(p); followPlayhead(p); if (rec || (P.tempoChanges || []).length) renderTransport(); if (P.video) syncVideo();
   if (UI.mixer) updateMeters();
   updateDeviceMeters();
+  if (recNotes && (tick.n = (tick.n || 0) + 1) % 10 === 0) recBanner(); // the timer, about three times a second
 }
 function liveLanes() {
   if (!graph) return; const now = ctx.currentTime;
@@ -2825,6 +2845,7 @@ const acts = {
   midiconnect: () => connectMidi(),
   qwerty: () => { qwerty = !qwerty; renderInspector(); toast(qwerty ? 'The computer keys play notes: A W S E D F T G Y H U J K (black keys on the row above). Z and X change octave, Shift plays louder, Esc stops.' : 'The computer keys work as shortcuts again.', 6000); },
   recnotes: () => toggleRecNotes(),
+  recclick: () => { if (P.metro) return toast('The Click in the top bar is on, so the click always plays. Switch that off to record without it.', 5000); UI.recClick = UI.recClick === false; saveUI(); recBanner(); renderInspector(); if (recNotes) toast('The click changes from the next take.', 3000); },
   orchmenu: b => { if (!ORCH) return toast('The orchestra could not be found. Reload the page.'); const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [...Object.entries(SECTIONS).map(([k, v]) => ({ label: `New ${v.name.toLowerCase()} track`, act: () => newInstrumentTrack(k) })), { sep: true }, ...Object.entries(ORCH.instruments).map(([k, v]) => ({ label: `New ${v.name.toLowerCase()} track`, act: () => newInstrumentTrack('o_' + k) }))]); },
   instmenu: b => { const r = b.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, [{ label: 'New drum machine (house beat)', act: newDrumMachine }, { label: 'New orchestral track…', act: () => acts.orchmenu(b) }, { label: 'New riser (build-up into the playhead)', act: () => newRiser('up') }, { label: 'New downlifter (after the playhead)', act: () => newRiser('down') }, { label: 'Import a MIDI file…', act: () => $('#midiIn').click() }, { sep: true },
     ...[['s_piano', 'grand piano'], ['s_gm4', 'electric piano'], ['s_gm25', 'acoustic guitar'], ['s_gm33', 'bass guitar'], ['s_gm48', 'string ensemble'], ['s_gm52', 'choir'], ['s_gm89', 'warm pad'], ['s_kit0', 'drum kit']].filter(([k]) => MixtapeMIDI.INSTRUMENTS[k]).map(([k, n]) => ({ label: `New ${n} track (recorded)`, act: () => newInstrumentTrack(k) })),
