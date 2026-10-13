@@ -274,6 +274,9 @@ svg.auto .aread{fill:#4FD1A5;font:600 11px var(--f-mono);pointer-events:none}
 .fold{width:20px;height:22px;border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0;font-size:11px;flex:none;border-radius:4px}
 .fold:hover{color:var(--ink);background:var(--raise)}
 .lane-grip{position:absolute;left:0;right:0;bottom:-3px;height:7px;cursor:row-resize;z-index:6}
+.lane-grip.top{bottom:auto;top:-3px}
+.lane:first-child>.lane-grip.top{display:none}
+.lane:hover>.lane-grip{background:linear-gradient(transparent 3px,rgba(255,255,255,.16) 3px 4px,transparent 4px)}
 .lane-grip:hover,.lane-grip.on{background:linear-gradient(transparent 2px,var(--accent) 2px 4px,transparent 4px)}
 .clip{cursor:text}
 .clip .cl{pointer-events:auto;cursor:grab}
@@ -557,7 +560,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
           </div>
         </div>
         <div class="tl-inner" id="tlInner">
-          <div class="ruler-row"><div class="corner"><button class="headbtn" id="headBtn" data-act="slimhead" aria-pressed="false" title="Fold the track names away for more room">◂</button><span class="ptitle">Tracks</span><span class="hsz" role="group" aria-label="Track height"><button data-act="lh" data-h="s" title="Small tracks">S</button><button data-act="lh" data-h="m" title="Medium tracks">M</button><button data-act="lh" data-h="l" title="Tall tracks">L</button></span><button class="ampbtn" id="ampBtn" data-act="amp" title="Draw quiet waveforms taller (or Alt + scroll). The sound does not change.">Wave ×1</button></div><canvas id="ruler"></canvas></div>
+          <div class="ruler-row"><div class="corner"><button class="headbtn" id="headBtn" data-act="slimhead" aria-pressed="false" title="Fold the track names away for more room">◂</button><span class="ptitle">Tracks</span><span class="hsz" role="group" aria-label="Track height"><button data-act="lh" data-h="s" title="Small tracks">S</button><button data-act="lh" data-h="m" title="Medium tracks">M</button><button data-act="lh" data-h="l" title="Tall tracks">L</button></span><button class="ampbtn" id="ampBtn" data-act="amp" title="Draw every waveform taller (or Alt + Shift + wheel). The sound does not change. To make one track bigger: Alt + wheel over it, or its ↕ button.">Wave ×1</button></div><canvas id="ruler"></canvas></div>
           <div id="vrow" hidden></div>
           <div id="lanes"></div>
           <div id="mklines"></div>

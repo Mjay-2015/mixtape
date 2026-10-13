@@ -2255,6 +2255,7 @@ function renderLanes() {
           <button class="tg s${l.solo ? ' on' : ''}" data-lf="solo" title="Hear only this track" aria-pressed="${l.solo}">S</button>
           <button class="tg a${l.auto.show ? ' on' : ''}${l.auto.vol.length || l.auto.pan.length ? ' has' : ''}" data-lf="auto" title="Automation: draw how the volume or pan changes over time" aria-pressed="${!!l.auto.show}">A</button>
           <button class="tg lk${l.locked ? ' on' : ''}" data-lf="lock" title="${l.locked ? 'Unlock this track' : 'Lock this track: its parts cannot be moved, trimmed, cut or deleted'}" aria-pressed="${!!l.locked}"><svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg></button>
+          <button class="tg grow" data-lf="grow" title="Make just this track bigger, or back to normal (or Alt + wheel over it)" aria-label="Make this track bigger or smaller">↕</button>
           <button class="tg x" data-lf="del" title="Delete track" aria-label="Delete track">✕</button>
         </div>
         <div class="lh-row"><span>VOL</span><input type="range" min="0" max="150" value="${Math.round(l.gain * 100)}" data-lf="gain" aria-label="Track volume"><output>${Math.round(l.gain * 100)}%</output></div>
@@ -2262,7 +2263,8 @@ function renderLanes() {
         ${l.auto.show ? `<div class="lh-row auto-row"><span>AUT</span><select data-lf="autokind" aria-label="Which setting to automate"><option value="vol"${l.auto.show === 'vol' ? ' selected' : ''}>Volume${l.auto.vol.length ? ' •' : ''}</option><option value="pan"${l.auto.show === 'pan' ? ' selected' : ''}>Pan${l.auto.pan.length ? ' •' : ''}</option></select><button class="mini" data-lf="automenu" title="Duck under another track, or clear">⋯</button></div>` : ''}
         ${fxOn ? '<div class="lh-row"><span>FX</span><span style="grid-column:2/4;color:var(--accent)">effects on</span></div>' : ''}
       </div>
-      <div class="lane-grip" data-grip="${l.id}" title="Drag to make this track taller or smaller"></div>
+      <div class="lane-grip top" data-grip="${l.id}" title="Drag up or down to make this track taller or smaller"></div>
+      <div class="lane-grip" data-grip="${l.id}" title="Drag up or down to make this track taller or smaller"></div>
       <div class="lane-body${gridCls}" style="${gridVars}width:${timelineWidth()}px;${anySolo && !l.solo || l.mute ? 'opacity:.45' : ''}">
         ${P.clips.filter(c => c.lane === l.id).map(c => {
           const t = libTrack(c.trackId), name = c.kind === 'riser' ? (c.name || 'Riser') : c.kind === 'pattern' ? `${c.name || 'Drum machine'} · ${KITS[c.pat.kit] || ''}` : c.kind === 'midi' ? midiName(c) : t ? t.title : 'Missing song';
@@ -2858,7 +2860,7 @@ document.addEventListener('mouseover', e => {
     else if (z.id === 'ruler') tip = 'Click to move the playhead. Drag sideways to mark a loop; drag up or down to zoom.';
     else if (z.id === 'overview') tip = 'The whole mix. Drag the box to move around, drag its edges to zoom.';
     else if (z.id === 'edWrap') tip = 'Drag to select. The wheel zooms where the mouse is; Shift + wheel moves along the song. Click the strip at the top to jump.';
-    else if (z.classList.contains('lane-body')) tip = 'Click to move the playhead here. The wheel zooms where the mouse is; Shift + wheel moves sideways; Alt + wheel makes waveforms taller.';
+    else if (z.classList.contains('lane-body')) tip = 'Click to move the playhead here. The wheel zooms where the mouse is; Shift + wheel moves sideways; Alt + wheel makes just this track bigger; Alt + Shift + wheel draws every waveform taller.';
     else tip = z.getAttribute('title') || z.getAttribute('aria-label') || '';
   }
   bar.textContent = tip || 'Press ? to see every shortcut.';
@@ -2867,7 +2869,7 @@ function showShortcuts() {
   const g = (h, rows) => `<div class="kgroup"><h4>${h}</h4>${rows.map(([k, d]) => `<div class="krow"><span class="keys">${k.split(' ').map(x => `<kbd>${x}</kbd>`).join(' ')}</span><span>${d}</span></div>`).join('')}</div>`;
   ask({ title: 'Shortcuts', ok: 'Close', extra: `<div class="ksheet">
     ${g('Play', [['Space', 'Play or pause'], ['Home', 'Back to the start'], ['L', 'Loop on or off'], ['F', 'Follow the playhead on or off'], ['C', 'Click track']])}
-    ${g('See', [['Wheel', 'Zoom where the mouse is, over a waveform (or pinch)'], ['Shift wheel', 'Move along the timeline'], ['Wheel on names', 'Scroll up and down the tracks'], ['+ −', 'Zoom in and out'], ['Z', 'Zoom to the selection'], ['Shift Z', 'Back to the previous zoom'], ['Alt wheel', 'Taller or shorter waveforms'], ['B', 'Library'], ['I', 'Settings'], ['X', 'Mixer'], ['V', 'Video window']])}
+    ${g('See', [['Wheel', 'Zoom where the mouse is, over a waveform (or pinch)'], ['Shift wheel', 'Move along the timeline'], ['Wheel on names', 'Scroll up and down the tracks'], ['+ −', 'Zoom in and out'], ['Z', 'Zoom to the selection'], ['Shift Z', 'Back to the previous zoom'], ['Alt wheel', 'Make just that track bigger or smaller (or drag its top or bottom edge)'], ['Alt Shift wheel', 'Draw every waveform taller (the sound does not change)'], ['B', 'Library'], ['I', 'Settings'], ['X', 'Mixer'], ['V', 'Video window']])}
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>
@@ -2959,9 +2961,24 @@ function syncZoomUI() { const s = $('#zoomSlider'); if (s) s.value = ppsToSlider
 $('#zoomSlider').addEventListener('pointerdown', () => pushZoom(true));
 $('#zoomSlider').addEventListener('input', e => { userNav(); zoom(sliderToPps(+e.target.value) / pps); });
 // Ctrl/Cmd + scroll or a trackpad pinch zooms at the pointer; Shift + scroll moves along the timeline; plain scroll moves up and down
+/* One track taller or shorter, the others left as they are; everything stays lined up in time */
+const maxLaneH = () => Math.max(360, Math.round($('#tl').clientHeight - 70));
+let growT = null;
+function growLane(laneEl, factor, to) {
+  const l = P.lanes.find(x => x.id === laneEl.dataset.lane); if (!l) return;
+  const h = Math.round(clamp(to ?? laneEl.offsetHeight * factor, 40, maxLaneH()));
+  l.h = h; l.folded = false; laneEl.classList.remove('folded'); laneEl.style.height = h + 'px';
+  clearTimeout(growT); growT = setTimeout(() => { quietCommit(); renderLanes(); }, 160); // redraw the waveforms at the new size
+  if (!UI.toldGrow) { UI.toldGrow = true; saveUI(); toast('Only this track got bigger. Alt + wheel over a track sizes it; the ↕ button on the track does it in one click.', 5000); }
+}
 $('#tl').addEventListener('wheel', e => {
   userNav();
-  if (e.altKey && !(e.ctrlKey || e.metaKey)) { e.preventDefault(); return setAmp((UI.amp || 1) * (e.deltaY < 0 ? 2 : 0.5)); } // Alt + scroll: taller or shorter waveforms
+  if (e.altKey && !(e.ctrlKey || e.metaKey)) {
+    e.preventDefault(); const d = e.deltaY || e.deltaX; if (!d) return;
+    if (e.shiftKey) return setAmp((UI.amp || 1) * (d < 0 ? 2 : 0.5)); // Alt + Shift + wheel: draw every waveform bigger (the sound does not change)
+    const laneEl = e.target.closest && e.target.closest('.lane'); if (laneEl) growLane(laneEl, d < 0 ? 1.25 : 0.8); // Alt + wheel over a track: only that track gets taller or shorter
+    return;
+  }
   // The wheel zooms over the waveforms (unless switched off in Settings); over the track names it scrolls up and down; Shift moves sideways
   const overWave = e.target.closest && e.target.closest('.lane-body,#ruler,.vlane,#vrow') && !e.target.closest('.lane-head');
   const zoomIt = e.ctrlKey || e.metaKey || (UI.wheelZoom !== false && overWave && !e.shiftKey && Math.abs(e.deltaY) >= Math.abs(e.deltaX));
@@ -3068,6 +3085,7 @@ $('#lanes').addEventListener('click', e => {
     else if (b.dataset.lf === 'lock') { l.locked = !l.locked; quietCommit(); renderLanes(); toast(l.locked ? `“${l.name}” locked: its parts stay exactly as they are. You can still change its volume, pan, mute and solo.` : `“${l.name}” unlocked.`, 4000); }
     else if (b.dataset.lf === 'auto') { l.auto.show = l.auto.show ? null : (l.auto.pan.length && !l.auto.vol.length ? 'pan' : 'vol'); if (l.folded) l.folded = false; quietCommit(); renderLanes(); }
     else if (b.dataset.lf === 'automenu') autoMenu(b, l);
+    else if (b.dataset.lf === 'grow') { const el = b.closest('.lane'), big = el.offsetHeight >= Math.min(maxLaneH(), 300) - 2; growLane(el, 1, big ? 96 : Math.min(maxLaneH(), Math.max(300, Math.round($('#tl').clientHeight * 0.55)))); }
     else if (b.dataset.lf === 'fold') { const v = !l.folded; (e.altKey ? P.lanes : [l]).forEach(x => { x.folded = v; }); quietCommit(); renderLanes(); }
     return;
   }
@@ -3078,10 +3096,18 @@ $('#lanes').addEventListener('pointerdown', e => {
   const grip = e.target.closest('.lane-grip');
   if (grip && e.button === 0) {
     e.preventDefault(); const l = P.lanes.find(x => x.id === grip.dataset.grip); if (!l) return;
-    const laneEl = grip.closest('.lane'), y0 = e.clientY, h0 = laneEl.offsetHeight; grip.classList.add('on');
+    const laneEl = grip.closest('.lane'), y0 = e.clientY, h0 = laneEl.offsetHeight, top = grip.classList.contains('top'); grip.classList.add('on');
+    // the top edge is the border with the track above: dragging it moves only that border, so this track grows upwards and the one above gives way
+    const aboveEl = top ? laneEl.previousElementSibling : null, above = aboveEl && P.lanes.find(x => x.id === aboveEl.dataset.lane), ha0 = aboveEl ? aboveEl.offsetHeight : 0;
+    if (top && !above) { grip.classList.remove('on'); return; }
+    if (above && above.folded) { above.folded = false; aboveEl.classList.remove('folded'); }
     try { grip.setPointerCapture(e.pointerId); } catch (_) {}
     if (l.folded) { l.folded = false; laneEl.classList.remove('folded'); }
-    const mv = ev => { l.h = Math.round(clamp(h0 + ev.clientY - y0, 40, 360)); laneEl.style.height = l.h + 'px'; };
+    const mv = ev => {
+      if (!top) { l.h = Math.round(clamp(h0 + ev.clientY - y0, 40, maxLaneH())); laneEl.style.height = l.h + 'px'; return; }
+      const dy = clamp(y0 - ev.clientY, -(h0 - 40), Math.min(ha0 - 40, maxLaneH() - h0)); // up is positive
+      l.h = Math.round(h0 + dy); above.h = Math.round(ha0 - dy); laneEl.style.height = l.h + 'px'; aboveEl.style.height = above.h + 'px';
+    };
     grip.addEventListener('pointermove', mv);
     grip.addEventListener('pointerup', () => { grip.removeEventListener('pointermove', mv); grip.classList.remove('on'); quietCommit(); renderLanes(); }, { once: true });
     return;
