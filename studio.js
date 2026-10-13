@@ -2600,6 +2600,12 @@ $('#insp').addEventListener('click', e => {
   const hit = e.target.closest('[data-hit]'); if (hit) { revealHit(+hit.dataset.hit); return; }
   const h = e.target.closest('.sec > h3'); if (h) toggleSection(h);
 });
+// Space is play/stop everywhere. A clicked button keeps the keyboard focus, and a browser presses a focused button again
+// on Space: after clicking Record notes, Space started the recording and pressed Record again, which stopped it at once.
+document.addEventListener('keyup', e => {
+  if (e.key === ' ' && e.target.closest && e.target.closest('button') && !e.target.closest('input, select, textarea') && $('#modal').hidden) e.preventDefault();
+}, true);
+document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('button'); if (b && e.detail > 0 && !b.closest('#modal')) b.blur(); }); // a mouse click leaves no button holding the focus
 document.addEventListener('keydown', e => { // "/" jumps to the search, from anywhere that is not a text box
   if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || (e.target.closest && e.target.closest('input, select, textarea')) || !$('#modal').hidden) return;
   e.preventDefault(); if (!UI.insp) { UI.insp = true; applyUI(); renderInspector(); } const f = $('#inspFind'); if (f) { f.focus(); f.select(); }
