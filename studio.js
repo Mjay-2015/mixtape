@@ -917,7 +917,8 @@ const outStamp = () => { const ts = ctx.getOutputTimestamp ? ctx.getOutputTimest
 const ctxToPerf = when => { const ts = outStamp(); return ts ? ts.performanceTime + (when - ts.contextTime) * 1000 : performance.now() + (when - ctx.currentTime) * 1000 + ((ctx.outputLatency || ctx.baseLatency || 0) * 1000); };
 function msend(mo, data, perf) { const at = perf == null ? undefined : Math.max(performance.now(), perf + mo.delay); try { mo.o.send(data, at); } catch (e) {} return at || performance.now(); }
 function scheduleMidiOut(gr, horizon) { // like the drum machine: a third of a second ahead, so a pause stops it cleanly
-  if (ctx.getOutputTimestamp && !outStamp()) return; // the audio clock has not started yet: wait, or the first notes go out early
+  // never hold notes back waiting for a fresh output timestamp: on Bluetooth headphones it can stay old for seconds, and a held-back
+  // chord then went out with its note-off at the same instant, silent (the composer's first chord vanished). ctxToPerf falls back instead.
   for (const m of gr.mout || []) {
     const stopWhen = gr.pat ? gr.pat.when0 + (gr.pat.stopAt - gr.pat.startPos) : Infinity;
     while (m.i < m.evs.length && m.evs[m.i].when < horizon) {
@@ -1788,7 +1789,9 @@ async function play() {
   if (playhead >= projectEnd() - 0.02) playhead = 0;
   if (loopActive() && (playhead < P.loop.a || playhead >= P.loop.b - 0.05)) playhead = P.loop.a;
   pendingLoop = null;
-  pos0 = playhead; t0 = ctx.currentTime + (P.lanes.some(l => moutOf(l)) ? 0.3 : 0.05); // an outside instrument needs a moment so its first notes are not late
+  const outside = P.lanes.some(l => moutOf(l));
+  if (outside) { const c0 = ctx.currentTime; for (let i = 0; i < 25 && ctx.currentTime === c0; i++) await new Promise(r => setTimeout(r, 20)); } // let the audio clock start running, so notes sent now are timed against a moving clock
+  pos0 = playhead; t0 = ctx.currentTime + (outside ? 0.3 : 0.05); // an outside instrument needs a moment so its first notes are not late
   graph = buildGraph(ctx, pos0, t0, { metro: P.metro || (!!recNotes && UI.recClick !== false) }); playing = true; renderTransport(); clearInterval(tickT); tickT = setInterval(tick, 33);
   if (P.video) { await ensureVideoEl(); syncVideo(); }
   return true;

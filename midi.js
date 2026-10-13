@@ -84,7 +84,9 @@
     const tempoEv = tempos.map(t => { const us = Math.round(60e6 / t.bpm); return { tick: tickAt(t.sec), order: 0, data: [0xff, 0x51, 3, us >> 16 & 255, us >> 8 & 255, us & 255] }; });
     chunk('MTrk', track([{ tick: 0, order: 0, data: [0xff, 0x58, 4, 4, 2, 24, 8] }, ...tempoEv]));
     for (const tr of tracks) {
-      const ch = tr.channel & 15, name = [...(tr.name || '')].map(c => c.charCodeAt(0) & 0x7f).slice(0, 60), ev = [];
+      // track names in plain ASCII: "Grand piano · recorded" was written as "Grand piano 7 recorded" (the dot's code, cut to 7 bits)
+      const ascii = (tr.name || '').normalize('NFKD').replace(/[·•–—]/g, '-').replace(/[^ -~]/g, '').replace(/\s+/g, ' ').trim();
+      const ch = tr.channel & 15, name = [...ascii].map(c => c.charCodeAt(0)).slice(0, 60), ev = [];
       ev.push({ tick: 0, order: 0, data: [0xff, 0x03, name.length, ...name] });
       if (ch !== 9) ev.push({ tick: 0, order: 1, data: [0xc0 | ch, (tr.program ?? 0) & 127] });
       for (const n of tr.notes) {
