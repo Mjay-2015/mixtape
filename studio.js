@@ -1789,6 +1789,10 @@ async function play() {
   if (playhead >= projectEnd() - 0.02) playhead = 0;
   if (loopActive() && (playhead < P.loop.a || playhead >= P.loop.b - 0.05)) playhead = P.loop.a;
   pendingLoop = null;
+  // a track set to an outside instrument: reconnect to MIDI after a reload (already allowed, so no question), and never fall back silently
+  if (P.lanes.some(l => l.mout) && !midiAccess) await ensureMidiAccess(true);
+  const lost = P.lanes.filter(l => l.mout && !moutOf(l) && laneAudible(l) && P.clips.some(c => c.lane === l.id && c.kind === 'midi' && !c.mute));
+  if (lost.length) toast(`${lost.map(l => `“${l.name}”`).join(', ')} ${lost.length === 1 ? 'is' : 'are'} set to play through ${lost[0].mout.name}, which is not connected, so you are hearing Mixtape’s own sound instead. ${midiAccess ? 'Check loopMIDI is running, then press “Look again” in the track’s settings.' : 'Press “Play this track with an outside instrument…” in the track’s settings to reconnect.'}`, 10000);
   const outside = P.lanes.some(l => moutOf(l));
   if (outside) { const c0 = ctx.currentTime; for (let i = 0; i < 25 && ctx.currentTime === c0; i++) await new Promise(r => setTimeout(r, 20)); } // let the audio clock start running, so notes sent now are timed against a moving clock
   pos0 = playhead; t0 = ctx.currentTime + (outside ? 0.3 : 0.05); // an outside instrument needs a moment so its first notes are not late
@@ -4025,6 +4029,7 @@ function openProject(id, p) {
   hist = []; fut = []; last = JSON.stringify(P); persist();
   selClip = null; selLane = P.lanes[0].id; edSel = null; tlSel = null; playhead = 0;
   renderAll(); if (P.clips.length) fitZoom();
+  if (P.lanes.some(l => l.mout) && !midiAccess) ensureMidiAccess(true).then(a => { if (a) renderInspector(); }); // tracks played by an outside instrument reconnect as the mix opens
   toast(`Opened “${P.name}”${P.link ? '. Reconnect its score folder in Settings to keep it in sync.' : ''}`);
 }
 function newMix() {
