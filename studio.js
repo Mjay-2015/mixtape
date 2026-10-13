@@ -4331,6 +4331,45 @@ async function deliverCue(ref) {
   } catch (e) { toast(`Could not deliver ${cue.ref}: ${e.message}`, 6000); }
   finally { busy(null); }
 }
+/* A cue's instrument parts as a MIDI file in the score folder (midi/<cue>.mid), for the production studio to render
+   through an outside instrument such as LABS (npm run labs -- render --cue <ref>). Times start at the cue's start, so the
+   take it renders lines up when placed on the cue. */
+function cueMidi(cue) {
+  const { a, b } = cueRange(cue), byLane = new Map();
+  for (const c of P.clips) {
+    if (c.kind !== 'midi' || c.mute || c.at >= b || c.at + dur(c) <= a) continue;
+    if (!byLane.has(c.lane)) byLane.set(c.lane, []); byLane.get(c.lane).push(c);
+  }
+  if (!byLane.size) return null;
+  let ch = 0;
+  const tracks = [...byLane].map(([laneId, cs]) => {
+    const l = P.lanes.find(x => x.id === laneId), drums = isKit(cs[0].inst), channel = drums ? 9 : (ch === 9 ? ++ch : ch++) % 16;
+    const notes = cs.flatMap(c => midiEvents(c).filter(e => e.tl >= a - 1e-6 && e.tl < b).map(e => ({ p: e.p, t: e.tl, d: Math.min(e.d, b - e.tl + 4), v: e.v })));
+    return { name: l ? l.name : 'Instrument', channel, program: MixtapeMIDI.PROGRAM[cs[0].inst] ?? 0, notes, cc: cs.flatMap(dynCC).filter(x => x.t >= a && x.t < b), lane: laneId, outside: !!(l && l.mout) };
+  }).filter(t => t.notes.length);
+  if (!tracks.length) return null;
+  const ppq = 480;
+  // the tempo at the cue's start, and every change inside it; ticks count from the cue's start
+  const tempos = P.bpm ? [{ sec: a, bpm: tempoAt(a) }, ...tempoSegs().filter(s => s.t0 > a && s.t0 < b).map(s => ({ sec: s.t0, bpm: s.bpm }))] : [{ sec: a, bpm: 120 }];
+  const tickAt = t => Math.max(0, Math.round(P.bpm ? (beatAt(t) - beatAt(a)) * ppq : (t - a) * 2 * ppq));
+  return { bytes: MixtapeMIDI.write({ ppq, tempos, tracks, tickAt }), tracks, tempo: tempos[0].bpm };
+}
+async function sendCueMidi(ref) {
+  const L = P.link, cue = L && L.cues.find(c => c.ref === ref); if (!cue) return;
+  const m = cueMidi(cue);
+  if (!m) return toast(`There are no instrument parts (notes) inside ${cue.ref} to send. Add one with Instruments & MIDI, inside the cue’s stretch of the timeline.`, 6000);
+  const file = `midi/${safeName(cue.ref)}.mid`;
+  const note = { format: 'mindcraft.cue-midi/1', cueRef: cue.ref, title: cue.title, file: `${safeName(cue.ref)}.mid`, startSec: cue.startSec, endSec: cue.endSec, tempoBpm: m.tempo,
+    parts: m.tracks.map((t, i) => ({ track: i + 2, name: t.name, notes: t.notes.length, outsideInstrument: t.outside })), sentAt: new Date().toISOString(), sentBy: 'Mixtape Studio' };
+  try {
+    if (linkDir) {
+      await writeFile(linkDir, file, new Blob([m.bytes], { type: 'audio/midi' }));
+      await writeFile(linkDir, `midi/${safeName(cue.ref)}.json`, new Blob([JSON.stringify(note, null, 2)], { type: 'application/json' }));
+      cue.midiSent = note.sentAt; quietCommit(); renderInspector();
+      toast(`Sent ${cue.ref}’s MIDI to the score folder: ${m.tracks.map(t => t.name).join(', ')}. In screenwright: npm run labs -- render --cue ${cue.ref} --sound <your sound>. The take appears here under ♪.`, 9000);
+    } else { downloadBlob(new Blob([m.bytes], { type: 'audio/midi' }), `${safeName(cue.ref)}.mid`); toast('The score folder is not connected, so the MIDI was downloaded instead. Reconnect the folder to send it straight there.', 6000); }
+  } catch (e) { toast(`Could not send ${cue.ref}’s MIDI: ${e.message}`, 6000); }
+}
 function linkSectionHTML() {
   const L = P.link;
   if (!L) return `<div class="sec"><h3>Production studio</h3><p class="hint">Link the score folder the production studio makes for a locked cut. Mixtape loads the picture, scenes, hit points and cue placements, watches for re-cuts, and delivers each cue’s mix and stems back into the folder.</p>
@@ -4342,7 +4381,7 @@ function linkSectionHTML() {
     <p class="sub">Cues</p>
     ${L.cues.length ? `<div class="hits">${L.cues.map(c => `<div class="hit cuerow${c.stale && c.stale.length ? ' stale' : ''}" data-cue="${esc(c.ref)}" title="${esc(c.notes || '')}">
       <span class="tc" data-cuego title="Loop this cue">${esc(c.ref)}</span><span class="cuetitle">${esc(c.title)} · ${fmt(c.startSec)}–${fmt(c.endSec)}${c.stale && c.stale.length ? `<b>Picture moved: ${esc(c.stale.join('; '))}</b>` : c.delivered ? `<em>Delivered${c.lastLoudness != null ? ' · ' + c.lastLoudness + ' LUFS' : ''}</em>` : ''}</span>
-      ${(L.takes && L.takes[c.ref] || []).length ? `<button data-cuetakes title="Music the production studio generated for this cue">♪${L.takes[c.ref].length}</button>` : ''}<button data-cuego title="Loop this cue">⟲</button><button data-cuedeliver title="Deliver this cue: mix, stems and loudness into the folder">⇪</button></div>`).join('')}</div>` : '<p class="hint">The package has no cue placements yet.</p>'}
+      ${(L.takes && L.takes[c.ref] || []).length ? `<button data-cuetakes title="Music the production studio generated for this cue">♪${L.takes[c.ref].length}</button>` : ''}<button data-cuego title="Loop this cue">⟲</button>${P.clips.some(x => x.kind === 'midi' && !x.mute && x.at < cueRange(c).b && x.at + dur(x) > cueRange(c).a) ? `<button data-cuemidi title="Send this cue’s instrument parts to the score folder as MIDI, to render through LABS in the production studio${c.midiSent ? ` (last sent ${new Date(c.midiSent).toLocaleString()})` : ''}">♫</button>` : ''}<button data-cuedeliver title="Deliver this cue: mix, stems and loudness into the folder">⇪</button></div>`).join('')}</div>` : '<p class="hint">The package has no cue placements yet.</p>'}
     <div class="field"><label for="lProf">Delivers to</label><select id="lProf" data-linkset="profile">${Object.entries(PROFILES).map(([k, p]) => `<option value="${k}" ${k === profileId() ? 'selected' : ''}>${p.name}</option>`).join('')}</select><span></span></div>
     <div class="field"><label for="lTc">Starts at</label><input id="lTc" data-linkset="tc" value="${esc(startTC())}" style="font-family:var(--f-mono);height:28px;border-radius:6px;border:1px solid var(--line);background:var(--raise);padding:0 6px;width:100%"><span></span></div>
     ${L.rights && L.rights.forSale ? '<p class="hint">This film is marked for sale: only music models cleared for that can go into deliveries.</p>' : ''}
@@ -4353,6 +4392,7 @@ $('#insp').addEventListener('click', e => {
   const row = e.target.closest('[data-cue]'); if (!row || !P.link) return;
   const cue = P.link.cues.find(c => c.ref === row.dataset.cue); if (!cue) return;
   if (e.target.closest('[data-cuedeliver]')) return deliverCue(cue.ref);
+  if (e.target.closest('[data-cuemidi]')) return sendCueMidi(cue.ref);
   const tb = e.target.closest('[data-cuetakes]');
   if (tb) {
     const takes = (P.link.takes && P.link.takes[cue.ref]) || [], r = tb.getBoundingClientRect();
@@ -4430,7 +4470,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, normalize, runFind, revealHit, get findHits() { return findHits; }, textScale, set midiAccess(v) { midiAccess = v; }, get midiAccess() { return midiAccess; }, scheduleMidiOut, moutOf, SAMP, loadSamp, makeSampled, isSamp, sampReady, gmFor, sampAudition, instOptions, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, normalize, cueMidi, sendCueMidi, set linkDir(v) { linkDir = v; }, runFind, revealHit, get findHits() { return findHits; }, textScale, set midiAccess(v) { midiAccess = v; }, get midiAccess() { return midiAccess; }, scheduleMidiOut, moutOf, SAMP, loadSamp, makeSampled, isSamp, sampReady, gmFor, sampAudition, instOptions, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,
