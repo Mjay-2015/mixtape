@@ -2270,7 +2270,7 @@ function renderLanes() {
           return `<div class="clip${c.id === selClip ? ' sel' : ''}${c.mute ? ' muted' : ''}${c.pin ? ' pinned' : ''}${c.kind === 'pattern' || c.kind === 'riser' ? ' pattern' : ''}" data-clip="${c.id}" style="left:${c.at * pps}px;width:${Math.max(4, dur(c) * pps)}px">
             <canvas></canvas><span class="cl" title="Drag here to move · ${esc(name)} · ${fmtT(dur(c))}${esc(clipBadge(c))}">${esc(name)}${esc(clipBadge(c))}</span>${sel}
             <span class="fh l" data-fade="in" style="left:${(c.fadeIn || 0) * pps}px" title="Drag to fade in"></span><span class="fh r" data-fade="out" style="right:${(c.fadeOut || 0) * pps}px" title="Drag to fade out"></span>
-            <span class="h l" data-h="l" title="Drag to trim the start"></span><span class="h r" data-h="r" title="Drag to trim the end"></span></div>`;
+            <span class="h l" data-h="l" title="${UI.edgeMode === 'stretch' ? 'Drag to stretch from the start' : 'Drag to trim the start'}"></span><span class="h r" data-h="r" title="${UI.edgeMode === 'stretch' ? 'Drag to stretch' : 'Drag to trim the end'}"></span></div>`;
         }).join('')}
       </div>
     </div>`; }).join('');
@@ -2514,6 +2514,67 @@ function updateDeviceMeters() { // the compressor's squeeze and the EQ's live sp
   document.querySelectorAll('[data-gr]').forEach(i => { const hit = findDev(i.dataset.gr), x = hit && (devsOf(hit.l.id) || {})[i.dataset.gr]; if (x && x.comp) { const red = x.comp.reduction || 0; i.style.width = clamp(-red / 24, 0, 1) * 100 + '%'; const o = document.querySelector(`[data-grv="${i.dataset.gr}"]`); if (o) o.textContent = `${red.toFixed(1)} dB`; } });
   document.querySelectorAll('canvas.eqcv').forEach(drawEQ);
 }
+/* ---- the settings panel: a text size, folding sections, and a search that finds any setting ---- */
+const textScale = () => UI.ts || 1.15;
+function applyTextScale() { document.documentElement.style.setProperty('--ts', textScale()); }
+const secKey = h => h.textContent.split(':')[0].trim().toLowerCase();
+function foldSections() {
+  const F = UI.secFold || { keys: true };
+  $$('#insp .sec').forEach(s => { const h = s.querySelector(':scope > h3'); if (!h) return; s.classList.toggle('folded', !!F[secKey(h)]); h.tabIndex = 0; h.setAttribute('role', 'button'); h.setAttribute('aria-expanded', !F[secKey(h)]); h.title = 'Click to fold or open this section'; });
+}
+function toggleSection(h) { const F = { keys: true, ...(UI.secFold || {}) }, k = secKey(h); F[k] = !F[k]; UI.secFold = F; saveUI(); foldSections(); }
+let findQ = '', findHits = [], findSel = 0;
+// what people call things, and where a setting lives when it is not on screen
+const FIND_SAY = { labs: 'outside instrument', 'midi out': 'outside instrument', loopmidi: 'outside instrument', splice: 'outside instrument', loudness: 'mastering', lufs: 'mastering', loud: 'mastering', bpm: 'tempo', pitch: 'key', stretch: 'speed', 'time stretch': 'speed', eq: 'add an effect', equaliser: 'add an effect', equalizer: 'add an effect', compressor: 'add an effect', saturation: 'add an effect', 'lo-fi': 'add an effect', lofi: 'add an effect', chorus: 'add an effect', delay: 'add an effect', sidechain: 'pump', duck: 'dialogue', mono: 'listen in mono', 'mod wheel': 'dynamics', velocity: 'dynamics', crescendo: 'dynamics', chords: 'chord', group: 'output', bus: 'output', send: 'send', 'reverb return': 'add track' };
+const FIND_WHERE = [
+  [/outside|labs|midi out|loopmidi|splice/i, 'The outside instrument is in the settings of a track that has notes on it: click that track’s name on the left of the timeline.'],
+  [/effect|eq|equali|compress|satur|lo-?fi|distort|chorus|phaser|delay|gate|filter sweep/i, 'Effects are in each track’s settings: click a track’s name, then use “+ Add an effect…”.'],
+  [/speed|stretch|key|fade|split/i, 'That is in a song part’s settings: click a part on the timeline.'],
+  [/chord|scale|dynamic|velocity|swell|arpegg|record notes|keyboard|instrument|sound/i, 'That is in an instrument part’s settings: click a part with notes (or add one with Instruments & MIDI).'],
+  [/send|output|group|return/i, 'Sends and outputs are in a track’s settings; groups and reverb returns come from “+ Add track ▾”.'],
+];
+function findTargets() { return [...$('#insp').querySelectorAll('.sec > h3, .sub, .field > label, label.chk, .btnrow .btn, .dev-h b, select.addfx, select[data-mpreset]')].filter(el => el.offsetParent !== null || el.closest('.sec.folded')); }
+function runFind() {
+  const box = $('#inspFind'), list = $('#findList'); if (!box || !list) return;
+  findQ = box.value; const q = findQ.trim().toLowerCase(); if (!q) { list.hidden = true; findHits = []; return; }
+  const alias = Object.entries(FIND_SAY).find(([k]) => q.includes(k)), words = [q, ...(alias ? [alias[1]] : [])];
+  const textOf = el => (el.matches('select') ? el.getAttribute('aria-label') || el.options[0].textContent : el.textContent).replace(/\s+/g, ' ').trim();
+  // best first: a label that starts with the words, then section and group headings, then anything containing them
+  const score = el => { const t = textOf(el).toLowerCase(); return (words.some(w => t.startsWith(w)) ? 0 : 2) + (el.matches('.sub, .sec > h3') ? 0 : 1); };
+  findHits = findTargets().filter(el => words.some(w => textOf(el).toLowerCase().includes(w))).map((el, i) => ({ el, k: score(el) * 1000 + i })).sort((a, b) => a.k - b.k).map(x => x.el).slice(0, 8);
+  findSel = 0;
+  if (!findHits.length) { const where = FIND_WHERE.find(([re]) => re.test(q)); list.innerHTML = `<p class="findnone">${where ? where[1] : `Nothing called “${esc(findQ)}” here. The settings change with what is selected: click a part or a track first.`}</p>`; list.hidden = false; return; }
+  list.innerHTML = findHits.map((el, i) => { const sec = el.closest('.sec')?.querySelector(':scope > h3'); return `<button class="findhit${i === findSel ? ' on' : ''}" data-hit="${i}"><b>${esc(textOf(el).slice(0, 60))}</b>${sec && sec !== el ? `<span>${esc(sec.textContent.trim())}</span>` : ''}</button>`; }).join('');
+  list.hidden = false;
+}
+function revealHit(i) {
+  const el = findHits[i]; if (!el) return; const sec = el.closest('.sec');
+  if (sec && sec.classList.contains('folded')) toggleSection(sec.querySelector(':scope > h3'));
+  const box = el.closest('.field, .chk, .dev, .btnrow, .sub, .sec > h3') || el;
+  $('#findList').hidden = true;
+  const ins = $('#insp'), r = box.getBoundingClientRect(), pr = ins.getBoundingClientRect(), bar = $('.insp-tools').getBoundingClientRect().bottom - pr.top; // centre it in the panel, below the search bar
+  ins.scrollTop = Math.max(0, ins.scrollTop + (r.top - pr.top) - bar - Math.max(0, (pr.height - bar - r.height) / 2));
+  $$('#insp .flash').forEach(x => x.classList.remove('flash')); void box.offsetWidth; box.classList.add('flash'); setTimeout(() => box.classList.remove('flash'), 2200);
+  const ctl = box.querySelector('input:not([type=search]), select, button') || (box.matches('button, select') ? box : null); if (ctl) setTimeout(() => ctl.focus({ preventScroll: true }), 350);
+}
+$('#insp').addEventListener('input', e => { if (e.target.id === 'inspFind') runFind(); });
+$('#insp').addEventListener('keydown', e => {
+  if (e.target.id === 'inspFind') {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (!findHits.length) return; findSel = (findSel + (e.key === 'ArrowDown' ? 1 : -1) + findHits.length) % findHits.length; $$('#findList .findhit').forEach((b, i) => b.classList.toggle('on', i === findSel)); }
+    else if (e.key === 'Enter') { e.preventDefault(); revealHit(findSel); }
+    else if (e.key === 'Escape') { e.target.value = ''; findQ = ''; runFind(); e.target.blur(); }
+    return;
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.sec > h3')) { e.preventDefault(); toggleSection(e.target); }
+});
+$('#insp').addEventListener('click', e => {
+  const hit = e.target.closest('[data-hit]'); if (hit) { revealHit(+hit.dataset.hit); return; }
+  const h = e.target.closest('.sec > h3'); if (h) toggleSection(h);
+});
+document.addEventListener('keydown', e => { // "/" jumps to the search, from anywhere that is not a text box
+  if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || (e.target.closest && e.target.closest('input, select, textarea')) || !$('#modal').hidden) return;
+  e.preventDefault(); if (!UI.insp) { UI.insp = true; applyUI(); renderInspector(); } const f = $('#inspFind'); if (f) { f.focus(); f.select(); }
+});
 function renderInspector() {
   const c = clipById(selClip), l = P.lanes.find(x => x.id === selLane);
   let html = '';
@@ -2583,8 +2644,11 @@ function renderInspector() {
       <div class="btnrow"><button class="btn sm" data-act="evenout">Even out volume between parts</button></div></div>
     ${masteringHTML()}
     <div class="sec"><h3>Keys</h3><div class="keys"><kbd>Space</kbd> play/pause · <kbd>Home</kbd> start · <kbd>L</kbd> loop<br><kbd>Del</kbd> remove selection or part · <kbd>K</kbd> keep only<br><kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>D</kbd> repeat<br><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo<br><kbd>B</kbd> library · <kbd>I</kbd> settings · <kbd>X</kbd> mixer<br><kbd>M</kbd> hit point · <kbd>V</kbd> video · <kbd>T</kbd> tempo change<br><kbd>C</kbd> click · <kbd>+</kbd>/<kbd>−</kbd> zoom · click the time for bars</div></div>`;
-  html = `<button class="rail" data-act="toggleinsp" title="Show the settings (I)"><span>◂</span><span class="rl">Settings</span></button><div class="insp-top"><button class="headbtn" data-act="toggleinsp" title="Fold the settings away for more room (I)">▸</button></div>` + html;
-  const ins = $('#insp'), st = ins.scrollTop; ins.innerHTML = html; requestAnimationFrame(() => document.querySelectorAll('canvas.eqcv').forEach(drawEQ)); ins.scrollTop = st; applyTips();
+  html = `<button class="rail" data-act="toggleinsp" title="Show the settings (I)"><span>◂</span><span class="rl">Settings</span></button>
+    <div class="insp-tools"><button class="headbtn" data-act="toggleinsp" title="Fold the settings away for more room (I)">▸</button>
+      <div class="findwrap"><input id="inspFind" type="search" placeholder="Find a setting  ( / )" aria-label="Find a setting" autocomplete="off" value="${esc(findQ)}"><div class="findlist" id="findList" hidden></div></div>
+      <button class="btn sm ghost tsz" data-act="txtsize" data-d="-1" title="Smaller settings text" aria-label="Smaller settings text">A−</button><button class="btn sm ghost tsz" data-act="txtsize" data-d="1" title="Bigger settings text" aria-label="Bigger settings text">A+</button></div>` + html;
+  const ins = $('#insp'), st = ins.scrollTop, hadFind = document.activeElement && document.activeElement.id === 'inspFind'; applyTextScale(); ins.innerHTML = html; foldSections(); if (hadFind) { const f = $('#inspFind'); f.focus(); f.setSelectionRange(f.value.length, f.value.length); runFind(); } requestAnimationFrame(() => document.querySelectorAll('canvas.eqcv').forEach(drawEQ)); ins.scrollTop = st; applyTips();
   if (c && !['midi', 'pattern', 'riser'].includes(c.kind)) { $('#cFxIn').value = c.fxIn || 'fade'; $('#cFxOut').value = c.fxOut || 'fade'; }
 }
 function renderMixer() {
@@ -2664,7 +2728,8 @@ function renderTransport() {
   $('#metroBtn').setAttribute('aria-pressed', !!P.metro); $('#vidBtn').setAttribute('aria-pressed', !!(P.video && UI.vwin)); $('#mixBtn').setAttribute('aria-pressed', !!UI.mixer);
   $('#libBtn').setAttribute('aria-pressed', UI.lib); $('#inspBtn').setAttribute('aria-pressed', UI.insp);
   $$('.hsz button').forEach(b => b.setAttribute('aria-pressed', b.dataset.h === UI.h));
-  $('#snapBtn').setAttribute('aria-pressed', P.snap); $('#monoBtn').setAttribute('aria-pressed', monoOn); $('#followBtn').setAttribute('aria-pressed', UI.follow !== false);
+  $('#snapBtn').setAttribute('aria-pressed', P.snap);
+  $('#edgeTrim').setAttribute('aria-pressed', UI.edgeMode !== 'stretch'); $('#edgeStretch').setAttribute('aria-pressed', UI.edgeMode === 'stretch'); $('#tl').classList.toggle('stretchmode', UI.edgeMode === 'stretch'); $('#monoBtn').setAttribute('aria-pressed', monoOn); $('#followBtn').setAttribute('aria-pressed', UI.follow !== false);
   $('#tempoLbl').textContent = P.bpm ? `${Math.round(tempoAt(curPos()) * 10) / 10} BPM${(P.tempoChanges || []).length ? ' (map)' : ''}${P.key ? ' · ' + keyName(P.key.key, P.key.mode) : ''}` : '— BPM';
   $('#recBtn').classList.toggle('on', !!rec);
   $('#recLbl').textContent = rec ? `Stop recording ${fmtT((Date.now() - rec.began) / 1000).replace(/\.\d$/, '')}` : 'Record voice';
@@ -2731,6 +2796,8 @@ const acts = {
   pathouse: () => { const c = clipById(selClip); if (c && c.kind === 'pattern') { c.pat.rows = housePattern(c.pat.bars || 1); patLive(c); renderInspector(); toast('House beat: kick on every beat, clap on 2 and 4, open hats on the off-beats.'); } },
   patclear: () => { const c = clipById(selClip); if (c && c.kind === 'pattern') { for (const [k] of DRUM_ROWS) c.pat.rows[k] = Array(patN(c)).fill(0); patLive(c); } },
   drummachine: () => newDrumMachine(),
+  edgemode: b => { UI.edgeMode = b.dataset.m; saveUI(); renderTransport(); renderLanes(); toast(UI.edgeMode === 'stretch' ? 'Stretch: dragging a part’s edge now makes it play faster or slower to fill the length (pitch kept). The edges turn orange.' : 'Trim: dragging a part’s edge now shows more or less of it.', 5000); },
+  txtsize: b => { const S = [0.9, 1, 1.15, 1.3, 1.5, 1.75], i = S.indexOf(textScale()), j = clamp((i < 0 ? 2 : i) + (+b.dataset.d), 0, S.length - 1); UI.ts = S[j]; saveUI(); applyTextScale(); renderInspector(); toast(`Settings text ${Math.round(S[j] * 100)}%`, 1500); },
   midiouts: async () => { if (await ensureMidiAccess()) { const n = midiAccess.outputs.size; toast(n ? `Found ${n} MIDI output${n === 1 ? '' : 's'}: ${[...midiAccess.outputs.values()].map(o => o.name).join(', ')}.` : 'No MIDI outputs found. Make a loopback cable first: see How to set up LABS.', 6000); } renderInspector(); },
   labshelp: () => labsHelp(),
   mouttest: () => { const l = P.lanes.find(x => x.id === selLane), mo = moutOf(l); if (!mo) return toast('That MIDI output is not connected.'); [60, 64, 67].forEach((p, i) => { msend(mo, [0x90 | mo.ch, p, 96], performance.now() + i * 250); msend(mo, [0x80 | mo.ch, p, 0], performance.now() + i * 250 + 600); }); toast(`Sent C, E, G to ${l.mout.name} on channel ${l.mout.ch || 1}. If you heard nothing, check the other app’s MIDI input.`, 6000); },
@@ -2782,7 +2849,7 @@ document.addEventListener('mouseover', e => {
   let tip = '';
   const z = e.target.closest('[data-h],[data-fade],.cl,.clip,svg.auto,.lane-grip,#ruler,#overview,#edWrap,.lane-body,[title],[aria-label]');
   if (z) {
-    if (z.dataset && z.dataset.h) tip = 'Drag to trim this end of the part.';
+    if (z.dataset && z.dataset.h) tip = UI.edgeMode === 'stretch' ? 'Drag to stretch the part: it plays faster or slower to fill the new length (Stretch mode, top bar).' : 'Drag to trim this end of the part (Trim mode, top bar).';
     else if (z.dataset && z.dataset.fade) tip = `Drag to fade ${z.dataset.fade === 'in' ? 'in' : 'out'}.`;
     else if (z.classList.contains('cl')) tip = 'Drag the name bar to move the part, even onto another track. Double-click to open it in the part editor.';
     else if (z.classList.contains('clip')) tip = 'Drag across the waveform to select a stretch, then Delete removes it or K keeps only it. Right-click for more.';
@@ -3057,6 +3124,8 @@ $('#lanes').addEventListener('pointerdown', e => {
   const snapEdge = t => { for (const s of edges) if (Math.abs(s - t) * pps < 8) return s; return null; };
   const bl = beatLen();
   let moved = false;
+  const fixedLen = ['pattern', 'riser'].includes(c.kind), stretching = UI.edgeMode === 'stretch' && (mode === 'l' || mode === 'r') && !fixedLen;
+  if (UI.edgeMode === 'stretch' && fixedLen && (mode === 'l' || mode === 'r')) toast('Drum machine parts and risers follow the tempo, so they are not stretched; this drag trims instead.', 4000);
   const mv = ev => {
     const dt = (ev.clientX - x0) / pps; if (Math.abs(ev.clientX - x0) > 3) moved = true; if (!moved) return;
     if (mode === 'move') {
@@ -3068,6 +3137,15 @@ $('#lanes').addEventListener('pointerdown', e => {
       const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.lane');
       if (under && under.dataset.lane !== c.lane) { c.lane = under.dataset.lane; under.querySelector('.lane-body').appendChild(el); }
       el.style.left = c.at * pps + 'px';
+    } else if (stretching) { // Stretch mode: the part keeps all its material and plays faster or slower to fill the new length
+      const span = o.end - o.start, d0 = span / r; let dNew = mode === 'r' ? d0 + dt : d0 - dt;
+      const edgeAt = mode === 'r' ? o.at + dNew : o.at + d0 - dNew, s = snapEdge(edgeAt) ?? (P.snap && bl ? snapBeat(edgeAt) : null);
+      if (s !== null) dNew = mode === 'r' ? s - o.at : o.at + d0 - s;
+      let rate = span / Math.max(0.05, dNew); const lim = clamp(rate, 0.5, 2);
+      if (lim !== rate) edgeLimit(el, mode, 'Stretched as far as it goes: from half speed to double speed. For more, split the part or change the tempo.');
+      c.rate = Math.round(lim * 10000) / 10000; const dd = span / c.rate;
+      if (mode === 'l') c.at = Math.max(0, o.at + d0 - dd);
+      el.style.left = c.at * pps + 'px'; el.style.width = dd * pps + 'px';
     } else if (mode === 'l') {
       const want = o.start + dt * r;
       // snap first, then hold it inside the song: snapping after the limit could reach before the song's first second
@@ -3086,7 +3164,7 @@ $('#lanes').addEventListener('pointerdown', e => {
   el.addEventListener('pointermove', mv);
   el.addEventListener('pointerup', () => {
     el.removeEventListener('pointermove', mv); el.style.cursor = '';
-    if (moved) { selLane = c.lane; tlSel = null; commit(); } else { tlSel = null; el.querySelectorAll('.tlsel').forEach(x => x.remove()); if (mode === 'move') seekClick(o.at + (x0 - r0left) / pps); }
+    if (moved) { selLane = c.lane; tlSel = null; commit(stretching ? `Stretched: it plays at ${Math.round(c.rate * 100)}% speed${c.kind === 'midi' || c.keepPitch !== false ? ', same pitch' : ', and the pitch follows'}. Trim / Stretch in the top bar switches back to trimming.` : undefined); } else { tlSel = null; el.querySelectorAll('.tlsel').forEach(x => x.remove()); if (mode === 'move') seekClick(o.at + (x0 - r0left) / pps); }
   }, { once: true });
 });
 
@@ -4318,7 +4396,7 @@ $('#busyCancel').addEventListener('click', () => { if (busyCancel) busyCancel();
 })();
 // Test hook: only on this computer (localhost), never on the published site
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__studio = {
-  get projId() { return projId; }, normalize, set midiAccess(v) { midiAccess = v; }, get midiAccess() { return midiAccess; }, scheduleMidiOut, moutOf, SAMP, loadSamp, makeSampled, isSamp, sampReady, gmFor, sampAudition, instOptions, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
+  get projId() { return projId; }, normalize, runFind, revealHit, get findHits() { return findHits; }, textScale, set midiAccess(v) { midiAccess = v; }, get midiAccess() { return midiAccess; }, scheduleMidiOut, moutOf, SAMP, loadSamp, makeSampled, isSamp, sampReady, gmFor, sampAudition, instOptions, partScale, chordAt, chordName, nearestInScale, noteIn, pedal, ccIn, toggleRecNotes, get recNotes() { return recNotes; }, get monoOn() { return monoOn; }, set qwerty(v) { qwerty = v; }, checkMaster, limitToTarget, MASTER_PRESETS, ensureLofi, lofiOk, satLevel, dynGain, writeChords, get masterReport() { return masterReport; }, newDevice, addGroup, addReturn, laneAudible, findDev, get ORCH() { return ORCH; }, ensureOrch, isOrch, midiEvents, newRiser, getHall, newDrumMachine, schedulePatterns, get graph() { return graph; }, HAS_TONE, makeKit, toneFor, togglePin, closeGaps: id => closeGaps(id), removeStretch, splitHere, prevZoom, setAmp, loadDemo, restoreWhole, get navAt() { return navAt; }, get pps() { return pps; }, zoom, zoomToSelection, edZoom, edFit, get edWin() { return edWin; }, drawOverview, refreshTakes, solveTempo, findTempo, beatAt, timeAtBeat, dialogueGated, tcToSec, humanEdits, PROFILES, deliverCue, deliverFinal, get linkDir() { return linkDir; }, loadIndex, openProject, newMix, importMidi, exportMidi, newInstrumentTrack, quantize, drawEditor, renderInspector,
   get edNote() { return edNote; }, set selClip(v) { selClip = v; }, set edOpen(v) { edOpen = v; },
   get P() { return P; }, set P(v) { P = v; },
   commit, renderMix, duckUnder, newLane, newClip, saveToLibrary, encodeWavData, uid, measureLoudness, renderAll,
