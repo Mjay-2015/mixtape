@@ -1032,7 +1032,9 @@ window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (k === 'escape') { qwerty = false; renderInspector(); return toast('The computer keys work as shortcuts again.'); }
   if (k === 'z' || k === 'x') { e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) { qOct = clamp(qOct + (k === 'x' ? 1 : -1), -3, 3); toast(`The computer keys now start at C${4 + qOct}.`, 1500); } return; }
-  if (!(k in QWERTY)) return; e.preventDefault(); e.stopImmediatePropagation();
+  // any other plain key (C, M, I, numbers…) is swallowed: a missed note must not fire a shortcut mid-performance
+  if (!(k in QWERTY)) { if (e.key.length === 1 && e.key !== ' ') { e.preventDefault(); e.stopImmediatePropagation(); } return; }
+  e.preventDefault(); e.stopImmediatePropagation();
   if (!e.repeat && !qHeld.has(k)) { const p = 60 + 12 * qOct + QWERTY[k]; qHeld.set(k, p); noteIn(p, e.shiftKey ? 120 : 96, true); }
 }, true);
 window.addEventListener('keyup', e => { const p = qHeld.get(e.key.toLowerCase()); if (p == null) return; qHeld.delete(e.key.toLowerCase()); noteIn(p, 0, false); }, true);
@@ -1828,7 +1830,8 @@ function pause() {
 }
 const curPos = () => playing ? pos0 + Math.max(0, ctx.currentTime - t0) : playhead;
 function disposeTone(gr) { (gr.worklets || []).forEach(n => { try { n.port.postMessage('end'); n.disconnect(); } catch (e) {} }); gr.worklets = []; const ns = gr.toneNodes || []; gr.toneNodes = []; setTimeout(() => ns.forEach(n => { try { n.dispose(); } catch (e) {} }), 1500); }
-function restartIfPlaying() { if (playing && !rec) { pause(); play(); } }
+// never while recording (voice or notes): restarting would end the take; the change is heard from the next play
+function restartIfPlaying() { if (playing && !rec && !recNotes) { pause(); play(); } }
 function tick() {
   if (!playing) return clearInterval(tickT);
   if (loopActive() && graph && !rec) {
@@ -2909,6 +2912,7 @@ function showShortcuts() {
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>
+  <p class="hint">Mixtape Studio v41</p>
   <div class="credits"><h4>Made with</h4>
     <p>Tone.js by Yotam Mann (MIT licence): drum machine, synths and effects.</p>
     <p>VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell) (CC0, public domain): the orchestra.</p>
