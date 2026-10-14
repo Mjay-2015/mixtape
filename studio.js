@@ -1571,7 +1571,14 @@ function pianoPointer(e, wrap, c) {
   const tAt = ev => V.t0 + (ev.clientX - rect.left - V.KW) / (V.w - V.KW) * (V.t1 - V.t0), pAt = ev => clamp(V.hi - Math.floor((ev.clientY - rect.top) / V.rowH), 0, 127);
   const sn = t => free ? t : snapNoteT(c, t), audition = p => { if (isSamp(c.inst)) return sampAudition(c.inst, p + (c.semi || 0)); if (HAS_TONE && isOrch(c.inst)) return orchAudition(c, p + (c.semi || 0)); if (HAS_TONE && TONE_INSTS[c.inst]) return toneAudition(c.inst, p + (c.semi || 0)); ctx.resume(); MixtapeMIDI.playNote(ctx, ctx.destination, c.inst || 'piano', p + (c.semi || 0), ctx.currentTime + 0.01, 0.35, 96); };
   if (V.DH && e.clientY - rect.top >= V.dynY0) return dynPointer(e, wrap, c, V, rect);
-  if (e.clientX - rect.left < V.KW) return audition(pAt(e));
+  if (e.clientX - rect.left < V.KW) {
+    // while recording (or armed), or when the track plays an outside instrument, the keys are played like a keyboard:
+    // heard through LABS, held for as long as the button is down, and recorded
+    if (!(recNotes || recArm || liveLaneOut())) return audition(pAt(e));
+    const kp = pAt(e); noteIn(kp, 96, true);
+    window.addEventListener('pointerup', () => noteIn(kp, 0, false), { once: true }); return;
+  }
+  if (recNotes) return toast('Recording plays notes in real time: click the piano keys on the left of this editor, or use the computer keys. Clicking the grid writes a note by hand, so it is off while recording.', 7000);
   const sc = partScale(c), sp = q => c.scaleLock && sc ? nearestInScale(sc, q) : q; let group = null;
   c.notes = c.notes.map(n => ({ ...n })); // parts split from one another share notes until one is edited
   const t = tAt(e), p = pAt(e);
@@ -1631,7 +1638,7 @@ function midiInspectorHTML(c) {
     <label class="chk"><input type="checkbox" data-uiset="recQ" ${UI.recQ ? 'checked' : ''}> Snap recorded notes to 1/16</label>
     <label class="chk"><input type="checkbox" data-uiset="recClick" ${UI.recClick !== false ? 'checked' : ''}> Click while recording</label>
     <p class="hint">Press Record, then Space to start: you get one bar to come in. Space again stops. The sustain pedal works, and the mod wheel records into the dynamics.</p>
-    <p class="hint">Double-click the part to open the note editor. Click to add a note, drag to move it, drag its right edge to lengthen it, double-click to remove it. Notes snap to sixteenths; hold Alt to place them freely. Click the keyboard to hear a pitch.</p>
+    <p class="hint">Double-click the part to open the note editor. Click to add a note, drag to move it, drag its right edge to lengthen it, double-click to remove it. Notes snap to sixteenths; hold Alt to place them freely. Click the keyboard to hear a pitch; while recording, clicking its keys plays and records them.</p>
     <p class="hint">These built-in sounds are for writing and placing. The production studio renders the finished parts with sampled instruments from the MIDI file.</p>
     <div class="btnrow"><button class="btn sm" data-act="quantize">Snap notes to 1/16</button><button class="btn sm" data-act="exportmidi">Export MIDI</button></div></div>`;
 }
@@ -2912,7 +2919,7 @@ function showShortcuts() {
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>
-  <p class="hint">Mixtape Studio v41</p>
+  <p class="hint">Mixtape Studio v42</p>
   <div class="credits"><h4>Made with</h4>
     <p>Tone.js by Yotam Mann (MIT licence): drum machine, synths and effects.</p>
     <p>VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell) (CC0, public domain): the orchestra.</p>
