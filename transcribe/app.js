@@ -53,10 +53,14 @@ async function openPicked(fs) {
   let ra; try { ra = JSON.parse(await json.text()); } catch (e) { return toast('That .json is not a read-along file.'); }
   if (!ra || !Array.isArray(ra.words) || !ra.words.length) return toast('That .json has no words with times in it.');
   const audio = media.find(f => f.name === ra.audio) || media[0];
-  if (!audio) return toast(`Pick the narration too: ${ra.audio || 'its .mp3'} together with the .json.`, 6000);
+  if (!audio) return toast(`Pick the recording too: ${ra.audio || 'its .mp3'} together with the .json.`, 6000);
   const id = await addFile(audio, { quiet: true }); if (!id) return;
-  const words = ra.words.map(w => ({ t: String(w.t), s: w.s == null ? null : +w.s, e: w.e == null ? null : +w.e, ...(w.p ? { p: true } : {}), ...(w.sp ? { sp: w.sp } : {}) }));
-  cur.tr = { id, mode: 'text', words, upTo: ra.duration || cur.track.duration || 0, done: true, duration: ra.duration || cur.track.duration || 0, updated: Date.now(), voice: ra.voice || '' };
+  // a narration's read-along (mode text), or a transcript made elsewhere (mode heard, e.g. Reverb on your own computer):
+  // either way every word has its moment; a transcript keeps the recogniser's confidence, so unsure words show lighter
+  const heard = ra.mode === 'heard';
+  const words = ra.words.map(w => ({ t: String(w.t), s: w.s == null ? null : +w.s, e: w.e == null ? null : +w.e, ...(w.p ? { p: true } : {}), ...(w.sp ? { sp: w.sp } : {}), ...(heard && w.c != null ? { c: +w.c } : {}) }));
+  if (heard && words[0]) words[0].p = true;
+  cur.tr = { id, mode: heard ? 'heard' : 'text', words, upTo: ra.duration || cur.track.duration || 0, done: true, duration: ra.duration || cur.track.duration || 0, updated: Date.now(), voice: ra.voice || '' };
   await save(); drawAll(); toast(`Ready: ${words.length.toLocaleString()} words, each with its moment${ra.voice ? `, read by ${String(ra.voice).replace(/^[a-z]{2}-[A-Z]{2}-/, '').replace(/:.*/, '')}` : ''}. Click any word.`, 6000);
 }
 async function addFile(f, { quiet = false } = {}) {
