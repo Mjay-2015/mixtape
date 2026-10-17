@@ -555,6 +555,7 @@ function trackMenu(id, anchor) {
     { label: 'Add to playlist…', act: () => openMenu(anchor, [{ lbl: 'Add to playlist' }, ...lists.map(l => ({ label: l.name, act: () => addToList(l, id) })), ...(lists.length ? [{ sep: 1 }] : []), { label: 'New playlist…', act: () => newList(id) }]) }];
   const l = curList(); if (l && l.ids.includes(id)) items.push({ label: `Remove from ${l.name}`, act: () => removeFromList(l, id) });
   if (matchMedia('(min-width: 900px) and (pointer: fine)').matches) items.push({ label: 'Open in Studio', act: () => { location.href = 'studio.html?add=' + encodeURIComponent(id); } });
+  items.push({ label: 'Open in Cutter', act: () => { location.href = 'cutter/?song=' + encodeURIComponent(id); } });
   items.push({ sep: 1 }, { label: 'Remove from library', danger: 1, act: () => deleteTrack(id) });
   openMenu(anchor, items);
 }

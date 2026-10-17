@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cutter · Mixtape</title>
+<meta name="description" content="Cut any audio or video file, exact to the frame or untouched. Works offline; nothing is uploaded.">
+<meta name="theme-color" content="#14302A">
+<link rel="manifest" href="../manifest.webmanifest">
+<link rel="icon" href="../icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=Martian+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M8.6 7.6 20 18M8.6 16.4 20 6"/></svg><b>Cutter</b><small>any sound or video</small></div>
+  <button id="openBtn" class="primary">Open files</button>
+  <input id="fileIn" type="file" multiple hidden accept="video/*,audio/*,.mkv,.mka,.mov,.m4v,.m4a,.ts,.mts,.flac,.opus,.ogg,.wav,.aif,.aiff">
+  <div class="pills" id="pills"></div>
+  <span class="sp"></span>
+  <button id="joinBtn" class="ghost" disabled title="Join several opened files end to end into one file">Join files…</button>
+  <button id="helpBtn" class="ghost round" title="Keys and tips (?)" aria-label="Keys and tips">?</button>
+</header>
+
+<main class="work">
+  <aside class="files panel" aria-label="Opened files">
+    <h2>Files</h2>
+    <div id="fileList" class="filelist"></div>
+    <p class="hint" id="filesHint">Drop sound or video files anywhere, or press <b>Open files</b>. Nothing is uploaded: the files stay on this computer.</p>
+  </aside>
+
+  <section class="stage">
+    <div class="monitor" id="monitor">
+      <canvas id="mon" width="1280" height="720" aria-label="The picture at the playhead"></canvas>
+      <div class="soundcard" id="soundcard" hidden><div class="sc-name" id="scName"></div><div class="sc-meta" id="scMeta"></div></div>
+      <div class="empty" id="empty"><div class="drop"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M8.6 7.6 20 18M8.6 16.4 20 6"/></svg><p><b>Open a sound or video file to cut.</b><br>MP4, MOV, MKV, WebM, MP3, M4A, WAV, FLAC, Ogg and more. Hours long is fine.</p><button class="primary" id="openBtn2">Open files</button></div></div>
+    </div>
+    <div class="transport">
+      <button id="tStart" class="ic" title="To the start (Home)" aria-label="To the start">⏮</button>
+      <button id="tBack" class="ic" title="Back one frame (←; Shift: one second)" aria-label="Back one frame">◀</button>
+      <button id="tPlay" class="play" title="Play / pause (Space)">▶ Play</button>
+      <button id="tFwd" class="ic" title="Forward one frame (→; Shift: one second)" aria-label="Forward one frame">▶</button>
+      <button id="tEnd" class="ic" title="To the end (End)" aria-label="To the end">⏭</button>
+      <input id="phTime" class="tbox big" value="00:00:00:00" aria-label="Playhead time: type a time to jump there" title="Type a time to jump there">
+      <span class="sp"></span>
+      <button id="markIn" title="The selected part starts here (I)">⇤ Start here</button>
+      <button id="markOut" title="The selected part ends here (O)">End here ⇥</button>
+      <button id="splitHere" title="Cut the part under the playhead in two (B)">✂ Split</button>
+      <button id="snapBtn" title="Save this frame as a picture (S)">◩ Frame</button>
+    </div>
+  </section>
+
+  <aside class="parts panel" aria-label="Parts">
+    <div class="ph-row"><h2>Parts <span id="partCount" class="count"></span></h2><span class="sp"></span>
+      <button id="addPart" title="A new part at the playhead (N)">+ Part</button>
+      <button id="splitBtn" title="Split the whole file: into equal parts, every so often, at silences or at scene changes">Split…</button>
+      <button id="listBtn" class="ghost round" title="Save or load the list of parts" aria-label="List menu">⋯</button>
+    </div>
+    <div id="partList" class="partlist"></div>
+    <p class="hint" id="partsHint">Mark the parts you want: drag across the timeline, or press <b>N</b> for a part at the playhead and <b>I</b> / <b>O</b> to set its start and end. With no parts, the whole file is used.</p>
+  </aside>
+</main>
+
+<section class="timeline panel" aria-label="Timeline">
+  <div class="tl-bar">
+    <span class="eyebrow">Timeline</span>
+    <span class="tl-at" id="tlAt"></span>
+    <span class="sp"></span>
+    <label class="chk" title="Show where the keyframes are (untouched cuts start on them)"><input type="checkbox" id="showKeys" checked> keyframes</label>
+    <button id="zoomOut" class="ic sm" title="Zoom out (−)" aria-label="Zoom out">−</button>
+    <input id="zoom" type="range" min="0" max="1000" value="0" aria-label="Zoom">
+    <button id="zoomIn" class="ic sm" title="Zoom in (+)" aria-label="Zoom in">+</button>
+    <button id="zoomFit" class="sm" title="Show the whole file (0)">Whole file</button>
+  </div>
+  <canvas id="tl" data-h="168" height="168" aria-label="Timeline: click to move the playhead, drag to mark a part, drag a part's edges to change it"></canvas>
+  <canvas id="ov" data-h="26" height="26" aria-label="Overview of the whole file: drag the window to move along"></canvas>
+</section>
+
+<footer class="exportbar">
+  <div class="seg" role="group" aria-label="What the parts mean" id="segMode"><button data-v="keep" class="on" title="Export the parts you marked">Keep the parts</button><button data-v="remove" title="Export everything except the parts you marked">Cut them out</button></div>
+  <div class="seg" role="group" aria-label="One file or many" id="segOut"><button data-v="each" class="on" title="Each part as its own file">A file each</button><button data-v="join" title="All parts joined end to end in one file">Join into one</button></div>
+  <div class="seg" role="group" aria-label="Precision" id="segPrec"><button data-v="exact" class="on" title="Cut exactly where you marked. For H.264 video only the frames at the edges are re-encoded.">Exact</button><button data-v="copy" title="Nothing is re-encoded. A video cut moves out to the nearest keyframes.">Untouched</button></div>
+  <div class="seg" role="group" aria-label="Which tracks" id="segTracks"><button data-v="both" class="on">Picture + sound</button><button data-v="audio">Sound only</button><button data-v="video">Picture only</button></div>
+  <label class="fmt">Format <select id="fmtSel" aria-label="Format of the file"></select></label>
+  <span class="sp"></span>
+  <span class="sum" id="sum"></span>
+  <button id="destBtn" class="ghost" title="Where the files go: your Downloads, or a folder you choose">To Downloads</button>
+  <button id="exportBtn" class="primary big" disabled>Export</button>
+</footer>
+
+<div id="sheet" class="sheetwrap" hidden></div>
+<div id="toast" class="toast" hidden role="status"></div>
+<div id="dropveil" class="dropveil" hidden><div>Drop to open</div></div>
+<script src="host-mixtape.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
