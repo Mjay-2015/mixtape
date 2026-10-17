@@ -2927,7 +2927,7 @@ function showShortcuts() {
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>
-  <p class="hint">Mixtape Studio v44</p>
+  <p class="hint">Mixtape Studio v45</p>
   <div class="credits"><h4>Made with</h4>
     <p>Tone.js by Yotam Mann (MIT licence): drum machine, synths and effects.</p>
     <p>VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell) (CC0, public domain): the orchestra.</p>
@@ -3545,8 +3545,46 @@ $('#cutIn').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   const ids = await importDropped([f]); if (ids.length) cutFromLibrary(ids[0]);
 });
-// a length typed as a plain number is minutes ("30"); with a colon it is m:ss or h:mm:ss
-const parseLen = v => /^\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) * 60 : parseH(v);
+// a time as a 00:00:00 box shows it: hours, minutes, seconds
+const fmtMask = s => { s = Math.floor(Math.max(0, s || 0)); return `${String(Math.min(99, Math.floor(s / 3600))).padStart(2, '0')}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+/* A 00:00:00 time box. The digit under the cursor is highlighted; typing a digit replaces it and moves to the next one,
+   Backspace zeroes the one before and moves back, the arrows move. Every change is applied at once through onValue(seconds). */
+function timeField(inp, onValue, onFocus, onBlur) {
+  if (onBlur) inp.addEventListener('blur', () => onBlur());
+  const SLOT = [0, 1, 3, 4, 6, 7]; let slot = 0;
+  const digits = () => (inp.value.replace(/\D/g, '') + '000000').slice(0, 6);
+  const show = d => { d = (String(d).replace(/\D/g, '') + '000000').slice(0, 6); inp.value = `${d.slice(0, 2)}:${d.slice(2, 4)}:${d.slice(4, 6)}`; }; // takes "010200" or "01:02:00"
+  const select = () => { const p = SLOT[slot]; try { inp.setSelectionRange(p, p + 1); } catch (e) {} };
+  const secondsOf = d => Math.min(99, +d.slice(0, 2)) * 3600 + Math.min(59, +d.slice(2, 4)) * 60 + Math.min(59, +d.slice(4, 6));
+  const commitDigits = d => { const s = secondsOf(d); show(fmtMask(s)); onValue(s); };
+  inp.setAttribute('inputmode', 'numeric'); inp.setAttribute('autocomplete', 'off'); inp.classList.add('tf');
+  if (!/^\d\d:\d\d:\d\d$/.test(inp.value)) show('000000');
+  inp.addEventListener('focus', () => { slot = 0; setTimeout(select, 0); if (onFocus) onFocus(); });
+  inp.addEventListener('mouseup', e => { e.preventDefault(); slot = 0; select(); }); // a click always starts at the first digit: type the whole time, left to right
+  const typeDigit = ch => { const d = digits().split(''); d[slot] = (slot === 2 || slot === 4) ? Math.min(5, +ch) + '' : ch; commitDigits(d.join('')); slot = Math.min(5, slot + 1); select(); };
+  const back = () => { const d = digits().split(''); if (slot > 0 && d[slot] === '0') slot--; d[slot] = '0'; commitDigits(d.join('')); select(); };
+  // text that arrives without key presses (touch keyboards, autocomplete, the browser's own insertion) is handled the same way
+  inp.addEventListener('beforeinput', e => {
+    if (e.inputType.startsWith('insert')) { e.preventDefault(); for (const ch of (e.data || '')) if (/\d/.test(ch)) typeDigit(ch); }
+    else if (e.inputType.startsWith('delete')) { e.preventDefault(); back(); }
+  });
+  inp.addEventListener('keydown', e => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const d = digits().split('');
+    if (/^\d$/.test(e.key)) typeDigit(e.key);
+    else if (e.key === 'Backspace') back();
+    else if (e.key === 'Delete') { d[slot] = '0'; commitDigits(d.join('')); select(); }
+    else if (e.key === 'ArrowLeft') { slot = Math.max(0, slot - 1); select(); }
+    else if (e.key === 'ArrowRight') { slot = Math.min(5, slot + 1); select(); }
+    else if (e.key === 'Home') { slot = 0; select(); } else if (e.key === 'End') { slot = 5; select(); }
+    else if (e.key === 'Enter' || e.key === 'Escape') { inp.blur(); return; }
+    else if (e.key === 'Tab') return;
+    else if (e.key.length === 1) {} // any other character: nothing happens
+    else return;
+    e.preventDefault();
+  });
+  inp.addEventListener('paste', e => { e.preventDefault(); const t = (e.clipboardData.getData('text') || '').trim(), v = parseH(t); if (v != null) { show(fmtMask(v)); onValue(v); } });
+}
 /* Resolves to the library id of the part kept (already saved in the library), or null. */
 function trimLong(t, opts = {}) {
   const L = window.MixtapeLongMP3;
@@ -3560,16 +3598,17 @@ function trimLong(t, opts = {}) {
       <div class="trim-dh"><span>Close-up of the <b class="trim-which">start</b> · drag here to place it exactly · ← → nudge it 1 s (Shift: 0.1 s)</span></div>
       <div class="trim-cv"><canvas class="trim-detail"></canvas></div>
       <div class="trim-fields">
-        <div class="trim-f"><label>Start <input data-f="a" inputmode="decimal" spellcheck="false"></label><button type="button" class="btn sm" data-hear="a">▶ Hear from the start</button></div>
-        <div class="trim-f"><label>End <input data-f="b" inputmode="decimal" spellcheck="false"></label><button type="button" class="btn sm" data-hear="b">▶ Hear up to the end</button></div>
-        <div class="trim-f"><label>or Length <input data-f="len" inputmode="decimal" spellcheck="false" title="A plain number is minutes: 30 = 30 minutes. 2:30 = 2 min 30 s. 1:00:00 = an hour."></label><span class="trim-hint">30 = 30 min · 2:30 = 2½ min</span></div>
+        <div class="trim-f"><label>Start <input data-f="a" value="00:00:00" spellcheck="false" title="Hours : minutes : seconds. Type the digits; the cursor moves on by itself."></label><button type="button" class="btn sm" data-hear="a">▶ Hear from the start</button></div>
+        <div class="trim-f"><label>End <input data-f="b" value="00:00:00" spellcheck="false" title="Hours : minutes : seconds"></label><button type="button" class="btn sm" data-hear="b">▶ Hear up to the end</button></div>
+        <div class="trim-f"><label>or Length <input data-f="len" value="00:00:00" spellcheck="false" title="Hours : minutes : seconds. Typing a length moves the End."></label><span class="trim-hint">h : mm : ss</span></div>
+        <div class="trim-f"><span class="trim-hint">exactly <span class="trim-exact"></span></span></div>
         <div class="trim-len"></div>
       </div>
       <div class="trim-act"><button type="button" class="btn" data-x="cancel">Cancel</button><span class="sp"></span><button type="button" class="btn" data-x="save" title="Download the part as an MP3 file">Save as MP3 file</button><button type="button" class="btn primary" data-x="keep">Keep this part</button></div>
     </div>`;
     document.body.appendChild(wrap);
     const q = s => wrap.querySelector(s), over = q('.trim-over'), det = q('.trim-detail'), status = q('.trim-status');
-    let ix = null, pk = loadPeaks(t.id), D = t.duration, sel = { a: 0, b: Math.min(D, 10 * 60) }, act = 'a', closed = false;
+    let ix = null, pk = loadPeaks(t.id), D = t.duration, sel = { a: 0, b: Math.min(D, 10 * 60) }, act = 'a', closed = false, lastLen = sel.b - sel.a;
     let detail = null, detailFor = null, hear = null, hearPos = null;
     const DW = 15; // the close-up shows 15 s either side of the handle
     const size = cv => { const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1; if (cv.width !== Math.round(r.width * d)) { cv.width = Math.round(r.width * d); cv.height = Math.round(r.height * d); } return { w: cv.width, h: cv.height, d }; };
@@ -3595,10 +3634,12 @@ function trimLong(t, opts = {}) {
       drawWave(over, 0, D, pkMinMax);
       const c = center(); drawWave(det, c - DW, c + DW, detMinMax);
       q('.trim-which').textContent = act === 'a' ? 'start' : 'end';
-      for (const k of ['a', 'b']) { const i = q(`[data-f="${k}"]`); if (document.activeElement !== i) i.value = fmtH(sel[k], 1); }
-      const len = sel.b - sel.a, li = q('[data-f="len"]'); if (document.activeElement !== li) li.value = fmtH(len, 1);
+      for (const k of ['a', 'b']) { const i = q(`[data-f="${k}"]`); if (document.activeElement !== i) i.value = fmtMask(sel[k]); }
+      const len = sel.b - sel.a, li = q('[data-f="len"]'); if (document.activeElement !== li) li.value = fmtMask(len);
+      q('.trim-exact').textContent = `${fmtH(sel.a, 1)} → ${fmtH(sel.b, 1)}`;
+      if (len >= 0.5) lastLen = len;
       const tooLongToEdit = len > LONG_SEC && !opts.standalone;
-      q('.trim-len').innerHTML = tooLongToEdit ? '<span class="warn">Over an hour: save it as an MP3 file, or pick a shorter part to edit here.</span>' : '';
+      q('.trim-len').innerHTML = len <= 0 ? '<span class="warn">The end is not after the start yet.</span>' : tooLongToEdit ? '<span class="warn">Over an hour: save it as an MP3 file, or pick a shorter part to edit here.</span>' : '';
       q('[data-x="keep"]').disabled = !ix || tooLongToEdit || len < 0.5; q('[data-x="save"]').disabled = !ix || len < 0.5;
     }
     let loadingDetail = false;
@@ -3611,11 +3652,13 @@ function trimLong(t, opts = {}) {
     }
     const setH = (k, v) => { sel[k] = clamp(v, 0, D); if (sel.a > sel.b) { const x = sel.a; sel.a = sel.b; sel.b = x; act = act === 'a' ? 'b' : 'a'; } draw(); loadDetail(); };
     // dragging on the overview: grab the nearest handle (or move it to where you pressed)
+    // the overview: grab a handle to move it, or drag anywhere to pull the nearest one over; a plain click moves nothing
     over.addEventListener('pointerdown', e => {
-      const r = over.getBoundingClientRect(), tAt = ev => clamp((ev.clientX - r.left) / r.width * D, 0, D), t0 = tAt(e);
-      act = Math.abs(t0 - sel.a) <= Math.abs(t0 - sel.b) ? 'a' : 'b'; setH(act, t0);
+      const r = over.getBoundingClientRect(), tAt = ev => clamp((ev.clientX - r.left) / r.width * D, 0, D), t0 = tAt(e), x0 = e.clientX;
+      const near = Math.abs(t0 - sel.a) <= Math.abs(t0 - sel.b) ? 'a' : 'b', px = Math.abs(sel[near] - t0) / D * r.width;
+      let grabbed = px <= 14; act = near; if (grabbed) setH(act, t0); else draw();
       try { over.setPointerCapture(e.pointerId); } catch (_) {}
-      const mv = ev => setH(act, tAt(ev)); over.addEventListener('pointermove', mv);
+      const mv = ev => { if (!grabbed && Math.abs(ev.clientX - x0) < 6) return; grabbed = true; setH(act, tAt(ev)); }; over.addEventListener('pointermove', mv);
       over.addEventListener('pointerup', () => over.removeEventListener('pointermove', mv), { once: true });
     });
     det.addEventListener('pointerdown', e => {
@@ -3624,23 +3667,25 @@ function trimLong(t, opts = {}) {
       const mv = ev => setH(act, tAt(ev)); det.addEventListener('pointermove', mv);
       det.addEventListener('pointerup', () => det.removeEventListener('pointermove', mv), { once: true });
     });
-    const lenIn = q('[data-f="len"]'); // start + length: the end moves, the start stays
-    lenIn.addEventListener('focus', () => { act = 'b'; draw(); loadDetail(); });
-    lenIn.addEventListener('change', () => { const v = parseLen(lenIn.value); if (v == null || v <= 0) { toast('Type a length like 30 (minutes) or 2:30'); draw(); return; } act = 'b'; setH('b', Math.min(D, sel.a + v)); if (sel.a + v > D) toast(`The song ends at ${fmtH(D)}, so the part ends there.`, 4000); });
-    lenIn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); lenIn.blur(); lenIn.dispatchEvent(new Event('change')); } });
-    wrap.querySelectorAll('[data-f="a"], [data-f="b"]').forEach(i => {
-      i.addEventListener('focus', () => { act = i.dataset.f; draw(); loadDetail(); });
-      i.addEventListener('change', () => { // a typed time moves the other handle out of the way rather than swapping them
-        const v = parseH(i.value); if (v == null) { toast('Type a time like 1:02:30 or 45:10.5'); draw(); return; }
-        act = i.dataset.f; const len = Math.max(1, sel.b - sel.a), t0 = clamp(v, 0, D);
-        if (act === 'a' && t0 >= sel.b) sel.b = Math.min(D, t0 + len); if (act === 'b' && t0 <= sel.a) sel.a = Math.max(0, t0 - len);
-        setH(act, t0);
-      });
-      i.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); i.blur(); i.dispatchEvent(new Event('change')); } });
-    });
+    // the time boxes are 00:00:00 masks: each digit typed replaces the one under the cursor and moves on, and applies at once
+    // Typing moves only the handle being typed, digit by digit (01:00:00 on the way to 01:05:30 must not shove the other
+    // handle). If the two end up out of order, leaving the box moves the other handle to keep the last length.
+    const applyTime = (k, v) => {
+      if (k === 'len') { act = 'b'; sel.b = Math.min(D, sel.a + v); if (sel.a + v > D) toast(`The song ends at ${fmtMask(D)}, so the part ends there.`, 3000); }
+      else { act = k; sel[k] = clamp(v, 0, D); }
+      draw(); loadDetail();
+    };
+    const tidyOrder = k => {
+      if (sel.b > sel.a) return;
+      if (k === 'a') sel.b = Math.min(D, sel.a + lastLen); else sel.a = Math.max(0, sel.b - lastLen);
+      if (sel.b <= sel.a) { if (k === 'a') sel.a = Math.max(0, sel.b - 1); else sel.b = Math.min(D, sel.a + 1); }
+      draw(); loadDetail();
+    };
+    wrap.querySelectorAll('[data-f]').forEach(i => { const k = i.dataset.f === 'len' ? 'b' : i.dataset.f; timeField(i, v => applyTime(i.dataset.f, v), () => { act = k; draw(); loadDetail(); }, () => tidyOrder(k)); });
     function stopHear() { if (hear) { try { hear.stop(); } catch (e) {} hear = null; } hearPos = null; cancelAnimationFrame(stopHear.raf); wrap.querySelectorAll('[data-hear]').forEach(b => b.classList.remove('on')); }
     async function hearIt(k) {
       const was = hear && hear.k === k; stopHear(); if (was || !ix) return;
+      if (sel.b <= sel.a) return toast('Set the end after the start first.');
       const s0 = k === 'a' ? sel.a : Math.max(sel.a, sel.b - 6), s1 = k === 'a' ? Math.min(sel.b, sel.a + 6) : sel.b;
       ctx.resume(); let d; try { d = await L.decode(ctx, t.blob, ix, s0, s1); } catch (e) { return toast('Could not play that stretch: ' + e.message, 5000); }
       const src = ctx.createBufferSource(); src.buffer = d.buffer; src.connect(ctx.destination);
