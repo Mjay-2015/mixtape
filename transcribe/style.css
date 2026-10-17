@@ -146,3 +146,20 @@ button,input,select,textarea{font:inherit;color:inherit}
 .keys td{padding:4px 8px 4px 0;vertical-align:top}
 .keys kbd{font:11.5px var(--f-mono);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 6px;white-space:nowrap;background:var(--paper)}
 .menu .sw{padding:4px 10px 8px}
+
+/* the second reader (AI check): its suggestions in ochre, beside the teal of what is playing */
+:root{--sug:#9A5B13;--sug-bg:#F7E9D2}
+@media (prefers-color-scheme:dark){:root{--sug:#E3B26A;--sug-bg:#3A2D17}}
+.w.sug{text-decoration:underline wavy var(--sug);text-decoration-thickness:1.5px;text-underline-offset:4px}
+.sugc{display:inline-flex;align-items:center;gap:3px;margin:0 2px 0 3px;padding:0 7px;height:21px;vertical-align:1px;border-radius:999px;border:1px solid var(--sug);background:var(--sug-bg);color:var(--sug);font:600 12.5px var(--f-ui);cursor:pointer}
+.sugc:hover{background:var(--sug);color:var(--sheet)}
+.w.aiw{border-bottom:1px dotted var(--sug)}
+.sugs{display:block;margin-top:3px;padding:1px 6px;border-radius:6px;border:1px dashed var(--sug);background:var(--sug-bg);color:var(--sug);font:600 11.5px var(--f-ui);cursor:pointer;text-align:left}
+.aibtn{color:var(--sug);border-color:var(--sug)}
+.aibar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;width:100%;padding:6px 10px;border-radius:9px;background:var(--sug-bg);color:var(--ink)}
+.aibar b{color:var(--sug)}
+.aibar .nmc{border:1px solid var(--sug);background:var(--sheet);color:var(--ink);border-radius:999px;padding:2px 4px 2px 10px;font:500 12.5px var(--f-ui);display:inline-flex;align-items:center;gap:4px}
+.aibar .nmc button{border:0;background:none;cursor:pointer;padding:0 4px;color:var(--sug);font-weight:700}
+.menu .why{padding:2px 10px 8px;max-width:320px;color:var(--muted);font-size:13px}
+.menu .sugrow{display:flex;gap:6px;padding:0 10px 8px}
+.menu textarea.notes{margin:4px 10px 6px;width:300px;min-height:70px;border:1px solid var(--sug);border-radius:7px;background:var(--paper);padding:6px 8px;outline:0;resize:vertical;font:14px var(--f-ui)}

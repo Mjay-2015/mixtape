@@ -100,6 +100,7 @@ function drawText() {
   drawTools();
   if (!r || !r.words.length) { el.innerHTML = ''; return; }
   const ps = T.paragraphs(r.words), hidden = V.clean ? T.cleanHidden(r.words) : null;
+  SUG = sugMap(r);
   el.classList.toggle('show-unsure', V.unsure);
   el.innerHTML = ps.map((p, pi) => paraHTML(r.words, p, pi, hidden)).join('');
   if (hits.length) markHits();
@@ -111,12 +112,14 @@ function paraHTML(words, p, pi, hidden) {
   for (let i = p.i0; i < p.i1; i++) {
     const w = words[i], hide = hidden && hidden.has(i);
     // how sure the recogniser was: under 0.5 lightest, under 0.75 lighter (words a person typed carry no score)
-    const cls = ['w', w.s == null ? 'un' : '', w.c != null && w.c < 0.5 ? 'q2' : w.c != null && w.c < 0.75 ? 'q1' : '', hide ? 'f' : '', !hide && cap ? 'cap' : ''].filter(Boolean).join(' ');
+    const cls = ['w', w.s == null ? 'un' : '', w.c != null && w.c < 0.5 ? 'q2' : w.c != null && w.c < 0.75 ? 'q1' : '', hide ? 'f' : '', !hide && cap ? 'cap' : '', SUG.word.has(i) ? 'sug' : '', w.ai ? 'aiw' : ''].filter(Boolean).join(' ');
     if (hide) { if (/^[A-Z]/.test(w.t) && !/^I\b/.test(w.t)) cap = true; } else cap = false;
-    ws.push(`<span class="${cls}" data-i="${i}"${w.c != null && w.c < 0.75 ? ` title="Not sure (${Math.round(w.c * 100)}%)"` : ''}>${esc(w.t)}</span>`);
+    const tip = w.ai ? ` title="Heard as “${esc(w.ai)}”; changed after the AI check"` : w.c != null && w.c < 0.75 ? ` title="Not sure (${Math.round(w.c * 100)}%)"` : '';
+    const k = SUG.end.get(i), f = k != null && cur.tr.review.fixes[k];
+    ws.push(`<span class="${cls}" data-i="${i}"${tip}>${esc(w.t)}</span>${f ? `<button class="sugc" data-fix="${k}" title="AI check: probably “${esc(f.likely)}”. Click to accept it or keep what was heard.">→ ${esc(f.likely)}</button>` : ''}`);
   }
   const col = p.speaker ? spkColour(p.speaker) : '';
-  return `<div class="para" data-p="${pi}" data-i0="${p.i0}" data-i1="${p.i1}"><div class="gut">${timed ? `<button class="ts" data-ts="${first.s}" title="Play from here">${T.short(first.s)}</button>` : '<span class="ts">—</span>'}<button class="spk${p.speaker ? '' : ' none'}" data-spk title="Choose or rename the speaker"${col ? ` style="color:${col}"` : ''}>${p.speaker ? esc(p.speaker) : '+ speaker'}</button></div><div class="words">${ws.join(' ')}</div><button class="ed" data-ed title="Correct this paragraph (or double-click a word)" aria-label="Correct this paragraph">✎</button></div>`;
+  return `<div class="para" data-p="${pi}" data-i0="${p.i0}" data-i1="${p.i1}"><div class="gut">${timed ? `<button class="ts" data-ts="${first.s}" title="Play from here">${T.short(first.s)}</button>` : '<span class="ts">—</span>'}<button class="spk${p.speaker ? '' : ' none'}" data-spk title="Choose or rename the speaker"${col ? ` style="color:${col}"` : ''}>${p.speaker ? esc(p.speaker) : '+ speaker'}</button>${sugSpk(p.i0)}</div><div class="words">${ws.join(' ')}</div><button class="ed" data-ed title="Correct this paragraph (or double-click a word)" aria-label="Correct this paragraph">✎</button></div>`;
 }
 /* the strip above the text: the switches, the speakers (click to rename everywhere), the keys */
 function drawTools() {
@@ -125,7 +128,8 @@ function drawTools() {
   box.innerHTML = `<label class="sw" title="Hide ums, uhs, false starts (“we, we”) and starters (“So,”, “Well,”) for a cleaner script; exports follow this"><input type="checkbox" data-v="clean"${V.clean ? ' checked' : ''}> Clean script${fillers ? ` <small>(${fillers} hidden)</small>` : ''}</label>`
     + `<label class="sw" title="Words the recogniser was not sure of are lighter: check those first"><input type="checkbox" data-v="unsure"${V.unsure ? ' checked' : ''}> Unsure words lighter${unsure ? ` <small>(${unsure})</small>` : ''}</label>`
     + (r.mode === 'heard' ? `<span class="spks">${names.map(n => `<button class="chip" data-ren="${esc(n)}" title="Rename “${esc(n)}” everywhere" style="--c:${spkColour(n)}">${esc(n)}</button>`).join('')}${names.length ? '' : '<span class="muted">No speakers yet</span>'}</span>` : '')
-    + `<span class="sp"></span><button class="btn sm ghost" id="keysBtn" title="Keyboard shortcuts (?)">⌨ Keys</button>`;
+    + `<span class="sp"></span>${reviewURL() && r.mode === 'heard' ? `<button class="btn sm aibtn" data-ai title="A second reader: Claude reads the transcript for sense and suggests where the recogniser most likely misheard (names, places, sound-alikes) and where a speaker looks wrong. Nothing changes until you accept it.">✦ AI check</button>` : ''}<button class="btn sm ghost" id="keysBtn" title="Keyboard shortcuts (?)">⌨ Keys</button>`
+    + aiBar(r);
 }
 
 /* ---------- playing: click a word, the spoken word lights ---------- */
@@ -160,6 +164,8 @@ $('#seek').addEventListener('input', e => { if (cur && cur.media.duration) { cur
 $('#speed').addEventListener('change', e => { if (cur) cur.media.playbackRate = +e.target.value; });
 $('#text').addEventListener('dblclick', e => { const p = e.target.closest('.para'); if (p && e.target.closest('.w') && !editing) { e.preventDefault(); startEdit(p, +e.target.closest('.w').dataset.i); } });
 $('#text').addEventListener('click', e => {
+  const sf = e.target.closest('[data-fix]'); if (sf) return fixMenu(sf, +sf.dataset.fix);
+  const ss = e.target.closest('[data-sfix]'); if (ss) return speakerFixMenu(ss, +ss.dataset.sfix);
   const w = e.target.closest('.w'); if (w && !w.classList.contains('un')) { const r = cur.tr.words[+w.dataset.i]; playAt(r.s); return; }
   const ts = e.target.closest('[data-ts]'); if (ts) return playAt(+ts.dataset.ts);
   const p = e.target.closest('.para'); if (!p) return;
@@ -201,10 +207,102 @@ function askName(anchor, title, value, done) {
   m.onclick = ev => { if (ev.target.closest('[data-ok]')) ok(); };
 }
 /* undo: every change to the words is a step back (Ctrl Z) */
-const undoStack = []; function remember() { if (cur && cur.tr) { undoStack.push(JSON.stringify(cur.tr.words)); if (undoStack.length > 60) undoStack.shift(); } }
-async function undo() { if (!undoStack.length || !cur || !cur.tr) return toast('Nothing to undo.'); cur.tr.words = JSON.parse(undoStack.pop()); await save(); drawText(); toast('Undone.'); }
+const undoStack = []; function remember() { if (cur && cur.tr) { undoStack.push(JSON.stringify({ words: cur.tr.words, review: cur.tr.review || null })); if (undoStack.length > 60) undoStack.shift(); } }
+async function undo() { if (!undoStack.length || !cur || !cur.tr) return toast('Nothing to undo.'); const u = JSON.parse(undoStack.pop()); cur.tr.words = u.words; if (u.review) cur.tr.review = u.review; else delete cur.tr.review; await save(); drawText(); toast('Undone.'); }
 $('#tools').addEventListener('change', e => { const k = e.target.dataset.v; if (!k) return; V[k] = e.target.checked; saveV(); drawText(); });
-$('#tools').addEventListener('click', e => { const c = e.target.closest('[data-ren]'); if (c) return askName(c, `Rename “${c.dataset.ren}” everywhere`, c.dataset.ren, n => renameAll(c.dataset.ren, n)); if (e.target.closest('#keysBtn')) keysHelp(); });
+$('#tools').addEventListener('click', e => { if (aiClick(e)) return; const c = e.target.closest('[data-ren]'); if (c) return askName(c, `Rename “${c.dataset.ren}” everywhere`, c.dataset.ren, n => renameAll(c.dataset.ren, n)); if (e.target.closest('#keysBtn')) keysHelp(); });
+
+/* ---------- the second reader: the studio's AI check ----------
+   The recogniser writes what it hears; Claude (through the studio, /studio/api/transcript/review) reads it for sense and
+   suggests where it most likely misheard, where a paragraph's speaker looks wrong, and who a speaker is when the talk
+   says so. Suggestions only: each is accepted or kept as heard, against the sound. Only inside the studio. */
+const reviewURL = () => window.MIXTAPE_REVIEW_URL || (location.pathname.startsWith('/studio/') ? '/studio/api/transcript/review' : '');
+let SUG = { word: new Set(), end: new Map(), para: new Map() };
+function sugMap(r) {
+  const out = { word: new Set(), end: new Map(), para: new Map() }, rv = r.review; if (!rv) return out;
+  (rv.fixes || []).forEach((f, k) => { const i = T.locateFix(r.words, f); if (i < 0) return; f.at = i; for (let g = i; g < i + f.n; g++) out.word.add(g); out.end.set(i + f.n - 1, k); });
+  (rv.speakers || []).forEach((s, k) => { if (r.words[s.at] && (s.at === 0 || r.words[s.at].p) && T.speakerAt(r.words, s.at) !== s.speaker) out.para.set(s.at, k); });
+  return out;
+}
+function sugSpk(i0) { const k = SUG.para.get(i0); if (k == null) return ''; const s = cur.tr.review.speakers[k]; return `<button class="sugs" data-sfix="${k}" title="AI check: ${esc(s.why)}">→ ${esc(s.speaker)}?</button>`; }
+const pending = rv => !rv ? 0 : (rv.fixes || []).length + (rv.speakers || []).length + (rv.names || []).length;
+function aiBar(r) {
+  const rv = r.review; if (!rv || !reviewURL()) return '';
+  if (rv.running) return `<div class="aibar"><b>✦ AI check</b><span>${esc(rv.running)}</span></div>`;
+  const nf = (rv.fixes || []).length, ns = (rv.speakers || []).length;
+  if (!pending(rv)) return `<div class="aibar"><b>✦ AI check</b><span>${rv.found ? 'All its suggestions are dealt with.' : 'Nothing looked misheard.'}</span><span class="sp"></span><button class="btn sm ghost" data-aiclear>Close</button></div>`;
+  return `<div class="aibar"><b>✦ AI check</b><span>${[nf ? `${nf} word${nf > 1 ? 's' : ''} probably misheard` : '', ns ? `${ns} speaker${ns > 1 ? 's' : ''} to look at` : ''].filter(Boolean).join(' · ') || 'Names to confirm'}${nf + ns ? ': click the ochre marks' : ''}</span>`
+    + (rv.names || []).map((n, k) => `<span class="nmc" title="${esc(n.evidence)}">${esc(n.label)} is ${esc(n.name)}?<button data-nameok="${k}" title="Rename “${esc(n.label)}” to “${esc(n.name)}” everywhere">✓</button><button data-nameno="${k}" title="No">✕</button></span>`).join('')
+    + `<span class="sp"></span>${nf + ns ? `<button class="btn sm" data-aiall title="Accept every word and speaker suggestion (names stay one by one). Ctrl + Z undoes.">Accept all</button>` : ''}<button class="btn sm ghost" data-aiclear title="Keep everything as heard">Dismiss all</button></div>`;
+}
+function aiClick(e) {
+  const t = e.target;
+  if (t.closest('[data-ai]')) { askReview(t.closest('[data-ai]')); return true; }
+  if (t.closest('[data-aiall]')) { acceptAll(); return true; }
+  if (t.closest('[data-aiclear]')) { remember(); delete cur.tr.review; save(); drawText(); return true; }
+  const ok = t.closest('[data-nameok]'), no = t.closest('[data-nameno]');
+  if (ok || no) {
+    const k = +(ok ? ok.dataset.nameok : no.dataset.nameno), n = cur.tr.review.names[k]; remember(); cur.tr.review.names.splice(k, 1);
+    if (ok) { cur.tr.words = T.renameSpeaker(cur.tr.words, cur.tr.voices, n.label, n.name); for (const s of cur.tr.review.speakers) if (s.speaker === n.label) s.speaker = n.name; toast(`“${n.label}” is now “${n.name}” everywhere.`); }
+    save(); drawText(); return true;
+  }
+  return false;
+}
+/* before it runs: what you know helps (names, places, the topic), and what it costs */
+function askReview(btn) {
+  if (job) return toast('Wait for the transcript to finish first.');
+  const r = cur.tr, n = r.words.length, est = Math.max(0.01, n / 1000 * 0.07);
+  const m = $('#menu'); m.innerHTML = `<div class="lbl">AI check: a second reader for the recogniser</div><div class="why">Claude reads the transcript for sense and marks the words that were probably misheard, and speakers that look wrong. It never rewrites what people said, and fillers stay. You accept or keep each one.</div><textarea class="notes" placeholder="Optional: names, places or the topic, so it can spell them (e.g. “Interview with Thandi Nkosi in Soweto about the 1995 floodlights”)">${esc(r.reviewNotes || '')}</textarea><div class="why">${n.toLocaleString()} words · about $${est.toFixed(2)} · goes through the studio and is costed there.</div><div class="sugrow"><span class="sp"></span><button class="btn sm" data-x>Cancel</button><button class="btn sm primary" data-go>Check it</button></div>`; m.hidden = false;
+  const rc = btn.getBoundingClientRect(); m.style.top = rc.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.right - m.offsetWidth)) + 'px';
+  const ta = m.querySelector('textarea'); ta.focus();
+  m.onclick = ev => { if (ev.target.closest('[data-x]')) m.hidden = true; else if (ev.target.closest('[data-go]')) { m.hidden = true; runReview(ta.value.trim()); } };
+}
+async function runReview(notes) {
+  const r = cur.tr, stretches = T.reviewStretches(r.words), speakers = T.speakerNames(r.words); r.reviewNotes = notes;
+  remember(); const rv = r.review = { fixes: [], speakers: [], names: [], running: '', found: 0 }; job = { review: true };
+  let failed = '';
+  try {
+    for (let k = 0; k < stretches.length; k++) {
+      rv.running = stretches.length > 1 ? `Reading part ${k + 1} of ${stretches.length}…` : 'Reading it…'; drawTools();
+      const res = await fetch(reviewURL(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paras: stretches[k], speakers, context: notes, title: cur.track.title }) });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) { failed = out.error || `the studio answered ${res.status}`; break; }
+      rv.fixes.push(...out.fixes); rv.speakers.push(...out.speakers);
+      for (const n of out.names) if (!rv.names.some(x => x.label === n.label)) rv.names.push(n);
+      drawText();
+    }
+  } catch (e) { failed = e.message || String(e); }
+  finally { job = null; rv.running = ''; rv.found = pending(rv); await save(); drawText(); }
+  if (failed) toast(`The AI check stopped: ${failed}`, 7000);
+  else toast(rv.found ? `${rv.found} suggestion${rv.found > 1 ? 's' : ''}. Click each ochre mark to hear it and decide.` : 'Nothing looked misheard.', 5000);
+}
+function takeFix(k) {
+  const rv = cur.tr.review, f = rv.fixes[k]; rv.fixes.splice(k, 1); const a = T.applyFix(cur.tr.words, f);
+  if (a.at < 0) return false; cur.tr.words = a.words; rv.fixes = T.shiftFixes(rv.fixes, a.at, a.delta); rv.speakers = T.shiftFixes(rv.speakers, a.at, a.delta); return true;
+}
+function fixMenu(btn, k) {
+  const f = cur.tr.review.fixes[k]; if (!f) return; const at = T.locateFix(cur.tr.words, f);
+  const m = $('#menu'); m.innerHTML = `<div class="lbl">Heard “${esc(f.heard)}” · probably “${esc(f.likely)}”</div><div class="why">${esc(f.why)}</div><div class="sugrow"><button class="btn sm" data-hear>▶ Hear it</button><span class="sp"></span><button class="btn sm" data-keep>Keep as heard</button><button class="btn sm primary" data-take>Accept</button></div>`; m.hidden = false;
+  const rc = btn.getBoundingClientRect(); m.style.top = rc.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.left)) + 'px';
+  m.onclick = async ev => {
+    if (ev.target.closest('[data-hear]')) { if (at >= 0 && cur.tr.words[at].s != null) playAt(Math.max(0, cur.tr.words[at].s - 1.5)); return; }
+    const take = ev.target.closest('[data-take]'), keep = ev.target.closest('[data-keep]'); if (!take && !keep) return; m.hidden = true; remember();
+    if (take) { if (!takeFix(k)) toast('Those words have changed since; the suggestion was dropped.'); } else cur.tr.review.fixes.splice(k, 1);
+    await save(); drawText();
+  };
+  setTimeout(() => document.addEventListener('pointerdown', function off(ev) { if (!m.contains(ev.target)) { m.hidden = true; document.removeEventListener('pointerdown', off); } }), 0);
+}
+function speakerFixMenu(btn, k) {
+  const s = cur.tr.review.speakers[k]; if (!s) return; const now = T.speakerAt(cur.tr.words, s.at);
+  const drop = async take => { remember(); cur.tr.review.speakers.splice(k, 1); if (take) cur.tr.words = T.setSpeaker(cur.tr.words, s.at, s.speaker); await save(); drawText(); };
+  menu(btn, [[`Said by ${now || 'nobody yet'}; probably ${s.speaker}. ${s.why}`, null], [`Yes, ${s.speaker}`, () => drop(true)], [`No, keep ${now || 'it as it is'}`, () => drop(false)], ['▶ Hear it', () => playAt(cur.tr.words[s.at].s)]], { left: true });
+}
+async function acceptAll() {
+  remember(); const rv = cur.tr.review; let n = 0;
+  while (rv.fixes.length) if (takeFix(0)) n++;
+  for (const s of rv.speakers.splice(0)) if (cur.tr.words[s.at]) { cur.tr.words = T.setSpeaker(cur.tr.words, s.at, s.speaker); n++; }
+  await save(); drawText(); toast(`${n} change${n === 1 ? '' : 's'} made. Ctrl + Z undoes them all.`);
+}
 
 /* ---------- find ---------- */
 $('#q').addEventListener('input', () => { hits = cur && cur.tr ? T.search(cur.tr.words, $('#q').value) : []; hitAt = -1; markHits(); $('#qn').textContent = $('#q').value.trim() ? `${hits.length}` : ''; });

@@ -32,6 +32,7 @@ Rules: `lyrics-core.js` (checked by `node lyrics-check.cjs`); screens: `lyrics.j
 - **Everything said is kept** — "um", "uh", "we, we" (Whisper is prompted to write verbatim). **Clean script** hides fillers, false starts and starters ("So,", "Well,", "You know,"); exports follow the switch.
 - **Words the recogniser was unsure of are lighter** (from Whisper's own token probabilities), the least sure underlined: check those first.
 - Keys, as in Temi and Rev: **Tab** play/pause anywhere (even while typing), **Shift+Tab** back 5 s, Ctrl+←/→ 5 s, Ctrl+↑/↓ speed, Ctrl+Z undo, Ctrl+F find, ? for the list. Playing again after a pause backs up 1 s.
+- **✦ AI check** (inside the studio only, it goes through the studio's server): a second reader. Claude (Opus 5.5) reads the transcript for sense and suggests the words the recogniser most likely misheard (names, places, legal or local words, sound-alikes) and paragraphs whose speaker looks wrong, and who a speaker is when the talk says so. Optional notes (names, the topic) help it spell. It never rewrites: the server drops any suggestion that rewords, adds or removes a filler, or does not match the words actually there. Each shows as an ochre mark: hear it, accept it, or keep what was heard; Accept all and Ctrl+Z work. About $0.07 per 1,000 words, costed to the studio.
 - Long recordings are read 30 seconds at a time and saved as they go: pause, close, and continue later.
 - Save as text with timestamps, plain text, .srt, .vtt, or words with times (.json).
 

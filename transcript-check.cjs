@@ -103,4 +103,22 @@ const hb = []; let tt = 0; 'Line 0 of the long book goes on here. Line 1 of the 
 const r = T.matchBatch(big, 0, hb);
 ok(r.ptr === 18 && Date.now() - t0 < 500, 'a long text costs no more per window than a short one');
 
+// the second reader's suggestions: stretches, finding a fix again, accepting it
+{
+  const mk = s => s.split(' ').map((t, i) => ({ t, s: i, e: i + 0.8 }));
+  const R = mk('Some of them, yes. Um, Thumba still lives two streets away.'); R[0].p = true; R[0].sp = 'Speaker 2'; R[4].c = 0.87; R[5].c = 0.28;
+  const st = T.reviewStretches(R.concat(mk('So he never left?').map((w, i) => (i ? w : { ...w, p: true, sp: 'Speaker 1' }))), 12);
+  ok(st.length === 2 && st[0][0].at === 0 && st[0][0].speaker === 'Speaker 2' && st[1][0].at === 11 && st[0][0].words[5].c === 0.28 && !('c' in st[0][0].words[0]), 'the transcript goes to the reviewer in whole paragraphs, with the unsure scores');
+  const fx = { at: 5, n: 1, heard: 'Thumba', likely: 'Themba' };
+  const a = T.applyFix(R, fx);
+  ok(a.at === 5 && a.words[5].t === 'Themba' && a.words[5].s === 5 && a.words[5].e === 5.8 && a.words[5].ai === 'Thumba' && a.words.length === R.length, 'an accepted fix keeps the heard word’s time and remembers what was heard');
+  ok(T.applyFix(R, { at: 3, n: 1, heard: 'yes.', likely: 'yeah' }).words[3].t === 'yeah.', 'a fix keeps the mark after the word it replaces');
+  const moved = [{ t: 'Well,', s: 0, e: 0.5 }, { t: 'yes.', s: 0.5, e: 1 }].concat(R);
+  ok(T.locateFix(moved, fx) === 7 && T.locateFix(R.map((w, i) => (i === 5 ? { ...w, t: 'Themba' } : w)), fx) === -1, 'a fix is found again after words moved, and dropped when corrected by hand');
+  const two = T.applyFix(R, { at: 7, n: 2, heard: 'lives two', likely: 'lives too far' });
+  ok(two.delta === 1 && T.shiftFixes([{ at: 3 }, { at: 10 }], two.at, two.delta).map(f => f.at).join() === '3,11', 'later suggestions move along when a fix changes the length');
+  const p0 = T.applyFix(R, { at: 0, n: 1, heard: 'Some', likely: 'Sum' });
+  ok(p0.words[0].p && p0.words[0].sp === 'Speaker 2', 'a fix on a paragraph’s first word keeps the paragraph and its speaker');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

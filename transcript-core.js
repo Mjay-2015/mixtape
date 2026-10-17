@@ -211,6 +211,46 @@
   /* how far a matched text has got: the index after the last timed word */
   const timedUpTo = words => { let i = words.length; while (i > 0 && words[i - 1].s == null) i--; return i; };
 
-  const api = { speakerAt, labelHeard, clusterVoice, renameSpeaker, speakerNames, cleanHidden, joinShown, FILLERS, tidyHeard, fromText, matchBatch, timedUpTo, fromHeard, append, paragraphs, wordAt, editParagraph, setSpeaker, search, toTxt, toSrt, toVtt, cues, hms, short, wordCount };
+  /* ---- the second reader (the studio's AI check): suggestions, never applied until accepted ---- */
+  /* the transcript in stretches of whole paragraphs, at most maxWords each, as the studio's review takes them */
+  function reviewStretches(words, maxWords = 2500) {
+    const out = []; let cur = null, n = 0;
+    for (const p of paragraphs(words)) {
+      const len = p.i1 - p.i0;
+      if (!cur || (n + len > maxWords && n > 0)) { cur = []; out.push(cur); n = 0; }
+      cur.push({ at: p.i0, ...(p.speaker ? { speaker: p.speaker } : {}), words: words.slice(p.i0, p.i1).map(w => (w.c != null ? { t: w.t, c: w.c } : { t: w.t })) }); n += len;
+    }
+    return out;
+  }
+  const loose = s => String(s).toLowerCase().replace(/[^\p{L}\p{N}' ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  /* where a suggested fix applies now: its own place if the words there are still the ones it was made for, otherwise the
+     nearest place (within 60 words) that has them; -1 when they are gone (the text was corrected by hand) */
+  function locateFix(words, f) {
+    const at = i => loose(words.slice(i, i + f.n).map(w => w.t).join(' ')) === loose(f.heard);
+    if (f.at >= 0 && f.at + f.n <= words.length && at(f.at)) return f.at;
+    for (let d = 1; d <= 60; d++) for (const i of [f.at - d, f.at + d]) if (i >= 0 && i + f.n <= words.length && at(i)) return i;
+    return -1;
+  }
+  /* a fix accepted: the heard words become the likely ones, sharing the heard words' time; the paragraph mark and speaker
+     stay on the first word, a trailing mark the fix left off is kept, and each new word remembers what was heard (ai) */
+  function applyFix(words, f) {
+    const i = locateFix(words, f); if (i < 0) return { words, at: -1, delta: 0 };
+    const old = words.slice(i, i + f.n), toks = String(f.likely).trim().split(/\s+/).filter(Boolean); if (!toks.length) return { words, at: -1, delta: 0 };
+    const tail = (old[old.length - 1].t.match(/[.,!?;:…"'”’)\]]+$/) || [''])[0];
+    if (tail && !/[.,!?;:…"'”’)\]]$/.test(toks[toks.length - 1])) toks[toks.length - 1] += tail;
+    const s0 = old[0].s, e0 = old[old.length - 1].e, timed = s0 != null && e0 != null, len = toks.reduce((a, t) => a + t.length, 0) || 1;
+    let acc = 0; const heard = old.map(w => w.t).join(' ');
+    const neu = toks.map((t, k) => {
+      const w = { t, ai: heard };
+      if (timed) { const a = s0 + (e0 - s0) * acc / len; acc += t.length; w.s = +a.toFixed(3); w.e = +(s0 + (e0 - s0) * acc / len).toFixed(3); } else { w.s = null; w.e = null; }
+      if (k === 0) { if (old[0].p) w.p = true; if (old[0].sp) w.sp = old[0].sp; }
+      return w;
+    });
+    return { words: words.slice(0, i).concat(neu, words.slice(i + f.n)), at: i, delta: neu.length - f.n };
+  }
+  /* the rest of the suggestions after one was taken: those after it move by the change in length */
+  const shiftFixes = (fixes, at, delta) => fixes.map(f => (f.at > at ? { ...f, at: f.at + delta } : f));
+
+  const api = { reviewStretches, locateFix, applyFix, shiftFixes, speakerAt, labelHeard, clusterVoice, renameSpeaker, speakerNames, cleanHidden, joinShown, FILLERS, tidyHeard, fromText, matchBatch, timedUpTo, fromHeard, append, paragraphs, wordAt, editParagraph, setSpeaker, search, toTxt, toSrt, toVtt, cues, hms, short, wordCount };
   root.TranscriptCore = api; if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof self !== 'undefined' ? self : globalThis);
