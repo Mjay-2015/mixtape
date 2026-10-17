@@ -9,3 +9,5 @@ A music player for your own song files. Install it once from the link below, and
 - Reads title, artist, album and cover art from MP3 tags; other formats use the filename.
 
 When you change `index.html`, bump `VERSION` in `sw.js` so installed copies pick up the update.
+
+**Where it lives:** this repository is carried inside screenwright as `apps/mixtape` and served there at `/studio/mixtape/` (behind staff sign-in). Pushing to `main` still publishes the phone version on GitHub Pages. Edit it in `screenwright/apps/mixtape`.
