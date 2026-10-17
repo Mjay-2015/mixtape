@@ -24,12 +24,52 @@ async function ready() {
   });
   return asr;
 }
+/* How sure Whisper was of each word: a logits processor that sees every step's scores, so when the next step shows
+   which token was chosen, that token's probability is kept. A word's confidence is its least sure token. */
+let Capture = null;
+async function capture() {
+  if (Capture) return new Capture();
+  const { LogitsProcessor } = await lib;
+  Capture = class extends LogitsProcessor {
+    constructor() { super(); this.prev = null; this.got = []; }
+    _call(input_ids, logits) {
+      const ids = input_ids[0], d = logits[0].data, n = Math.min(d.length, TS_BEGIN);
+      if (this.prev) { const last = Number(ids[ids.length - 1]); if (last < n) this.got.push([last, this.prev[last]]); }
+      let mx = -Infinity; for (let i = 0; i < n; i++) if (d[i] > mx) mx = d[i];
+      const p = this.prev && this.prev.length === n ? this.prev : new Float32Array(n); let sum = 0;
+      for (let i = 0; i < n; i++) { const v = Math.exp(d[i] - mx); p[i] = v; sum += v; } for (let i = 0; i < n; i++) p[i] /= sum;
+      this.prev = p; return logits;
+    }
+  };
+  return new Capture();
+}
+const TS_BEGIN = 50363, EOT = 50256, SOT = 50257, PREV = 50360;
+/* A short prompt of fillers tells Whisper the speech is verbatim, so "um", "uh" and false starts ("we, we") are written
+   down instead of tidied away; the clean view can hide them again. */
+const FILLER_PROMPT = ' Um, uh, well, so, I mean, like, you know, hmm.';
+let promptIds = null;
+/* the words' confidences, from the captured tokens: a token starting with a space starts a new word */
+function confidences(r, got) {
+  const words = []; let cur = null;
+  for (const [id, p] of got) { if (id >= EOT) continue; const t = r.tokenizer.decode([id]); if (!cur || /^\s/.test(t)) { cur = { text: t.trim(), p }; words.push(cur); } else { cur.text += t; cur.p = Math.min(cur.p, p); } }
+  return words;
+}
 self.onmessage = async e => {
   const audio = e.data.audio;
   if (e.data.window) { // one window of a long recording
     try {
-      const r = await ready(), out = await r(audio, { return_timestamps: 'word' }), o = e.data.offset, words = [];
-      for (const c of out.chunks || []) { const s = o + (c.timestamp[0] ?? 0), en = o + (c.timestamp[1] ?? c.timestamp[0] ?? 0), text = String(c.text || '').trim(); if (text && s >= e.data.keepFrom && s < e.data.keepTo) words.push({ text, start: +s.toFixed(3), end: +Math.max(s, en).toFixed(3) }); }
+      const r = await ready(), cap = await capture(), { LogitsProcessorList } = await lib, lp = new LogitsProcessorList(); lp.push(cap);
+      const opts = { return_timestamps: 'word', logits_processor: lp };
+      if (e.data.verbatim !== false) { promptIds ||= r.tokenizer.encode(FILLER_PROMPT, { add_special_tokens: false }); opts.decoder_input_ids = [PREV, ...promptIds, SOT]; }
+      const out = await r(audio, opts), o = e.data.offset, words = [], conf = confidences(r, cap.got);
+      // match the confidences to the pipeline's words in order (they are the same words, joined the same way)
+      let ci = 0; const norm = s => s.toLowerCase().replace(/[^a-z0-9']/g, '');
+      for (const c of out.chunks || []) {
+        const s = o + (c.timestamp[0] ?? 0), en = o + (c.timestamp[1] ?? c.timestamp[0] ?? 0), text = String(c.text || '').trim();
+        let k = ci; while (k < conf.length && k < ci + 3 && norm(conf[k].text) !== norm(text)) k++;
+        const cw = k < conf.length && norm(conf[k].text) === norm(text) ? conf[k] : null; if (cw) ci = k + 1;
+        if (text && s >= e.data.keepFrom && s < e.data.keepTo) words.push({ text, start: +s.toFixed(3), end: +Math.max(s, en).toFixed(3), ...(cw ? { c: +cw.p.toFixed(3) } : {}) });
+      }
       self.postMessage({ type: 'window', words, offset: o });
     } catch (err) { self.postMessage({ type: 'error', message: err && err.message ? err.message : String(err) }); }
     return;

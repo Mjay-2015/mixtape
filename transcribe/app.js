@@ -90,17 +90,42 @@ function drawAll() {
   $('#findBox').hidden = !r; $('#exportBtn').hidden = !r;
   drawText();
 }
+/* view settings, kept per browser: the clean script (fillers hidden), unsure words shown lighter, back up on resume */
+const V = Object.assign({ clean: false, unsure: true, backup: true }, (() => { try { return JSON.parse(localStorage.getItem('mixtape-transcript-view')) || {}; } catch (e) { return {}; } })());
+const saveV = () => { try { localStorage.setItem('mixtape-transcript-view', JSON.stringify(V)); } catch (e) {} };
+const SPK_COLOURS = ['#1F6F78', '#B5523B', '#5B5EA6', '#7A6A1F', '#2F7D4F', '#9C3D7A', '#3A6EA5', '#8A5A2B'];
+const spkColour = name => { const names = cur && cur.tr ? T.speakerNames(cur.tr.words) : []; const i = names.indexOf(name); return SPK_COLOURS[(i < 0 ? 0 : i) % SPK_COLOURS.length]; };
 function drawText() {
   const el = $('#text'), r = cur && cur.tr; lit = -1;
+  drawTools();
   if (!r || !r.words.length) { el.innerHTML = ''; return; }
-  const ps = T.paragraphs(r.words);
-  el.innerHTML = ps.map((p, pi) => paraHTML(r.words, p, pi)).join('');
+  const ps = T.paragraphs(r.words), hidden = V.clean ? T.cleanHidden(r.words) : null;
+  el.classList.toggle('show-unsure', V.unsure);
+  el.innerHTML = ps.map((p, pi) => paraHTML(r.words, p, pi, hidden)).join('');
   if (hits.length) markHits();
 }
-function paraHTML(words, p, pi) {
-  const first = words[p.i0], timed = first.s != null;
-  const ws = []; for (let i = p.i0; i < p.i1; i++) { const w = words[i]; ws.push(`<span class="w${w.s == null ? ' un' : ''}" data-i="${i}">${esc(w.t)}</span>`); }
-  return `<div class="para" data-p="${pi}" data-i0="${p.i0}" data-i1="${p.i1}"><div class="gut">${timed ? `<button class="ts" data-ts="${first.s}" title="Play from here">${T.short(first.s)}</button>` : '<span class="ts">—</span>'}<button class="spk${p.speaker ? '' : ' none'}" data-spk title="Name the speaker">${p.speaker ? esc(p.speaker) : '+ speaker'}</button></div><div class="words">${ws.join(' ')}</div><button class="ed" data-ed title="Correct this paragraph" aria-label="Correct this paragraph">✎</button></div>`;
+function paraHTML(words, p, pi, hidden) {
+  const first = words[p.i0], timed = first.s != null; let cap = false;
+  if (hidden) { let any = false; for (let i = p.i0; i < p.i1; i++) if (!hidden.has(i)) { any = true; break; } if (!any) return ''; } // a paragraph that was only "Hmm." is not shown in the clean script
+  const ws = [];
+  for (let i = p.i0; i < p.i1; i++) {
+    const w = words[i], hide = hidden && hidden.has(i);
+    // how sure the recogniser was: under 0.5 lightest, under 0.75 lighter (words a person typed carry no score)
+    const cls = ['w', w.s == null ? 'un' : '', w.c != null && w.c < 0.5 ? 'q2' : w.c != null && w.c < 0.75 ? 'q1' : '', hide ? 'f' : '', !hide && cap ? 'cap' : ''].filter(Boolean).join(' ');
+    if (hide) { if (/^[A-Z]/.test(w.t) && !/^I\b/.test(w.t)) cap = true; } else cap = false;
+    ws.push(`<span class="${cls}" data-i="${i}"${w.c != null && w.c < 0.75 ? ` title="Not sure (${Math.round(w.c * 100)}%)"` : ''}>${esc(w.t)}</span>`);
+  }
+  const col = p.speaker ? spkColour(p.speaker) : '';
+  return `<div class="para" data-p="${pi}" data-i0="${p.i0}" data-i1="${p.i1}"><div class="gut">${timed ? `<button class="ts" data-ts="${first.s}" title="Play from here">${T.short(first.s)}</button>` : '<span class="ts">—</span>'}<button class="spk${p.speaker ? '' : ' none'}" data-spk title="Choose or rename the speaker"${col ? ` style="color:${col}"` : ''}>${p.speaker ? esc(p.speaker) : '+ speaker'}</button></div><div class="words">${ws.join(' ')}</div><button class="ed" data-ed title="Correct this paragraph (or double-click a word)" aria-label="Correct this paragraph">✎</button></div>`;
+}
+/* the strip above the text: the switches, the speakers (click to rename everywhere), the keys */
+function drawTools() {
+  const box = $('#tools'), r = cur && cur.tr; box.hidden = !r || !r.words.length; if (box.hidden) return;
+  const names = T.speakerNames(r.words), unsure = r.words.filter(w => w.c != null && w.c < 0.75).length, fillers = T.cleanHidden(r.words).size;
+  box.innerHTML = `<label class="sw" title="Hide ums, uhs, false starts (“we, we”) and starters (“So,”, “Well,”) for a cleaner script; exports follow this"><input type="checkbox" data-v="clean"${V.clean ? ' checked' : ''}> Clean script${fillers ? ` <small>(${fillers} hidden)</small>` : ''}</label>`
+    + `<label class="sw" title="Words the recogniser was not sure of are lighter: check those first"><input type="checkbox" data-v="unsure"${V.unsure ? ' checked' : ''}> Unsure words lighter${unsure ? ` <small>(${unsure})</small>` : ''}</label>`
+    + (r.mode === 'heard' ? `<span class="spks">${names.map(n => `<button class="chip" data-ren="${esc(n)}" title="Rename “${esc(n)}” everywhere" style="--c:${spkColour(n)}">${esc(n)}</button>`).join('')}${names.length ? '' : '<span class="muted">No speakers yet</span>'}</span>` : '')
+    + `<span class="sp"></span><button class="btn sm ghost" id="keysBtn" title="Keyboard shortcuts (?)">⌨ Keys</button>`;
 }
 
 /* ---------- playing: click a word, the spoken word lights ---------- */
@@ -121,13 +146,19 @@ function tick() {
 }
 let scrolledAt = 0; $('#doc').addEventListener('wheel', () => { scrolledAt = performance.now(); }, { passive: true }); $('#doc').addEventListener('touchmove', () => { scrolledAt = performance.now(); }, { passive: true });
 function keepInView(el) { if (performance.now() - scrolledAt < 5000) return; const box = $('#doc').getBoundingClientRect(), r = el.getBoundingClientRect(); if (r.top < box.top + box.height * 0.2 || r.bottom > box.top + box.height * 0.7) $('#doc').scrollBy({ top: r.top - box.top - box.height * 0.35, behavior: 'smooth' }); }
-function playAt(t) { if (!cur) return; cur.media.currentTime = Math.max(0, t); cur.media.play().catch(() => {}); scrolledAt = 0; }
-const togglePlay = () => { if (!cur) return; cur.media.paused ? cur.media.play().catch(() => {}) : cur.media.pause(); };
+function playAt(t) { if (!cur) return; cur.media.currentTime = Math.max(0, t); justSeeked = false; cur.media.play().catch(() => {}); scrolledAt = 0; }
+let justSeeked = false;
+const togglePlay = () => { if (!cur) return; const m = cur.media; if (m.paused) { if (V.backup && !justSeeked && m.currentTime > 1) m.currentTime -= 1; justSeeked = false; m.play().catch(() => {}); } else m.pause(); };
+const back = sec => { if (cur) { cur.media.currentTime = Math.max(0, cur.media.currentTime - sec); justSeeked = true; } };
+const fwd = sec => { if (cur) { cur.media.currentTime = Math.min(cur.media.duration || 1e9, cur.media.currentTime + sec); justSeeked = true; } };
+const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const speedBy = d => { const sel = $('#speed'), i = Math.max(0, Math.min(SPEEDS.length - 1, SPEEDS.indexOf(+sel.value) + d)); if (!sel.querySelector(`option[value="${SPEEDS[i]}"]`)) sel.insertAdjacentHTML('beforeend', `<option value="${SPEEDS[i]}">${SPEEDS[i]}×</option>`); sel.value = String(SPEEDS[i]); if (cur) cur.media.playbackRate = SPEEDS[i]; toast(`Speed ${SPEEDS[i]}×`, 1200); };
 $('#bPlay').addEventListener('click', togglePlay);
-$('#bBack').addEventListener('click', () => { if (cur) cur.media.currentTime = Math.max(0, cur.media.currentTime - 5); });
-$('#bFwd').addEventListener('click', () => { if (cur) cur.media.currentTime = Math.min(cur.media.duration || 1e9, cur.media.currentTime + 5); });
-$('#seek').addEventListener('input', e => { if (cur && cur.media.duration) cur.media.currentTime = e.target.value / 1000 * cur.media.duration; });
+$('#bBack').addEventListener('click', () => back(5));
+$('#bFwd').addEventListener('click', () => fwd(5));
+$('#seek').addEventListener('input', e => { if (cur && cur.media.duration) { cur.media.currentTime = e.target.value / 1000 * cur.media.duration; justSeeked = true; } });
 $('#speed').addEventListener('change', e => { if (cur) cur.media.playbackRate = +e.target.value; });
+$('#text').addEventListener('dblclick', e => { const p = e.target.closest('.para'); if (p && e.target.closest('.w') && !editing) { e.preventDefault(); startEdit(p, +e.target.closest('.w').dataset.i); } });
 $('#text').addEventListener('click', e => {
   const w = e.target.closest('.w'); if (w && !w.classList.contains('un')) { const r = cur.tr.words[+w.dataset.i]; playAt(r.s); return; }
   const ts = e.target.closest('[data-ts]'); if (ts) return playAt(+ts.dataset.ts);
@@ -137,29 +168,43 @@ $('#text').addEventListener('click', e => {
 });
 
 /* ---------- correcting the words, naming the speakers ---------- */
-function startEdit(p) {
+function startEdit(p, atWord) {
   if (editing) cancelEdit(); if (job) return toast('Pause first, then correct the text.');
   const i0 = +p.dataset.i0, i1 = +p.dataset.i1, words = cur.tr.words, text = words.slice(i0, i1).map(w => w.t).join(' ');
   const box = p.querySelector('.words'); editing = { p, i0, i1, html: box.innerHTML };
   box.innerHTML = `<div class="edit"><textarea aria-label="Correct the paragraph">${esc(text)}</textarea><div class="row"><span class="hint">Words you keep keep their timing. A blank line splits the paragraph. <b>Tab</b> plays / pauses.</span><span class="sp"></span><button class="btn sm" data-x="cancel">Cancel</button><button class="btn sm primary" data-x="save">Save</button></div></div>`;
-  const ta = box.querySelector('textarea'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
-  ta.addEventListener('keydown', ev => { if (ev.key === 'Tab') { ev.preventDefault(); togglePlay(); } else if (ev.key === 'Escape') { ev.preventDefault(); cancelEdit(); } else if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); saveEdit(ta.value); } });
+  const ta = box.querySelector('textarea'); ta.focus(); let caret = ta.value.length; if (atWord != null && atWord >= i0) { caret = words.slice(i0, atWord).map(w => w.t).join(' ').length + (atWord > i0 ? 1 : 0); } ta.setSelectionRange(caret, caret);
+  ta.addEventListener('keydown', ev => { if (ev.key === 'Tab') { ev.preventDefault(); ev.stopPropagation(); ev.shiftKey ? back(5) : togglePlay(); } else if (ev.key === 'Escape') { ev.preventDefault(); cancelEdit(); } else if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); saveEdit(ta.value); } });
   box.querySelector('[data-x="cancel"]').addEventListener('click', cancelEdit); box.querySelector('[data-x="save"]').addEventListener('click', () => saveEdit(ta.value));
 }
 function cancelEdit() { if (!editing) return; editing.p.querySelector('.words').innerHTML = editing.html; editing = null; }
 async function saveEdit(text) {
-  const { i0, i1 } = editing; editing = null;
+  const { i0, i1 } = editing; editing = null; remember();
   cur.tr.words = T.editParagraph(cur.tr.words, i0, i1, text); await save(); drawAll(); toast('Corrected.');
 }
+/* a paragraph's speaker: pick one already there, add a new one, or rename this one everywhere */
 function nameSpeaker(p, btn) {
-  const i0 = +p.dataset.i0, names = [...new Set(T.paragraphs(cur.tr.words).map(x => x.speaker).filter(Boolean))];
-  const inp = document.createElement('input'); inp.className = 'spkin'; inp.value = cur.tr.words[i0].sp || ''; inp.placeholder = 'Name'; inp.setAttribute('list', 'spkNames'); inp.style.cssText = 'width:76px;font:600 12px var(--f-ui);border:1px solid var(--accent);border-radius:6px;padding:2px 4px;background:var(--sheet)';
-  let dl = $('#spkNames'); if (!dl) { dl = document.createElement('datalist'); dl.id = 'spkNames'; document.body.appendChild(dl); } dl.innerHTML = names.map(n => `<option value="${esc(n)}">`).join('');
-  btn.replaceWith(inp); inp.focus(); inp.select();
-  const done = async keep => { if (!inp.isConnected) return; if (keep) { cur.tr.words = T.setSpeaker(cur.tr.words, i0, inp.value.trim()); await save(); } drawText(); };
-  inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); done(true); } else if (ev.key === 'Escape') { ev.preventDefault(); done(false); } });
-  inp.addEventListener('blur', () => done(true));
+  const i0 = +p.dataset.i0, now = T.speakerAt(cur.tr.words, i0), names = T.speakerNames(cur.tr.words);
+  const set = async name => { remember(); cur.tr.words = T.setSpeaker(cur.tr.words, i0, name); await save(); drawText(); };
+  menu(btn, [['This paragraph is said by', null], ...names.filter(n => n !== now).map(n => [n, () => set(n)]),
+    ['New speaker…', () => askName(btn, 'New speaker', '', n => set(n))],
+    ...(now ? [[`Rename “${now}” everywhere…`, () => askName(btn, `Rename “${now}” everywhere`, now, n => renameAll(now, n))], ['No speaker for this paragraph', () => set('')]] : [])], { left: true });
 }
+async function renameAll(from, to) { if (!to || to === from) return; remember(); cur.tr.words = T.renameSpeaker(cur.tr.words, cur.tr.voices, from, to); await save(); drawText(); toast(`“${from}” is now “${to}” everywhere.`); }
+function askName(anchor, title, value, done) {
+  const m = $('#menu'); m.innerHTML = `<div class="lbl">${esc(title)}</div><input class="nm" value="${esc(value)}" placeholder="Name" aria-label="${esc(title)}" list="spkNames"><div class="row"><span class="sp"></span><button class="btn sm primary" data-ok>OK</button></div>`; m.hidden = false;
+  let dlist = $('#spkNames'); if (!dlist) { dlist = document.createElement('datalist'); dlist.id = 'spkNames'; document.body.appendChild(dlist); } dlist.innerHTML = T.speakerNames(cur.tr.words).map(n => `<option value="${esc(n)}">`).join('');
+  const r = anchor.getBoundingClientRect(); m.style.top = r.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - 260, r.left)) + 'px';
+  const inp = m.querySelector('input'); inp.focus(); inp.select();
+  const ok = () => { const v = inp.value.trim(); m.hidden = true; if (v) done(v); };
+  inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); ok(); } else if (ev.key === 'Escape') { ev.preventDefault(); m.hidden = true; } });
+  m.onclick = ev => { if (ev.target.closest('[data-ok]')) ok(); };
+}
+/* undo: every change to the words is a step back (Ctrl Z) */
+const undoStack = []; function remember() { if (cur && cur.tr) { undoStack.push(JSON.stringify(cur.tr.words)); if (undoStack.length > 60) undoStack.shift(); } }
+async function undo() { if (!undoStack.length || !cur || !cur.tr) return toast('Nothing to undo.'); cur.tr.words = JSON.parse(undoStack.pop()); await save(); drawText(); toast('Undone.'); }
+$('#tools').addEventListener('change', e => { const k = e.target.dataset.v; if (!k) return; V[k] = e.target.checked; saveV(); drawText(); });
+$('#tools').addEventListener('click', e => { const c = e.target.closest('[data-ren]'); if (c) return askName(c, `Rename “${c.dataset.ren}” everywhere`, c.dataset.ren, n => renameAll(c.dataset.ren, n)); if (e.target.closest('#keysBtn')) keysHelp(); });
 
 /* ---------- find ---------- */
 $('#q').addEventListener('input', () => { hits = cur && cur.tr ? T.search(cur.tr.words, $('#q').value) : []; hitAt = -1; markHits(); $('#qn').textContent = $('#q').value.trim() ? `${hits.length}` : ''; });
@@ -169,19 +214,19 @@ function markHits() { document.querySelectorAll('.w.hit').forEach(x => x.classLi
 /* ---------- export ---------- */
 $('#exportBtn').addEventListener('click', e => {
   const r = cur.tr, base = (cur.track.title || 'transcript').replace(/[\\/:*?"<>|]+/g, '-'), timedWords = r.words.slice(0, T.timedUpTo(r.words));
-  menu(e.currentTarget, [['Save the text as', null],
-    ['Text with timestamps (.txt)', () => dl(T.toTxt(r.words.map(w => w.s == null ? { ...w, s: 0 } : w)), base + '.txt')],
-    ['Plain text (.txt)', () => dl(T.toTxt(r.words.map(w => w.s == null ? { ...w, s: 0 } : w), { timestamps: false }), base + ' (plain).txt')],
-    ['Subtitles (.srt)', () => dl(T.toSrt(timedWords), base + '.srt')],
-    ['Web subtitles (.vtt)', () => dl(T.toVtt(timedWords), base + '.vtt')],
+  menu(e.currentTarget, [[V.clean ? 'Save the clean script as' : 'Save the text (full verbatim) as', null],
+    ['Text with timestamps (.txt)', () => dl(T.toTxt(r.words.map(w => w.s == null ? { ...w, s: 0 } : w), { clean: V.clean }), base + (V.clean ? ' (clean)' : '') + '.txt')],
+    ['Plain text (.txt)', () => dl(T.toTxt(r.words.map(w => w.s == null ? { ...w, s: 0 } : w), { timestamps: false, clean: V.clean }), base + (V.clean ? ' (clean, plain)' : ' (plain)') + '.txt')],
+    ['Subtitles (.srt)', () => dl(T.toSrt(timedWords, V.clean), base + '.srt')],
+    ['Web subtitles (.vtt)', () => dl(T.toVtt(timedWords, V.clean), base + '.vtt')],
     ['Words with times (.json)', () => dl(JSON.stringify({ title: cur.track.title, mode: r.mode, words: r.words }, null, 1), base + '.json')],
     ['Start again…', null],
     ['Start again (this transcript is deleted)', async () => { if (!confirm(`Delete the ${r.mode === 'text' ? 'read-along' : 'transcript'} of “${cur.track.title}” and start again? Save it as a file first if you want to keep it.`)) return; await tx(trDB, 'transcripts', 'readwrite', o => o.delete(r.id)); trs.delete(r.id); cur.tr = null; hits = []; drawLib(); drawAll(); }]]);
 });
 function dl(text, name) { const a = document.createElement('a'), u = URL.createObjectURL(new Blob([text], { type: 'text/plain' })); a.href = u; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(u), 60e3); }
-function menu(anchor, items) {
+function menu(anchor, items, opt = {}) {
   const m = $('#menu'); m.innerHTML = items.map(([l, f], i) => f ? `<button data-m="${i}">${esc(l)}</button>` : `<div class="lbl">${esc(l)}</div>`).join(''); m.hidden = false;
-  const r = anchor.getBoundingClientRect(); m.style.top = r.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
+  const r = anchor.getBoundingClientRect(); m.style.top = r.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, opt.left ? r.left : r.right - m.offsetWidth)) + 'px';
   m.onclick = ev => { const b = ev.target.closest('[data-m]'); if (!b) return; m.hidden = true; items[+b.dataset.m][1](); };
   setTimeout(() => document.addEventListener('pointerdown', function off(ev) { if (!m.contains(ev.target)) { m.hidden = true; document.removeEventListener('pointerdown', off); } }), 0);
 }
@@ -219,18 +264,29 @@ async function start(mode, text) {
   if (!cur.tr) cur.tr = { id: cur.track.id, mode, words: mode === 'text' ? T.fromText(text) : [], upTo: 0, done: false, duration: d, updated: Date.now() };
   const tr = cur.tr; job = { stop: false }; $('#start').hidden = true; $('#cont').hidden = true; $('#run').hidden = false; drawAll(); $('#start').hidden = true; $('#cont').hidden = true;
   const st = $('#runSt'), bar = $('#runBar');
-  let worker;
+  let worker, spkWorker;
   try {
     const input = new M.Input({ source: new M.BlobSource(cur.blob), formats: M.ALL_FORMATS }), a = await input.getPrimaryAudioTrack(); if (!a) throw new Error('this file has no sound');
     if (!(await a.canDecode())) throw new Error(`this browser cannot decode its sound (${a.codec})`);
     const dur = await a.computeDuration(); tr.duration = dur;
     worker = new Worker('../asr-worker.js', { type: 'module' }); const files = {};
     const hear = msg => new Promise((res, rej) => { worker.onmessage = m => { const x = m.data; if (x.type === 'load') { files[x.file] = x; const tot = Object.values(files).reduce((s, f) => s + (f.total || 0), 0), got = Object.values(files).reduce((s, f) => s + (f.loaded || 0), 0); st.textContent = `Getting the recogniser (once only): ${Math.round(got / 1e6)} of ${Math.round(tot / 1e6)} MB`; bar.style.width = (tot ? got / tot * 100 : 0) + '%'; } else if (x.type === 'window') res(x.words); else if (x.type === 'error') rej(new Error(x.message)); }; worker.onerror = e => rej(new Error(e.message || 'the recogniser could not start')); worker.postMessage(msg, [msg.audio.buffer]); });
+    // who speaks when: a second worker, in step with the recogniser (transcripts only; a read-along has one narrator)
+    const findSpeakers = tr.mode === 'heard' && tr.speakers !== false; tr.voices ||= [];
+    if (findSpeakers) spkWorker = new Worker('../speaker-worker.js', { type: 'module' });
+    const sfiles = {};
+    const speakers = msg => !spkWorker ? Promise.resolve(null) : new Promise(res => { spkWorker.onmessage = m => { const x = m.data; if (x.type === 'load') { sfiles[x.what] = x; } else if (x.type === 'speakers') res(x); else if (x.type === 'error') { console.warn('speakers:', x.message); res(null); } }; spkWorker.onerror = e => { console.warn('speakers:', e.message); res(null); }; spkWorker.postMessage(msg, [msg.audio.buffer]); });
     let ptr = tr.mode === 'text' ? T.timedUpTo(tr.words) : 0, from = tr.upTo || 0, t0 = performance.now();
     for (let w0 = Math.max(0, from - 2.5); w0 < dur; w0 += 25) {
       const w1 = Math.min(dur, w0 + 30), keepFrom = w0 <= from ? from : w0 + 2.5, keepTo = w1 >= dur ? Infinity : w0 + 27.5;
       const pcm = await window16k(a, w0, w1);
-      const heard = pcm.length > 8000 ? await hear({ window: true, audio: pcm, offset: w0, keepFrom: keepFrom === 0 ? -1 : keepFrom, keepTo }) : [];
+      const kf = keepFrom === 0 ? -1 : keepFrom, big = pcm.length > 8000;
+      const [heard0, sp] = big ? await Promise.all([hear({ window: true, audio: pcm.slice(), offset: w0, keepFrom: kf, keepTo }), findSpeakers ? speakers({ audio: pcm, offset: w0, keepFrom: kf, keepTo }) : null]) : [[], null];
+      let heard = heard0;
+      if (sp && sp.turns.length) { // each voiceprint joins the speaker it sounds like, or becomes a new one
+        const names = sp.prints.map(pr => T.clusterVoice(tr.voices, pr).name);
+        heard = T.labelHeard(heard, sp.turns.map(t => ({ s: t.s, e: t.e, name: t.g >= 0 ? names[t.g] : null })));
+      }
       if (tr.mode === 'text') ptr = T.matchBatch(tr.words, ptr, heard).ptr; else tr.words = T.append(tr.words, heard);
       tr.upTo = Math.min(dur, keepTo); tr.done = w1 >= dur || (tr.mode === 'text' && ptr >= tr.words.length);
       await save(); appendRender();
@@ -242,7 +298,7 @@ async function start(mode, text) {
     if (tr.mode === 'text' && tr.done) { const up = T.timedUpTo(tr.words); if (up < tr.words.length) toast(`The recording ended before the text did: the last ${(tr.words.length - up).toLocaleString()} words were not heard.`, 7000); }
     toast(tr.done ? (tr.mode === 'text' ? 'Read-along ready. Click any word to hear it.' : 'Transcript ready. Click any word to hear it.') : `Paused at ${T.short(tr.upTo)}. Continue any time.`, 5000);
   } catch (e) { toast(`Stopped: ${e.message || e}`, 7000); console.error(e); }
-  finally { if (worker) worker.terminate(); job = null; $('#run').hidden = true; await save().catch(() => {}); drawAll(); }
+  finally { if (worker) worker.terminate(); if (spkWorker) spkWorker.terminate(); job = null; $('#run').hidden = true; await save().catch(() => {}); drawAll(); }
 }
 let rendered = 0;
 function appendRender() { // the text grows as it is made: redraw, keeping the reader's place
@@ -259,14 +315,28 @@ async function window16k(track, w0, w1) {
   return out;
 }
 
-/* ---------- keys ---------- */
+/* ---------- keys: the transcription editors' way (Temi, Rev, Happy Scribe) ---------- */
+const KEYS = [['Tab', 'Play / pause — anywhere, even while typing'], ['Shift + Tab', 'Back 5 seconds'], ['Ctrl + →  /  Ctrl + ←', 'Forward / back 5 seconds'], ['← →', 'Forward / back 5 seconds (when not typing)'], ['Ctrl + ↑  /  Ctrl + ↓', 'Faster / slower'], ['Click a word', 'Play from that word'], ['Double-click a word', 'Correct its paragraph (Ctrl + Enter saves, Esc cancels)'], ['Ctrl + Z', 'Undo the last change'], ['Ctrl + F', 'Find in the text (Enter: next, Shift + Enter: previous)'], ['Space', 'Play / pause (when not typing)'], ['?', 'These keys']];
+function keysHelp() {
+  const m = $('#menu'); m.innerHTML = `<div class="lbl">Keys</div><table class="keys">${KEYS.map(([k, v]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(v)}</td></tr>`).join('')}</table><label class="sw"><input type="checkbox" id="bkp"${V.backup ? ' checked' : ''}> Back up 1 second when playing again after a pause</label>`; m.hidden = false;
+  const b = $('#keysBtn') || $('#bPlay'), r = b.getBoundingClientRect(); m.style.top = Math.max(8, Math.min(innerHeight - m.offsetHeight - 8, r.bottom + 6)) + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
+  m.querySelector('#bkp').addEventListener('change', e => { V.backup = e.target.checked; saveV(); });
+  m.onclick = null; setTimeout(() => document.addEventListener('pointerdown', function off(ev) { if (!m.contains(ev.target)) { m.hidden = true; document.removeEventListener('pointerdown', off); } }), 0);
+}
 document.addEventListener('keydown', e => {
-  if (e.target.closest('input, textarea, select')) { if ((e.ctrlKey || e.metaKey) && e.key === 'f' && cur && cur.tr) { e.preventDefault(); $('#q').focus(); } return; }
-  if (!cur) return;
+  const typing = !!e.target.closest('input, textarea, select'), ctrl = e.ctrlKey || e.metaKey;
+  if (e.key === 'Tab' && cur && !e.target.closest('.menu')) { e.preventDefault(); e.shiftKey ? back(5) : togglePlay(); return; }
+  if (ctrl && e.key === 'f' && cur && cur.tr) { e.preventDefault(); $('#q').focus(); $('#q').select(); return; }
+  if (ctrl && (e.key === 'z' || e.key === 'Z') && !typing) { e.preventDefault(); undo(); return; }
+  if (ctrl && e.key === 'ArrowRight') { e.preventDefault(); fwd(5); return; }
+  if (ctrl && e.key === 'ArrowLeft') { e.preventDefault(); back(5); return; }
+  if (ctrl && e.key === 'ArrowUp') { e.preventDefault(); speedBy(1); return; }
+  if (ctrl && e.key === 'ArrowDown') { e.preventDefault(); speedBy(-1); return; }
+  if (typing || !cur) return;
   if (e.key === ' ') { if (e.target.closest('button')) return; e.preventDefault(); togglePlay(); }
-  else if (e.key === 'ArrowLeft') { e.preventDefault(); cur.media.currentTime = Math.max(0, cur.media.currentTime - 5); }
-  else if (e.key === 'ArrowRight') { e.preventDefault(); cur.media.currentTime += 5; }
-  else if ((e.ctrlKey || e.metaKey) && e.key === 'f' && cur.tr) { e.preventDefault(); $('#q').focus(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); back(5); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); fwd(5); }
+  else if (e.key === '?') { e.preventDefault(); keysHelp(); }
 });
 document.addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.closest('.edit')) b.blur(); });
 addEventListener('beforeunload', e => { if (job) { e.preventDefault(); e.returnValue = ''; } });

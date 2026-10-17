@@ -50,6 +50,28 @@ ok(cs.length >= 3 && cs.every(c => c.text.split(' ').length <= 14 && c.end - c.s
 ok(T.toSrt(W).startsWith('1\n00:00:01,000 --> ') && T.toVtt(W).startsWith('WEBVTT'), 'SRT and VTT written');
 ok(T.short(3725) === '1:02:05' && T.short(65) === '1:05' && T.hms(65) === '00:01:05', 'times shown');
 
+// speakers: words take the speaker of the turn they overlap; a new speaker starts a paragraph with the name on it
+const hs = [['So,', 0.1], ['um,', 0.5], ['where', 0.8], ['from?', 1.1], ['Soweto.', 1.6], ['Near', 2.0], ['the', 2.3], ['stadium.', 2.5], ['Nice.', 3.4]].map(([text, start]) => ({ text, start, end: start + 0.25 }));
+const turns = [{ s: 0, e: 1.4, name: 'Speaker 1' }, { s: 1.5, e: 2.9, name: 'Speaker 2' }, { s: 3.3, e: 3.8, name: 'Speaker 1' }];
+const L1 = T.labelHeard(hs, turns); const SW = T.fromHeard(L1); const SP = T.paragraphs(SW);
+ok(SP.length === 3 && SP.map(p => p.speaker).join() === 'Speaker 1,Speaker 2,Speaker 1' && SW[SP[1].i0].t === 'Soweto.', 'a change of speaker starts a paragraph, named');
+ok(T.labelHeard([{ text: 'x', start: 1.43, end: 1.47 }], turns)[0].spk === 'Speaker 1', 'a word between turns goes to the nearest turn');
+const Sg = T.append(T.fromHeard(L1.slice(0, 4)), L1.slice(4));
+ok(T.paragraphs(Sg).map(p => p.speaker).join() === 'Speaker 1,Speaker 2,Speaker 1', 'speakers carry across windows of a growing transcript');
+// voices: the same voice joins its speaker, a different one makes a new speaker
+const voices = [], v = (a, b) => Array.from({ length: 8 }, (_, i) => (i < 4 ? a : b) + Math.sin(i) * 0.05);
+const n1 = T.clusterVoice(voices, v(1, 0)).name, n2 = T.clusterVoice(voices, v(0, 1)).name, n3 = T.clusterVoice(voices, v(0.95, 0.1)).name;
+ok(n1 === 'Speaker 1' && n2 === 'Speaker 2' && n3 === 'Speaker 1' && voices.length === 2 && voices[0].n === 2, 'voices group by likeness; a new voice is a new speaker');
+const R = T.renameSpeaker(SW, voices, 'Speaker 1', 'Thabo');
+ok(T.paragraphs(R).map(p => p.speaker).join() === 'Thabo,Speaker 2,Thabo' && voices[0].name === 'Thabo' && T.clusterVoice(voices, v(1, 0)).name === 'Thabo', 'renaming a speaker changes it everywhere, and the voice keeps the new name');
+// clean verbatim
+const cw = T.fromHeard(['So,', 'um,', 'thanks', 'for', 'coming.', 'We,', 'we', 'lived', 'there.', 'Uh,', 'honestly,', 'you', 'know,', 'it', 'was', 'like', 'magic.', 'Well,', 'I', 'mean,', 'yes.'].map((text, i) => ({ text, start: i * 0.4, end: i * 0.4 + 0.3 })));
+const hid = T.cleanHidden(cw), shown = T.joinShown(cw, 0, cw.length, hid);
+ok(shown === 'Thanks for coming. We lived there. Honestly, you know, it was like magic. I mean, yes.' || shown === 'Thanks for coming. We lived there. Honestly, you know, it was like magic. Yes.', `fillers, false starts and starters go in a clean script (got: ${shown})`);
+ok(T.joinShown(cw, 0, cw.length, null).startsWith('So, um, thanks'), 'the full verbatim keeps them all');
+ok(T.toTxt(cw, { clean: true, timestamps: false }).startsWith('Thanks for coming.') && !T.toSrt(cw, true).includes('um,'), 'exports can be clean');
+ok(T.fromHeard([{ text: 'Soweto', start: 1, end: 1.4, c: 0.61234 }])[0].c === 0.61, 'a word keeps how sure the recogniser was');
+
 // a word stretched back over the intro starts where it is really said
 const st = T.fromHeard([{ text: 'I', start: 0.42, end: 6.32 }, { text: 'was', start: 6.32, end: 6.6 }, { text: 'there.', start: 6.6, end: 8.4 }]);
 ok(Math.abs(st[0].s - 5.97) < 0.01 && st[2].s === 6.6, 'a first word stretched over the intro is moved to just before the next; a long last word is left alone');

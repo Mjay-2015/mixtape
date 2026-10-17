@@ -20,20 +20,89 @@
   function fromHeard(heard, opts = {}) {
     const longPause = opts.longPause ?? 1.4, sentencePause = opts.sentencePause ?? 0.7, maxWords = opts.maxWords ?? 90;
     const out = []; let n = 0;
+    let spk = opts.lastSpeaker || '';
     tidyHeard(heard).forEach((h, i) => {
       const text = String(h.text).trim(); if (!text) return;
-      const prev = out[out.length - 1], gap = prev ? h.start - prev.e : Infinity;
-      const brk = !prev || gap >= longPause || (gap >= sentencePause && endsSentence(prev.t)) || (n >= maxWords && endsSentence(prev.t)) || n >= maxWords * 1.6;
-      const w = { t: text, s: +h.start.toFixed(3), e: +Math.max(h.start, h.end ?? h.start).toFixed(3) }; if (brk) { w.p = true; n = 0; }
-      out.push(w); n++;
+      const prev = out[out.length - 1], gap = prev ? h.start - prev.e : Infinity, who = h.spk || spk;
+      // a new speaker always starts a new paragraph
+      const brk = !prev || (who && who !== spk) || gap >= longPause || (gap >= sentencePause && endsSentence(prev.t)) || (n >= maxWords && endsSentence(prev.t)) || n >= maxWords * 1.6;
+      const w = { t: text, s: +h.start.toFixed(3), e: +Math.max(h.start, h.end ?? h.start).toFixed(3) };
+      if (h.c != null) w.c = +h.c.toFixed(2);
+      if (brk) { w.p = true; n = 0; if (who) w.sp = who; }
+      spk = who; out.push(w); n++;
     });
     return out;
   }
   /* new heard words added after the ones already there (a transcript that grows as it is made, or is continued) */
-  function append(words, heard, opts) {
-    const more = fromHeard(heard, opts); if (!words.length) return more;
-    if (more.length) { const last = words[words.length - 1], gap = more[0].s - last.e; if (!(gap >= (opts?.longPause ?? 1.4) || (gap >= 0.7 && endsSentence(last.t)))) delete more[0].p; }
+  function append(words, heard, opts = {}) {
+    const lastSpeaker = speakerAt(words, words.length - 1);
+    const more = fromHeard(heard, { ...opts, lastSpeaker }); if (!words.length) return more;
+    if (more.length) {
+      const last = words[words.length - 1], gap = more[0].s - last.e, sameSpeaker = !more[0].sp || more[0].sp === lastSpeaker;
+      if (sameSpeaker && !(gap >= (opts.longPause ?? 1.4) || (gap >= 0.7 && endsSentence(last.t)))) { delete more[0].p; delete more[0].sp; }
+      else if (more[0].p && !more[0].sp && lastSpeaker) more[0].sp = lastSpeaker; // a new paragraph by the same speaker keeps the name
+    }
     return words.concat(more);
+  }
+  /* the speaker of word i: the name on its paragraph's first word */
+  function speakerAt(words, i) { for (let k = i; k >= 0; k--) if (words[k].p || k === 0) return words[k].sp || ''; return ''; }
+
+  /* ---- speakers ---- */
+  /* heard words get the speaker of the turn they overlap most (turns: [{ s, e, name }]); a word in no turn keeps the
+     speaker of the word before (a breath, a short word between turns) */
+  function labelHeard(heard, turns) {
+    let prev = '';
+    return heard.map(h => {
+      const s = h.start, e = Math.max(h.end ?? s, s + 0.05); let best = null, ov = 0;
+      for (const t of turns) { if (!t.name) continue; const o = Math.min(e, t.e) - Math.max(s, t.s); if (o > ov) { ov = o; best = t; } }
+      if (!best) { let d = Infinity; for (const t of turns) { if (!t.name) continue; const dd = Math.min(Math.abs(t.s - s), Math.abs(t.e - s)); if (dd < d && dd < 0.6) { d = dd; best = t; } } }
+      const spk = best ? best.name : prev; prev = spk; return spk ? { ...h, spk } : h;
+    });
+  }
+  const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
+  const unit = v => { const n = Math.hypot(...v) || 1; return v.map(x => x / n); };
+  /* a voice (a speaker embedding) matched to the voices met so far: the closest one when it is close enough, otherwise
+     a new speaker. voices: [{ name, c: centroid, n }] is updated (the centroid drifts toward each voice it takes in). */
+  function clusterVoice(voices, emb, threshold = 0.35) {
+    const e = unit(Array.from(emb)); let best = null, sim = -1;
+    for (const v of voices) { const s = dot(v.c, e); if (s > sim) { sim = s; best = v; } }
+    if (best && sim >= threshold) { best.c = unit(best.c.map((x, i) => x * best.n + e[i])); best.n++; return { name: best.name, sim }; }
+    let k = voices.length + 1; while (voices.some(v => v.name === `Speaker ${k}`)) k++;
+    const v = { name: `Speaker ${k}`, c: e, n: 1 }; voices.push(v); return { name: v.name, sim, isNew: true };
+  }
+  /* a speaker renamed everywhere (Rev's way): every paragraph with that name, and the voice it belongs to */
+  function renameSpeaker(words, voices, from, to) {
+    to = String(to || '').trim(); if (!to || to === from) return words;
+    const out = words.map(w => w.sp === from ? { ...w, sp: to } : w); for (const v of voices || []) if (v.name === from) v.name = to; return out;
+  }
+  const speakerNames = words => [...new Set(words.filter(w => w.sp).map(w => w.sp))];
+
+  /* ---- clean verbatim: fillers, false starts and starters can be hidden ---- */
+  const FILLERS = new Set(['um', 'umm', 'uh', 'uhh', 'er', 'erm', 'ah', 'hmm', 'hm', 'mm', 'mmm', 'mhm', 'uhm']);
+  const STARTERS = new Set(['so', 'well', 'okay', 'ok', 'like', 'right', 'now', 'oh', 'yeah']);
+  const bare = t => String(t).toLowerCase().replace(/[^a-z']/g, '');
+  /* the words a clean script leaves out: fillers anywhere; a word said twice in a row ("we, we"), the first time; and a
+     starter ("So,", "Well,") that opens a sentence with a comma after it. "You know," and "I mean," at a sentence start too. */
+  function cleanHidden(words) {
+    const hide = new Set();
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i], b = bare(w.t), prev = words[i - 1], next = words[i + 1], startsSentence = i === 0 || w.p || (prev && endsSentence(prev.t));
+      if (FILLERS.has(b)) { hide.add(i); continue; }
+      if (next && b && bare(next.t) === b && !next.p && /[,-]$|^\w+$/.test(w.t) && b.length < 12) { hide.add(i); continue; }
+      if (startsSentence && /,$/.test(w.t) && STARTERS.has(b)) { hide.add(i); continue; }
+      if (startsSentence && next && /,$/.test(next.t) && ((b === 'you' && bare(next.t) === 'know') || (b === 'i' && bare(next.t) === 'mean'))) { hide.add(i); hide.add(i + 1); i++; }
+    }
+    return hide;
+  }
+  /* the text of a run of words, without the hidden ones, the next word capitalised where a hidden one opened a sentence */
+  function joinShown(words, i0, i1, hidden) {
+    const out = []; let cap = false;
+    for (let i = i0; i < i1; i++) {
+      const w = words[i];
+      if (hidden && hidden.has(i)) { if (/^[A-Z]/.test(w.t) && !/^I\b/.test(w.t)) cap = true; if (/[.!?]$/.test(w.t) && out.length) out[out.length - 1] = out[out.length - 1].replace(/,$/, '') + w.t.slice(-1); continue; }
+      let t = w.t; if (cap) { t = t.charAt(0).toUpperCase() + t.slice(1); cap = false; } out.push(t);
+    }
+    return out.join(' ');
   }
   function paragraphs(words) {
     const out = []; words.forEach((w, i) => { if (i === 0 || w.p) out.push({ i0: i, i1: i + 1, start: w.s, speaker: w.sp || '' }); else out[out.length - 1].i1 = i + 1; });
@@ -73,12 +142,14 @@
     return out;
   }
   function toTxt(words, opts = {}) {
-    const ps = paragraphs(words); return ps.map(p => `${opts.timestamps === false ? '' : `[${hms(p.start)}] `}${p.speaker ? p.speaker + ': ' : ''}${words.slice(p.i0, p.i1).map(w => w.t).join(' ')}`).join('\n\n') + '\n';
+    const hidden = opts.clean ? cleanHidden(words) : null, ps = paragraphs(words);
+    return ps.map(p => ({ p, text: joinShown(words, p.i0, p.i1, hidden) })).filter(x => x.text).map(({ p, text }) => `${opts.timestamps === false ? '' : `[${hms(p.start)}] `}${p.speaker ? p.speaker + ': ' : ''}${text}`).join('\n\n') + '\n';
   }
   /* subtitle cues: at most `maxWords` words and `maxDur` seconds each, broken at sentence ends and pauses */
-  function cues(words, maxWords = 14, maxDur = 6) {
-    const out = []; let c = null;
+  function cues(words, maxWords = 14, maxDur = 6, clean = false) {
+    const out = []; let c = null; const hidden = clean ? cleanHidden(words) : null;
     words.forEach((w, i) => {
+      if (hidden && hidden.has(i)) return;
       if (!c || w.p || c.n >= maxWords || w.s - c.start >= maxDur || w.s - c.end > 1) { if (c) out.push(c); c = { start: w.s, end: w.e, text: w.t, n: 1 }; }
       else { c.text += ' ' + w.t; c.end = Math.max(c.end, w.e); c.n++; }
       if (endsSentence(w.t) && c.n >= 4) { out.push(c); c = null; }
@@ -86,8 +157,8 @@
     if (c) out.push(c); out.forEach((x, i) => { const nx = out[i + 1]; if (x.end - x.start < 0.8) x.end = Math.min(x.start + 0.8, nx ? nx.start : x.start + 0.8); });
     return out;
   }
-  const toSrt = words => cues(words).map((c, i) => `${i + 1}\n${sub(c.start, ',')} --> ${sub(c.end, ',')}\n${c.text}\n`).join('\n');
-  const toVtt = words => 'WEBVTT\n\n' + cues(words).map(c => `${sub(c.start, '.')} --> ${sub(c.end, '.')}\n${c.text}\n`).join('\n');
+  const toSrt = (words, clean) => cues(words, 14, 6, clean).map((c, i) => `${i + 1}\n${sub(c.start, ',')} --> ${sub(c.end, ',')}\n${c.text}\n`).join('\n');
+  const toVtt = (words, clean) => 'WEBVTT\n\n' + cues(words, 14, 6, clean).map(c => `${sub(c.start, '.')} --> ${sub(c.end, '.')}\n${c.text}\n`).join('\n');
   const wordCount = words => words.length;
 
   /* ---- your own text (a book, a script): its words, waiting for the narration's times ---- */
@@ -140,6 +211,6 @@
   /* how far a matched text has got: the index after the last timed word */
   const timedUpTo = words => { let i = words.length; while (i > 0 && words[i - 1].s == null) i--; return i; };
 
-  const api = { tidyHeard, fromText, matchBatch, timedUpTo, fromHeard, append, paragraphs, wordAt, editParagraph, setSpeaker, search, toTxt, toSrt, toVtt, cues, hms, short, wordCount };
+  const api = { speakerAt, labelHeard, clusterVoice, renameSpeaker, speakerNames, cleanHidden, joinShown, FILLERS, tidyHeard, fromText, matchBatch, timedUpTo, fromHeard, append, paragraphs, wordAt, editParagraph, setSpeaker, search, toTxt, toSrt, toVtt, cues, hms, short, wordCount };
   root.TranscriptCore = api; if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof self !== 'undefined' ? self : globalThis);

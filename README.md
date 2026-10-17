@@ -27,7 +27,11 @@ Rules: `lyrics-core.js` (checked by `node lyrics-check.cjs`); screens: `lyrics.j
 
 - **Write down what is said**: for interviews and voice notes. The text appears as it is made, in paragraphs at the pauses.
 - **Match my text to it**: for audiobooks and read scripts. Paste the text or load a .txt; each word is matched to the moment it is read (headings the narrator skips, misread names and asides do not throw it).
-- Click any word to play from there; the word being spoken is lit and kept in view. Correct a paragraph (✎): words you keep keep their timing. Name the speakers. Find in the text. Speed, 5-second skips, Space to play (Tab while editing).
+- Click any word to play from there; the word being spoken is lit and kept in view. Double-click a word (or ✎) to correct its paragraph: words you keep keep their timing.
+- **Speakers are found automatically** (pyannote segmentation 3.0, MIT, hears the turns; Wespeaker ResNet34, Apache-2.0, tells the voices apart, both in `speaker-worker.js`). Click a speaker to rename them everywhere, or give a paragraph to someone else or a new speaker.
+- **Everything said is kept** — "um", "uh", "we, we" (Whisper is prompted to write verbatim). **Clean script** hides fillers, false starts and starters ("So,", "Well,", "You know,"); exports follow the switch.
+- **Words the recogniser was unsure of are lighter** (from Whisper's own token probabilities), the least sure underlined: check those first.
+- Keys, as in Temi and Rev: **Tab** play/pause anywhere (even while typing), **Shift+Tab** back 5 s, Ctrl+←/→ 5 s, Ctrl+↑/↓ speed, Ctrl+Z undo, Ctrl+F find, ? for the list. Playing again after a pause backs up 1 s.
 - Long recordings are read 30 seconds at a time and saved as they go: pause, close, and continue later.
 - Save as text with timestamps, plain text, .srt, .vtt, or words with times (.json).
 
