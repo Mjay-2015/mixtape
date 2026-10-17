@@ -2927,7 +2927,7 @@ function showShortcuts() {
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>
-  <p class="hint">Mixtape Studio v47</p>
+  <p class="hint">Mixtape Studio v48</p>
   <div class="credits"><h4>Made with</h4>
     <p>Tone.js by Yotam Mann (MIT licence): drum machine, synths and effects.</p>
     <p>mediabunny by Vanilagy (MPL-2.0 licence): reads and writes video and sound files for the cutter, over the browser’s own codecs.</p>
@@ -3645,7 +3645,7 @@ function trimLong(t, opts = {}) {
         <div class="trim-f"><span class="trim-hint">exactly <span class="trim-exact"></span></span></div>
         <div class="trim-len"></div>
       </div>
-      <div class="trim-act"><button type="button" class="btn" data-x="cancel">${video ? 'Close' : 'Cancel'}</button><span class="sp"></span><button type="button" class="btn${video ? ' primary' : ''}" data-x="save" title="Save the part as a file on this computer">${video ? 'Save the cut as a file' : 'Save as a file'}</button>${video ? '' : '<button type="button" class="btn primary" data-x="keep">Keep this part</button>'}</div>
+      <div class="trim-act"><button type="button" class="btn" data-x="cancel">${video ? 'Close' : 'Cancel'}</button><span class="sp"></span><button type="button" class="btn" data-x="save" title="Save the part as a file on this computer">${video ? 'Save the cut as a file' : 'Save as a file'}</button>${video ? '<button type="button" class="btn primary" data-x="scene" title="The cut becomes this mix’s picture: score to it, mark hit points; it is saved in your library under Scenes">Use as the scene</button>' : '<button type="button" class="btn primary" data-x="keep">Keep this part</button>'}</div>
     </div>`;
     document.body.appendChild(wrap);
     const q = s => wrap.querySelector(s), over = q('.trim-over'), det = q('.trim-detail'), status = q('.trim-status'), frameBox = q('.trim-frame');
@@ -3680,6 +3680,7 @@ function trimLong(t, opts = {}) {
       const tooLongToEdit = len > LONG_SEC && !opts.standalone && !video;
       q('.trim-len').innerHTML = len <= 0 ? '<span class="warn">The end is not after the start yet.</span>' : tooLongToEdit ? '<span class="warn">Over an hour: save it as a file, or pick a shorter part to edit here.</span>' : '';
       const keep = q('[data-x="keep"]'); if (keep) keep.disabled = !opened || cutting || tooLongToEdit || len < 0.5; q('[data-x="save"]').disabled = !opened || cutting || len < 0.5;
+      const sc = q('[data-x="scene"]'); if (sc) sc.disabled = !opened || cutting || len < 0.5;
       scheduleFrame();
     }
     let frameT = null, frameBusy = false, frameWant = null;
@@ -3758,12 +3759,17 @@ function trimLong(t, opts = {}) {
       catch (e) { cutting = false; prog.hidden = true; status.textContent = 'Could not cut: ' + (e.message || e); draw(); return; }
       prog.hidden = true; cutting = false;
       if (mode === 'save') { downloadBlob(r.blob, r.name.replace(/[\\/:*?"<>|]/g, '-')); status.textContent = `Saved “${r.name}” (${(r.blob.size / 1e6).toFixed(1)} MB). ${r.note} Pick another part, or close.`; draw(); return; }
+      if (mode === 'scene') { // the cut becomes the mix's picture (importVideo saves it in the library under Scenes)
+        finish(null); await importVideo(new File([r.blob], r.name, { type: r.type || 'video/mp4' }), { fps: fps || undefined });
+        toast(`The scene is now the cut (${fmtH(sel.b - sel.a, 2)}). ${r.note}`, 9000); return;
+      }
       const title = partName(), nt = { id: uid(), name: r.name, size: r.blob.size, type: r.type, title, artist: t.artist || '', album: t.album || '', track: 0, duration: r.duration || await probeDur(r.blob), added: Date.now(), blob: r.blob, art: t.art || null };
       try { await saveToLibrary(nt); } catch (e) { status.textContent = 'Could not save the part: ' + e.message; draw(); return; }
       if (opts.standalone) toast(`Saved “${title}” (${fmtH(nt.duration)}) in your library. Press Add, or drag it onto a track.`, 6000);
       finish(nt.id);
     }
     q('[data-x="save"]').addEventListener('click', () => doCut('save'));
+    const sceneBtn = q('[data-x="scene"]'); if (sceneBtn) sceneBtn.addEventListener('click', () => doCut('scene'));
     const keepBtn = q('[data-x="keep"]'); if (keepBtn) keepBtn.addEventListener('click', () => doCut('keep'));
     function onKey(e) {
       if (e.target.closest && e.target.closest('input')) { if (e.key === 'Escape') { e.target.blur(); e.stopImmediatePropagation(); } return; }
