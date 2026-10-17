@@ -276,7 +276,7 @@ const newClip = (trackId, lane, at, start, end, extra = {}) => ({ id: uid(), tra
 async function addRegion(trackId, a, b, mode) {
   const lt = libTrack(trackId);
   if (await tooLong(lt)) { // too long to edit whole: pick the part needed first (see trimLong)
-    if (!window.MixtapeLongMP3 || !MixtapeLongMP3.isMp3(lt)) return toast(`“${lt.title}” is ${fmtH(lt.duration)} long, too long to edit whole. Picking a part works for MP3 files: save it as an MP3 and add it again.`, 8000);
+    if (!cutterReady(lt)) return toast('The cutter did not load. Reload the page and try again.', 6000);
     const part = await trimLong(lt); if (!part) return; trackId = part; a = 0; b = null;
   }
   let e; try { e = await ensureBuf(trackId); } catch (err) { return toast(err.message, 5000); }
@@ -2767,7 +2767,7 @@ function renderLibrary() {
   $('#lib').innerHTML = list.length ? list.map(t => { const a = ana[t.id];
     const info = a ? `<span class="bk">${a.bpm ? a.bpm + ' BPM' : 'no steady beat'} · ${esc(a.keyName)}</span>` : analyzing.has(t.id) ? '<span class="bk busy">finding tempo and key…</span>' : '';
     return `<li draggable="true" data-drag="${t.id}" title="Drag onto a track"><button class="lp${libPrev && libPrev.id === t.id ? ' on' : ''}" data-libprev="${t.id}" title="${libPrev && libPrev.id === t.id ? 'Stop listening' : 'Listen'}" aria-label="${libPrev && libPrev.id === t.id ? 'Stop listening to' : 'Listen to'} ${esc(t.title)}">${libPrev && libPrev.id === t.id ? '■' : '▶'}</button><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span class="li-sub">${esc(t.artist || 'Unknown artist')} · ${(t.duration >= 3600 ? fmtH(t.duration) : fmtT(t.duration)).replace(/\.\d$/, '')}</span>${info}</div>
-      <div class="acts">${window.MixtapeLongMP3 && MixtapeLongMP3.isMp3(t) ? `<button data-cut="${t.id}" title="Cut a part out of this MP3, with no loss of quality">✂</button>` : ''}<button data-add="append" data-id="${t.id}" title="Add to the end of the selected track">Add</button><button data-add="layer" data-id="${t.id}" title="Put it on a new track at the playhead">New track</button></div></li>`; }).join('')
+      <div class="acts"><button data-cut="${t.id}" title="Cut a part out of this song: exact, with no loss of quality">✂</button><button data-add="append" data-id="${t.id}" title="Add to the end of the selected track">Add</button><button data-add="layer" data-id="${t.id}" title="Put it on a new track at the playhead">New track</button></div></li>`; }).join('')
     : `<li class="empty-note">${lib.length ? 'No songs match your search.' : 'No songs yet. Press “Import audio files” above, or drop music files onto the timeline.'}</li>`;
   const n = lib.filter(t => !t.stemOf && t.kind !== 'video').length; $('#libCount').textContent = `${n} song${n === 1 ? '' : 's'}`;
 }
@@ -2927,9 +2927,10 @@ function showShortcuts() {
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>
-  <p class="hint">Mixtape Studio v45</p>
+  <p class="hint">Mixtape Studio v46</p>
   <div class="credits"><h4>Made with</h4>
     <p>Tone.js by Yotam Mann (MIT licence): drum machine, synths and effects.</p>
+    <p>mediabunny by Vanilagy (MPL-2.0 licence): reads and writes video and sound files for the cutter, over the browser’s own codecs.</p>
     <p>VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell) (CC0, public domain): the orchestra.</p>
     <p>Salamander Grand Piano V3 by Alexander Holm (CC-BY 3.0): the grand piano.</p>
     <p>GeneralUser GS by S. Christian Collins (GeneralUser GS licence v2.0): the recorded General MIDI instruments and drum kits.</p>
@@ -3533,16 +3534,53 @@ function loadPeaks(id) {
   } catch (e) { return null; }
 }
 let trimOpen = null;
-/* The cutter on its own (the ✂ on a library song, or "Cut a part out of an MP3"): any length, the part goes to the library. */
+/* ---- the cutter's engines: MP3 by frame copy (long-mp3.js); everything else through the browser's codecs (media-cut.js) ----
+   Both give the window the same five things: open, peaks, hear, frame (video only) and cut. */
+function mp3Engine(t) {
+  const L = window.MixtapeLongMP3; let ix = null;
+  return {
+    kind: 'audio',
+    async open(onProgress) { ix = await L.index(t.blob, onProgress); return { duration: ix.duration }; },
+    describe: () => 'It is cut straight out of the MP3 with no re-encoding, so it sounds exactly like the original; cuts land within about 1/20 s.',
+    peaks: (bucket, onChunk, cancelled) => L.peaks(ctx, t.blob, ix, bucket, onChunk, cancelled),
+    hear: (t0, t1) => L.decode(ctx, t.blob, ix, t0, t1),
+    frame: null,
+    async cut(t0, t1, title) { const c = L.cut(t.blob, ix, t0, t1); return { blob: c.blob, name: title + '.mp3', type: 'audio/mpeg', duration: c.duration, exact: false, note: 'Cut without re-encoding.' }; },
+  };
+}
+function mediaEngine(t) {
+  const C = window.MixtapeMediaCut, file = t.blob instanceof File ? t.blob : new File([t.blob], t.name || t.title || 'file', { type: t.type || '' });
+  let p = null;
+  const eng = {
+    kind: C.isVideoFile(file) ? 'video' : 'audio',
+    async open(onProgress) { if (onProgress) onProgress(0.3); p = await C.probe(file); eng.kind = p.kind; return { duration: p.duration }; },
+    describe: () => p.how === 'pcm' ? 'The sound is lossless, so the part is cut exactly to the sample and saved as a WAV.'
+      : p.how === 'copy' ? `The sound (${String(p.audio.codec).toUpperCase()}) is copied as it is, with no re-encoding; cuts land within about 1/50 s.`
+      : `Exact to the frame${p.video ? ` (${p.video.w}×${p.video.h}${p.video.fps ? `, ${Math.round(p.video.fps * 100) / 100} fps` : ''})` : ''}: the picture is re-encoded at a very high rate so it looks the same${p.audio ? (p.audio.lossless ? '; the sound stays lossless' : '; the sound is re-encoded at the top rate') : ''}.`,
+    peaks: (bucket, onChunk, cancelled) => C.peaks(p, bucket, onChunk, cancelled),
+    hear: (t0, t1) => C.hear(p, ctx, t0, t1),
+    frame: t => p && p.video ? C.frame(p, t, 300) : null,
+    async cut(t0, t1, title, onProgress) {
+      const r = await C.cut(p, t0, t1, { name: t.title, onProgress }), ext = r.name.split('.').pop().toLowerCase(); // the engine adds the times to the name
+      return { blob: r.blob, name: r.name, type: r.blob.type || ({ mp4: 'video/mp4', webm: 'video/webm', wav: 'audio/wav', m4a: 'audio/mp4', mp3: 'audio/mpeg' }[ext] || ''), duration: r.exact ? t1 - t0 : null, exact: r.exact, note: r.note };
+    },
+  };
+  return eng;
+}
+const cutterReady = t => window.MixtapeMediaCut || (window.MixtapeLongMP3 && MixtapeLongMP3.isMp3(t));
+/* The cutter on its own (the ✂ on a library song, or "Cut a part out of a file"): any length; a sound part goes to the library. */
 async function cutFromLibrary(id) {
   const t = libTrack(id); if (!t) return;
-  if (!window.MixtapeLongMP3 || !MixtapeLongMP3.isMp3(t)) return toast('Cutting a part out without re-encoding works for MP3 files. For other formats, add the song to a track and trim it there.', 6000);
+  if (!cutterReady(t)) return toast('The cutter did not load. Reload the page and try again.', 6000);
   if (!(t.duration > 0)) { t.duration = await probeDur(t.blob); if (t.duration > 0) req('tracks', 'readwrite', o => o.put(t)).catch(() => {}); }
-  if (!(t.duration > 0)) return toast(`Could not read how long “${t.title}” is.`, 5000);
   trimLong(t, { standalone: true });
 }
 $('#cutIn').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  if (window.MixtapeMediaCut && MixtapeMediaCut.isVideoFile(f)) { // a video is cut straight from the file; it does not join the song library
+    const d = await probeDur(f);
+    return trimLong({ title: f.name.replace(/\.[^.]+$/, ''), name: f.name, type: f.type, blob: f, duration: d }, { standalone: true });
+  }
   const ids = await importDropped([f]); if (ids.length) cutFromLibrary(ids[0]);
 });
 // a time as a 00:00:00 box shows it: hours, minutes, seconds
@@ -3585,18 +3623,21 @@ function timeField(inp, onValue, onFocus, onBlur) {
   });
   inp.addEventListener('paste', e => { e.preventDefault(); const t = (e.clipboardData.getData('text') || '').trim(), v = parseH(t); if (v != null) { show(fmtMask(v)); onValue(v); } });
 }
-/* Resolves to the library id of the part kept (already saved in the library), or null. */
+/* The cutter window. t is a library track, or { title, name, type, blob, duration } for a file that is not in the library.
+   Resolves to the library id of the part kept, or null. */
 function trimLong(t, opts = {}) {
-  const L = window.MixtapeLongMP3;
+  const eng = opts.engine || ((window.MixtapeLongMP3 && MixtapeLongMP3.isMp3(t)) || !window.MixtapeMediaCut ? mp3Engine(t) : mediaEngine(t));
+  const video = eng.kind === 'video';
   return new Promise(resolve => {
     const wrap = document.createElement('div'); wrap.className = 'trimwrap';
-    wrap.innerHTML = `<div class="trim" role="dialog" aria-label="Pick the part you need">
-      <h3>${opts.standalone ? 'Cut a part out' : 'Pick the part you need'}</h3>
-      <p class="trim-sub">“${esc(t.title)}” is <b>${fmtH(t.duration)}</b> long${opts.standalone ? '' : ', too long to edit whole'}. Choose the part you want: it is cut straight out of the MP3, with no re-encoding, so it sounds exactly like the original.</p>
+    wrap.innerHTML = `<div class="trim" role="dialog" aria-label="${video ? 'Cut a part out of the video' : 'Pick the part you need'}">
+      <h3>${video ? 'Cut a part out of the video' : opts.standalone ? 'Cut a part out' : 'Pick the part you need'}</h3>
+      <p class="trim-sub">“${esc(t.title)}” is <b>${fmtH(t.duration)}</b> long${opts.standalone || video ? '' : ', too long to edit whole'}. Choose the part you want. <span class="trim-how"></span></p>
       <div class="trim-status" aria-live="polite">Reading the file…</div>
+      <div class="trim-prog" hidden><i></i></div>
       <div class="trim-cv"><canvas class="trim-over"></canvas></div>
-      <div class="trim-dh"><span>Close-up of the <b class="trim-which">start</b> · drag here to place it exactly · ← → nudge it 1 s (Shift: 0.1 s)</span></div>
-      <div class="trim-cv"><canvas class="trim-detail"></canvas></div>
+      <div class="trim-dh"><span>Close-up of the <b class="trim-which">start</b> · drag here to place it exactly · ← → nudge it 1 s (Shift: 0.1 s${video ? ', Alt: one frame' : ''})</span></div>
+      <div class="trim-mid${video ? ' video' : ''}"><div class="trim-cv"><canvas class="trim-detail"></canvas></div>${video ? '<div class="trim-frame" title="The picture at the handle"><span class="fcap"></span></div>' : ''}</div>
       <div class="trim-fields">
         <div class="trim-f"><label>Start <input data-f="a" value="00:00:00" spellcheck="false" title="Hours : minutes : seconds. Type the digits; the cursor moves on by itself."></label><button type="button" class="btn sm" data-hear="a">▶ Hear from the start</button></div>
         <div class="trim-f"><label>End <input data-f="b" value="00:00:00" spellcheck="false" title="Hours : minutes : seconds"></label><button type="button" class="btn sm" data-hear="b">▶ Hear up to the end</button></div>
@@ -3604,24 +3645,22 @@ function trimLong(t, opts = {}) {
         <div class="trim-f"><span class="trim-hint">exactly <span class="trim-exact"></span></span></div>
         <div class="trim-len"></div>
       </div>
-      <div class="trim-act"><button type="button" class="btn" data-x="cancel">Cancel</button><span class="sp"></span><button type="button" class="btn" data-x="save" title="Download the part as an MP3 file">Save as MP3 file</button><button type="button" class="btn primary" data-x="keep">Keep this part</button></div>
+      <div class="trim-act"><button type="button" class="btn" data-x="cancel">${video ? 'Close' : 'Cancel'}</button><span class="sp"></span><button type="button" class="btn${video ? ' primary' : ''}" data-x="save" title="Save the part as a file on this computer">${video ? 'Save the cut as a file' : 'Save as a file'}</button>${video ? '' : '<button type="button" class="btn primary" data-x="keep">Keep this part</button>'}</div>
     </div>`;
     document.body.appendChild(wrap);
-    const q = s => wrap.querySelector(s), over = q('.trim-over'), det = q('.trim-detail'), status = q('.trim-status');
-    let ix = null, pk = loadPeaks(t.id), D = t.duration, sel = { a: 0, b: Math.min(D, 10 * 60) }, act = 'a', closed = false, lastLen = sel.b - sel.a;
-    let detail = null, detailFor = null, hear = null, hearPos = null;
+    const q = s => wrap.querySelector(s), over = q('.trim-over'), det = q('.trim-detail'), status = q('.trim-status'), frameBox = q('.trim-frame');
+    const peakKey = t.id || `f:${t.name || t.title}:${t.blob.size}`;
+    let opened = false, pk = loadPeaks(peakKey), D = t.duration || 0, sel = { a: 0, b: Math.min(D || 600, 10 * 60) }, act = 'a', closed = false, lastLen = sel.b - sel.a, cutting = false;
+    let detail = null, detailFor = null, hear = null, hearPos = null, fps = null;
     const DW = 15; // the close-up shows 15 s either side of the handle
     const size = cv => { const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1; if (cv.width !== Math.round(r.width * d)) { cv.width = Math.round(r.width * d); cv.height = Math.round(r.height * d); } return { w: cv.width, h: cv.height, d }; };
     function drawWave(cv, t0, t1, getMinMax) {
       const { w, h, d } = size(cv), g = cv.getContext('2d'), X = s => (s - t0) / (t1 - t0) * w, mid = h * 0.55, amp = h * 0.4;
       g.fillStyle = css('--bg'); g.fillRect(0, 0, w, h);
       g.fillStyle = css('--panel'); if (t0 < 0) g.fillRect(0, 0, X(0), h); if (t1 > D) g.fillRect(X(D), 0, w - X(D), h); // before the start, after the end
-      // the part kept
-      const xa = X(sel.a), xb = X(sel.b); g.fillStyle = css('--sel'); g.fillRect(xa, 0, xb - xa, h);
-      g.fillStyle = css('--muted');
-      for (let x = 0; x < w; x++) { const r = getMinMax(t0 + x / w * (t1 - t0), t0 + (x + 1) / w * (t1 - t0)); if (!r) continue; const inSel = x >= xa && x <= xb; g.fillStyle = inSel ? css('--accent') : css('--dim'); g.fillRect(x, mid - r[1] * amp, 1, Math.max(1, (r[1] - r[0]) * amp)); }
-      // a time ruler along the top
-      const span = t1 - t0, steps = [1, 5, 10, 30, 60, 300, 600, 1800, 3600], st = steps.find(s => span / s <= w / d / 90) || 3600;
+      const xa = X(sel.a), xb = X(sel.b); g.fillStyle = css('--sel'); g.fillRect(xa, 0, xb - xa, h); // the part kept
+      for (let x = 0; x < w; x++) { const r = getMinMax(t0 + x / w * (t1 - t0), t0 + (x + 1) / w * (t1 - t0)); if (!r) continue; g.fillStyle = x >= xa && x <= xb ? css('--accent') : css('--dim'); g.fillRect(x, mid - r[1] * amp, 1, Math.max(1, (r[1] - r[0]) * amp)); }
+      const span = t1 - t0, steps = [1, 5, 10, 30, 60, 300, 600, 1800, 3600], st = steps.find(s => span / s <= w / d / 90) || 3600; // a time ruler along the top
       g.font = `${10 * d}px ${css('--f-mono')}`; g.textBaseline = 'top';
       for (let s = Math.max(0, Math.ceil(t0 / st) * st); s <= Math.min(t1, D); s += st) { const x = X(s); g.fillStyle = css('--line-2'); g.fillRect(x, 0, d, 6 * d); g.fillStyle = css('--muted'); g.fillText(fmtH(s), x + 3 * d, 2 * d); }
       for (const k of ['a', 'b']) { const x = X(sel[k]); g.fillStyle = k === act ? css('--ink') : css('--accent'); g.fillRect(x - d, 0, 2 * d, h); g.fillRect(k === 'a' ? x : x - 8 * d, h - 14 * d, 8 * d, 14 * d); }
@@ -3636,22 +3675,31 @@ function trimLong(t, opts = {}) {
       q('.trim-which').textContent = act === 'a' ? 'start' : 'end';
       for (const k of ['a', 'b']) { const i = q(`[data-f="${k}"]`); if (document.activeElement !== i) i.value = fmtMask(sel[k]); }
       const len = sel.b - sel.a, li = q('[data-f="len"]'); if (document.activeElement !== li) li.value = fmtMask(len);
-      q('.trim-exact').textContent = `${fmtH(sel.a, 1)} → ${fmtH(sel.b, 1)}`;
+      q('.trim-exact').textContent = `${fmtH(sel.a, video ? 2 : 1)} → ${fmtH(sel.b, video ? 2 : 1)}${len > 0 && fps ? ` · ${Math.round(len * fps)} frames` : ''}`;
       if (len >= 0.5) lastLen = len;
-      const tooLongToEdit = len > LONG_SEC && !opts.standalone;
-      q('.trim-len').innerHTML = len <= 0 ? '<span class="warn">The end is not after the start yet.</span>' : tooLongToEdit ? '<span class="warn">Over an hour: save it as an MP3 file, or pick a shorter part to edit here.</span>' : '';
-      q('[data-x="keep"]').disabled = !ix || tooLongToEdit || len < 0.5; q('[data-x="save"]').disabled = !ix || len < 0.5;
+      const tooLongToEdit = len > LONG_SEC && !opts.standalone && !video;
+      q('.trim-len').innerHTML = len <= 0 ? '<span class="warn">The end is not after the start yet.</span>' : tooLongToEdit ? '<span class="warn">Over an hour: save it as a file, or pick a shorter part to edit here.</span>' : '';
+      const keep = q('[data-x="keep"]'); if (keep) keep.disabled = !opened || cutting || tooLongToEdit || len < 0.5; q('[data-x="save"]').disabled = !opened || cutting || len < 0.5;
+      scheduleFrame();
+    }
+    let frameT = null, frameBusy = false, frameWant = null;
+    function scheduleFrame() { if (!frameBox || !opened) return; frameWant = center(); clearTimeout(frameT); frameT = setTimeout(showFrame, 120); }
+    async function showFrame() { // the picture at the active handle, for placing a video cut by eye
+      if (frameBusy || !eng.frame) return; frameBusy = true; const want = frameWant;
+      try { const f = await eng.frame(want); if (f && !closed) { const old = frameBox.querySelector('canvas'); if (old) old.remove(); frameBox.prepend(f.canvas); frameBox.querySelector('.fcap').textContent = `${fmtH(f.at, 2)}${fps ? ` · frame ${Math.round(f.at * fps)}` : ''}`; } } catch (e) {}
+      frameBusy = false; if (!closed && frameWant !== want) showFrame();
     }
     let loadingDetail = false;
     async function loadDetail() { // the close-up's sound, decoded around the active handle
-      if (!ix || loadingDetail) return; const c = center();
+      if (!opened || loadingDetail) return; const c = center();
       if (detailFor != null && Math.abs(detailFor - c) < DW / 2) return;
       loadingDetail = true; const want = c;
-      try { detail = await L.decode(ctx, t.blob, ix, Math.max(0, want - DW * 1.6), Math.min(D, want + DW * 1.6)); detailFor = want; } catch (e) {}
+      try { detail = await eng.hear(Math.max(0, want - DW * 1.6), Math.min(D, want + DW * 1.6)); detailFor = want; } catch (e) {}
       loadingDetail = false; if (!closed) { draw(); if (Math.abs(center() - want) >= DW / 2) loadDetail(); }
     }
-    const setH = (k, v) => { sel[k] = clamp(v, 0, D); if (sel.a > sel.b) { const x = sel.a; sel.a = sel.b; sel.b = x; act = act === 'a' ? 'b' : 'a'; } draw(); loadDetail(); };
-    // dragging on the overview: grab the nearest handle (or move it to where you pressed)
+    // for video the handles sit on the frame grid, so a cut is the frame you see (15 one-frame nudges must not add up to 10.4999999)
+    const snap = v => fps ? Math.round(v * fps) / fps : v;
+    const setH = (k, v) => { sel[k] = snap(clamp(v, 0, D)); if (sel.a > sel.b) { const x = sel.a; sel.a = sel.b; sel.b = x; act = act === 'a' ? 'b' : 'a'; } draw(); loadDetail(); };
     // the overview: grab a handle to move it, or drag anywhere to pull the nearest one over; a plain click moves nothing
     over.addEventListener('pointerdown', e => {
       const r = over.getBoundingClientRect(), tAt = ev => clamp((ev.clientX - r.left) / r.width * D, 0, D), t0 = tAt(e), x0 = e.clientX;
@@ -3667,12 +3715,12 @@ function trimLong(t, opts = {}) {
       const mv = ev => setH(act, tAt(ev)); det.addEventListener('pointermove', mv);
       det.addEventListener('pointerup', () => det.removeEventListener('pointermove', mv), { once: true });
     });
-    // the time boxes are 00:00:00 masks: each digit typed replaces the one under the cursor and moves on, and applies at once
-    // Typing moves only the handle being typed, digit by digit (01:00:00 on the way to 01:05:30 must not shove the other
-    // handle). If the two end up out of order, leaving the box moves the other handle to keep the last length.
+    // The time boxes are 00:00:00 masks: each digit typed replaces the one under the cursor and moves on, and applies at once
+    // to the handle being typed only (01:00:00 on the way to 01:05:30 must not shove the other handle). If the two end up
+    // out of order, leaving the box moves the other handle to keep the last length.
     const applyTime = (k, v) => {
-      if (k === 'len') { act = 'b'; sel.b = Math.min(D, sel.a + v); if (sel.a + v > D) toast(`The song ends at ${fmtMask(D)}, so the part ends there.`, 3000); }
-      else { act = k; sel[k] = clamp(v, 0, D); }
+      if (k === 'len') { act = 'b'; sel.b = snap(Math.min(D, sel.a + v)); if (sel.a + v > D) toast(`The file ends at ${fmtMask(D)}, so the part ends there.`, 3000); }
+      else { act = k; sel[k] = snap(clamp(v, 0, D)); }
       draw(); loadDetail();
     };
     const tidyOrder = k => {
@@ -3684,10 +3732,11 @@ function trimLong(t, opts = {}) {
     wrap.querySelectorAll('[data-f]').forEach(i => { const k = i.dataset.f === 'len' ? 'b' : i.dataset.f; timeField(i, v => applyTime(i.dataset.f, v), () => { act = k; draw(); loadDetail(); }, () => tidyOrder(k)); });
     function stopHear() { if (hear) { try { hear.stop(); } catch (e) {} hear = null; } hearPos = null; cancelAnimationFrame(stopHear.raf); wrap.querySelectorAll('[data-hear]').forEach(b => b.classList.remove('on')); }
     async function hearIt(k) {
-      const was = hear && hear.k === k; stopHear(); if (was || !ix) return;
+      const was = hear && hear.k === k; stopHear(); if (was || !opened) return;
       if (sel.b <= sel.a) return toast('Set the end after the start first.');
       const s0 = k === 'a' ? sel.a : Math.max(sel.a, sel.b - 6), s1 = k === 'a' ? Math.min(sel.b, sel.a + 6) : sel.b;
-      ctx.resume(); let d; try { d = await L.decode(ctx, t.blob, ix, s0, s1); } catch (e) { return toast('Could not play that stretch: ' + e.message, 5000); }
+      ctx.resume(); let d; try { d = await eng.hear(s0, s1); } catch (e) { return toast('Could not play that stretch: ' + e.message, 5000); }
+      if (!d) return toast('This file has no sound to play.');
       const src = ctx.createBufferSource(); src.buffer = d.buffer; src.connect(ctx.destination);
       const off = Math.max(0, s0 - d.at), len = s1 - s0, t0 = ctx.currentTime + 0.02; src.start(t0, off, len); src.k = k; hear = src;
       wrap.querySelector(`[data-hear="${k}"]`).classList.add('on');
@@ -3697,40 +3746,53 @@ function trimLong(t, opts = {}) {
     wrap.querySelectorAll('[data-hear]').forEach(b => b.addEventListener('click', () => { act = b.dataset.hear; hearIt(act); }));
     const partName = () => `${t.title} (${fmtH(sel.a)}–${fmtH(sel.b)})`;
     function finish(v) { if (closed) return; closed = true; stopHear(); trimOpen = null; window.removeEventListener('keydown', onKey, true); removeEventListener('resize', draw); wrap.remove(); resolve(v); }
-    q('[data-x="cancel"]').addEventListener('click', () => finish(null));
-    q('[data-x="save"]').addEventListener('click', () => { const c = L.cut(t.blob, ix, sel.a, sel.b); downloadBlob(c.blob, partName().replace(/[\\/:*?"<>|]/g, '-') + '.mp3'); toast('Saved the part as an MP3 file.'); });
-    q('[data-x="keep"]').addEventListener('click', async () => {
-      const c = L.cut(t.blob, ix, sel.a, sel.b), title = partName();
-      const nt = { id: uid(), name: title + '.mp3', size: c.blob.size, type: 'audio/mpeg', title, artist: t.artist || '', album: t.album || '', track: 0, duration: c.duration, added: Date.now(), blob: c.blob, art: t.art || null };
-      try { await saveToLibrary(nt); } catch (e) { return toast('Could not save the part: ' + e.message, 6000); }
-      if (opts.standalone) toast(`Saved “${title}” (${fmtH(c.duration)}) in your library. Press Add, or drag it onto a track.`, 6000);
+    q('[data-x="cancel"]').addEventListener('click', () => { if (cutting) return toast('The cut is still being made; it finishes in a moment.'); finish(null); });
+    /* The cut itself. Saving downloads the file and leaves the window open for another part; keeping puts a sound part in the library. */
+    async function doCut(mode) {
+      if (cutting || !opened || sel.b <= sel.a) return; cutting = true; stopHear();
+      const prog = q('.trim-prog'), bar = prog.querySelector('i'); prog.hidden = false; bar.style.width = '0%';
+      status.textContent = video ? 'Cutting… the picture is re-encoded frame by frame, so this takes a while for a long part.' : 'Cutting…'; draw();
+      let r;
+      // the start is nudged up by a millionth of a second so the frame AT the start is the first one kept, never the one before it
+      try { r = await eng.cut(sel.a + (fps ? 1e-6 : 0), sel.b, partName(), v => { bar.style.width = Math.round(clamp(v, 0, 1) * 100) + '%'; }); }
+      catch (e) { cutting = false; prog.hidden = true; status.textContent = 'Could not cut: ' + (e.message || e); draw(); return; }
+      prog.hidden = true; cutting = false;
+      if (mode === 'save') { downloadBlob(r.blob, r.name.replace(/[\\/:*?"<>|]/g, '-')); status.textContent = `Saved “${r.name}” (${(r.blob.size / 1e6).toFixed(1)} MB). ${r.note} Pick another part, or close.`; draw(); return; }
+      const title = partName(), nt = { id: uid(), name: r.name, size: r.blob.size, type: r.type, title, artist: t.artist || '', album: t.album || '', track: 0, duration: r.duration || await probeDur(r.blob), added: Date.now(), blob: r.blob, art: t.art || null };
+      try { await saveToLibrary(nt); } catch (e) { status.textContent = 'Could not save the part: ' + e.message; draw(); return; }
+      if (opts.standalone) toast(`Saved “${title}” (${fmtH(nt.duration)}) in your library. Press Add, or drag it onto a track.`, 6000);
       finish(nt.id);
-    });
+    }
+    q('[data-x="save"]').addEventListener('click', () => doCut('save'));
+    const keepBtn = q('[data-x="keep"]'); if (keepBtn) keepBtn.addEventListener('click', () => doCut('keep'));
     function onKey(e) {
       if (e.target.closest && e.target.closest('input')) { if (e.key === 'Escape') { e.target.blur(); e.stopImmediatePropagation(); } return; }
       e.stopImmediatePropagation(); // nothing behind the window reacts while it is open
-      if (e.key === 'Escape') { e.preventDefault(); finish(null); }
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setH(act, sel[act] + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 0.1 : 1)); }
+      if (e.key === 'Escape') { e.preventDefault(); if (!cutting) finish(null); }
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); const step = e.altKey && fps ? 1 / fps : e.shiftKey ? 0.1 : 1; setH(act, sel[act] + (e.key === 'ArrowLeft' ? -1 : 1) * step); }
       else if (e.key === ' ' && !(e.target.closest && e.target.closest('button'))) { e.preventDefault(); hearIt(act); }
     }
     window.addEventListener('keydown', onKey, true); addEventListener('resize', draw);
     trimOpen = { finish };
     draw();
     (async () => {
-      try { ix = await L.index(t.blob, p => { status.textContent = `Reading the file… ${Math.round(p * 100)}%`; }); }
-      catch (e) { status.textContent = 'Could not read this MP3: ' + e.message; return; }
+      let info; try { info = await eng.open(p => { status.textContent = `Reading the file… ${Math.round(p * 100)}%`; }); }
+      catch (e) { status.textContent = 'Could not read this file: ' + (e.message || e); return; }
       if (closed) return;
-      D = ix.duration; sel.b = Math.min(sel.b, D); draw(); loadDetail();
-      if (pk && Math.abs(pk.max.length * pk.bucketSec - D) < pk.bucketSec * 2) { status.textContent = 'Drag the handles, or type the times. ▶ plays a few seconds at each end.'; draw(); return; }
+      opened = true; D = info.duration || D; sel.b = Math.min(sel.b, D); fps = eng.fps ? eng.fps() : null;
+      if (!fps && video && eng.describe) { const m = /([\d.]+) fps/.exec(eng.describe()); if (m) fps = +m[1]; }
+      q('.trim-how').textContent = eng.describe ? eng.describe() : ''; draw(); loadDetail();
+      const ready = `Drag the handles, or type the times. ▶ plays a few seconds at each end.${video ? ' The picture shows the frame at the handle.' : ''}`;
+      if (pk && Math.abs(pk.max.length * pk.bucketSec - D) < pk.bucketSec * 2) { status.textContent = ready; draw(); return; }
       const bucket = D > 3 * 3600 ? 1 : 0.5;
       pk = { bucketSec: bucket, min: new Float32Array(Math.ceil(D / bucket)), max: new Float32Array(Math.ceil(D / bucket)), upTo: 0 };
       let lastDraw = 0;
-      const done = await L.peaks(ctx, t.blob, ix, bucket, (p, upTo) => {
+      const done = await eng.peaks(bucket, (p, upTo) => {
         pk = { ...p, upTo }; status.textContent = `Drawing the waveform… ${Math.round(upTo / D * 100)}% (you can pick the part already: the times and ▶ work now)`;
         if (performance.now() - lastDraw > 250) { lastDraw = performance.now(); draw(); }
       }, () => closed);
       if (!done || closed) return;
-      pk = done; savePeaks(t.id, done); status.textContent = 'Drag the handles, or type the times. ▶ plays a few seconds at each end.'; draw();
+      pk = done; savePeaks(peakKey, done); status.textContent = ready; draw();
     })();
   });
 }
@@ -3741,7 +3803,7 @@ async function placeSongs(ids, tg) {
   for (let id of ids) {
     const lt = libTrack(id);
     if (await tooLong(lt)) { // too long to edit whole: pick the part needed first
-      if (!window.MixtapeLongMP3 || !MixtapeLongMP3.isMp3(lt)) { toast(`“${lt.title}” is ${fmtH(lt.duration)} long, too long to edit whole. Picking a part works for MP3 files: save it as an MP3 and add it again.`, 8000); continue; }
+      if (!cutterReady(lt)) { toast('The cutter did not load. Reload the page and try again.', 6000); continue; }
       const part = await trimLong(lt); if (!part) continue; id = part;
     }
     let e; try { e = await ensureBuf(id); } catch (err) { toast(err.message, 5000); continue; }

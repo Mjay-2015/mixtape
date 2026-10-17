@@ -455,6 +455,12 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 .trim-cv{border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .trim-cv canvas{display:block;width:100%;cursor:ew-resize;touch-action:none}
 .trim-over{height:120px}.trim-detail{height:110px}
+.trim-mid{display:grid;grid-template-columns:1fr;gap:10px}.trim-mid.video{grid-template-columns:minmax(0,1fr) 300px}
+.trim-frame{border:1px solid var(--line);border-radius:8px;background:#000;display:grid;place-items:center;overflow:hidden;min-height:110px}
+.trim-frame canvas{max-width:100%;max-height:100%;display:block}
+.trim-frame .fcap{position:absolute;left:6px;bottom:4px;font:11px var(--f-mono);color:var(--ink);background:rgba(0,0,0,.55);padding:1px 6px;border-radius:4px}
+.trim-frame{position:relative}
+.trim-prog{height:6px;background:var(--line);border-radius:3px;overflow:hidden}.trim-prog i{display:block;height:100%;background:var(--accent);width:0}
 .trim-dh{font-size:13px;color:var(--muted)}.trim-dh b{color:var(--ink)}
 .trim-fields{display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px;margin-top:4px}
 .trim-f{display:flex;align-items:center;gap:8px}
@@ -567,8 +573,8 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
         <input id="vidIn" type="file" accept="video/*,.mp4,.webm,.mov,.m4v" hidden>
         <input id="mkIn" type="file" accept=".json,.csv,.txt,application/json,text/csv" hidden>
         <button class="btn block" data-act="instmenu" title="Write music with notes: import a MIDI file or start an instrument track">Instruments &amp; MIDI ▾</button>
-        <button class="btn block" data-act="cutfile" title="Open an MP3 and cut a part out of it, with no loss of quality: pick a start and a length or an end">✂ Cut a part out of an MP3</button>
-        <input id="cutIn" type="file" accept=".mp3,audio/mpeg" hidden>
+        <button class="btn block" data-act="cutfile" title="Open a song or a video and cut a part out of it: pick a start and an end or a length. Exact to the frame; no quality lost">✂ Cut a part out of a file</button>
+        <input id="cutIn" type="file" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,.aif,.aiff,.mp4,.m4v,.mov,.webm,.mkv" hidden>
         <input id="fileIn" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac,.aif,.aiff" multiple hidden>
         <input id="midiIn" type="file" accept=".mid,.midi,audio/midi" hidden>
         <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="libQ" type="search" placeholder="Search your songs" aria-label="Search your songs"></label>
@@ -651,6 +657,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 <script src="dsp-shared.js"></script>
 <script src="midi.js"></script>
 <script src="long-mp3.js"></script>
+<script src="media-cut.js"></script>
 <script src="studio.js"></script>
 </body>
 </html>
