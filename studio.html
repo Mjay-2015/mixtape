@@ -462,7 +462,8 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 .trim-f input{width:120px;background:var(--bg);border:1px solid var(--line-2);border-radius:6px;color:var(--ink);font:15px var(--f-mono);padding:6px 8px}
 .trim-f input:focus{border-color:var(--accent);outline:none}
 .trim-f .btn.on{background:var(--accent);color:var(--accent-ink)}
-.trim-len{font-size:14px;color:var(--muted)}.trim-len b{color:var(--ink);font-family:var(--f-mono)}.trim-len .warn{color:var(--danger)}
+.trim-len{font-size:14px;color:var(--muted);flex-basis:100%}.trim-len:empty{display:none}.trim-len .warn{color:var(--danger)}
+.trim-hint{font:12px var(--f-mono);color:var(--dim)}
 .trim-act{display:flex;gap:8px;align-items:center;margin-top:6px}.trim-act .sp{flex:1}
 .modal h3{font:600 17px var(--f-ui);margin:0}
 .modal p{margin:0;color:var(--muted);font-size:13px}
@@ -564,6 +565,8 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
         <input id="vidIn" type="file" accept="video/*,.mp4,.webm,.mov,.m4v" hidden>
         <input id="mkIn" type="file" accept=".json,.csv,.txt,application/json,text/csv" hidden>
         <button class="btn block" data-act="instmenu" title="Write music with notes: import a MIDI file or start an instrument track">Instruments &amp; MIDI ▾</button>
+        <button class="btn block" data-act="cutfile" title="Open an MP3 and cut a part out of it, with no loss of quality: pick a start and a length or an end">✂ Cut a part out of an MP3</button>
+        <input id="cutIn" type="file" accept=".mp3,audio/mpeg" hidden>
         <input id="fileIn" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac,.aif,.aiff" multiple hidden>
         <input id="midiIn" type="file" accept=".mid,.midi,audio/midi" hidden>
         <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="libQ" type="search" placeholder="Search your songs" aria-label="Search your songs"></label>

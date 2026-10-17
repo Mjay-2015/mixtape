@@ -2767,7 +2767,7 @@ function renderLibrary() {
   $('#lib').innerHTML = list.length ? list.map(t => { const a = ana[t.id];
     const info = a ? `<span class="bk">${a.bpm ? a.bpm + ' BPM' : 'no steady beat'} · ${esc(a.keyName)}</span>` : analyzing.has(t.id) ? '<span class="bk busy">finding tempo and key…</span>' : '';
     return `<li draggable="true" data-drag="${t.id}" title="Drag onto a track"><button class="lp${libPrev && libPrev.id === t.id ? ' on' : ''}" data-libprev="${t.id}" title="${libPrev && libPrev.id === t.id ? 'Stop listening' : 'Listen'}" aria-label="${libPrev && libPrev.id === t.id ? 'Stop listening to' : 'Listen to'} ${esc(t.title)}">${libPrev && libPrev.id === t.id ? '■' : '▶'}</button><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span class="li-sub">${esc(t.artist || 'Unknown artist')} · ${(t.duration >= 3600 ? fmtH(t.duration) : fmtT(t.duration)).replace(/\.\d$/, '')}</span>${info}</div>
-      <div class="acts"><button data-add="append" data-id="${t.id}" title="Add to the end of the selected track">Add</button><button data-add="layer" data-id="${t.id}" title="Put it on a new track at the playhead">New track</button></div></li>`; }).join('')
+      <div class="acts">${window.MixtapeLongMP3 && MixtapeLongMP3.isMp3(t) ? `<button data-cut="${t.id}" title="Cut a part out of this MP3, with no loss of quality">✂</button>` : ''}<button data-add="append" data-id="${t.id}" title="Add to the end of the selected track">Add</button><button data-add="layer" data-id="${t.id}" title="Put it on a new track at the playhead">New track</button></div></li>`; }).join('')
     : `<li class="empty-note">${lib.length ? 'No songs match your search.' : 'No songs yet. Press “Import audio files” above, or drop music files onto the timeline.'}</li>`;
   const n = lib.filter(t => !t.stemOf && t.kind !== 'video').length; $('#libCount').textContent = `${n} song${n === 1 ? '' : 's'}`;
 }
@@ -2813,6 +2813,7 @@ const acts = {
   closegaps: () => selLane && closeGaps(selLane),
   matchtempo: matchTempo, matchkey: matchKey, evenout: evenOut, stems: splitStems,
   import: () => $('#fileIn').click(),
+  cutfile: () => $('#cutIn').click(),
   mutepart: toggleMutePart,
   linkfolder: linkFolder, relink: reconnectFolder, unlink: unlinkFolder, syncnow: () => syncPackage(true), deliverfinal: deliverFinal,
   addtempo: () => addTempoChange(curPos()), fittempo: fitTempoToHits,
@@ -2880,6 +2881,7 @@ const acts = {
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b && !b.disabled && acts[b.dataset.act]) acts[b.dataset.act](b, e); });
 $('#lib').addEventListener('click', e => {
   const p = e.target.closest('[data-libprev]'); if (p) return toggleLibPrev(p.dataset.libprev);
+  const cb = e.target.closest('[data-cut]'); if (cb) { stopLibPrev(); return cutFromLibrary(cb.dataset.cut); }
   const b = e.target.closest('[data-add]'); if (b) { stopLibPrev(); addRegion(b.dataset.id, 0, null, b.dataset.add); }
 });
 $('#libQ').addEventListener('input', renderLibrary);
@@ -2925,7 +2927,7 @@ function showShortcuts() {
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>
-  <p class="hint">Mixtape Studio v43</p>
+  <p class="hint">Mixtape Studio v44</p>
   <div class="credits"><h4>Made with</h4>
     <p>Tone.js by Yotam Mann (MIT licence): drum machine, synths and effects.</p>
     <p>VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell) (CC0, public domain): the orchestra.</p>
@@ -3531,14 +3533,28 @@ function loadPeaks(id) {
   } catch (e) { return null; }
 }
 let trimOpen = null;
+/* The cutter on its own (the ✂ on a library song, or "Cut a part out of an MP3"): any length, the part goes to the library. */
+async function cutFromLibrary(id) {
+  const t = libTrack(id); if (!t) return;
+  if (!window.MixtapeLongMP3 || !MixtapeLongMP3.isMp3(t)) return toast('Cutting a part out without re-encoding works for MP3 files. For other formats, add the song to a track and trim it there.', 6000);
+  if (!(t.duration > 0)) { t.duration = await probeDur(t.blob); if (t.duration > 0) req('tracks', 'readwrite', o => o.put(t)).catch(() => {}); }
+  if (!(t.duration > 0)) return toast(`Could not read how long “${t.title}” is.`, 5000);
+  trimLong(t, { standalone: true });
+}
+$('#cutIn').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  const ids = await importDropped([f]); if (ids.length) cutFromLibrary(ids[0]);
+});
+// a length typed as a plain number is minutes ("30"); with a colon it is m:ss or h:mm:ss
+const parseLen = v => /^\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) * 60 : parseH(v);
 /* Resolves to the library id of the part kept (already saved in the library), or null. */
-function trimLong(t) {
+function trimLong(t, opts = {}) {
   const L = window.MixtapeLongMP3;
   return new Promise(resolve => {
     const wrap = document.createElement('div'); wrap.className = 'trimwrap';
     wrap.innerHTML = `<div class="trim" role="dialog" aria-label="Pick the part you need">
-      <h3>Pick the part you need</h3>
-      <p class="trim-sub">“${esc(t.title)}” is <b>${fmtH(t.duration)}</b> long, too long to edit whole. Choose the part you want: it is cut straight out of the MP3, with no re-encoding, so it sounds exactly like the original.</p>
+      <h3>${opts.standalone ? 'Cut a part out' : 'Pick the part you need'}</h3>
+      <p class="trim-sub">“${esc(t.title)}” is <b>${fmtH(t.duration)}</b> long${opts.standalone ? '' : ', too long to edit whole'}. Choose the part you want: it is cut straight out of the MP3, with no re-encoding, so it sounds exactly like the original.</p>
       <div class="trim-status" aria-live="polite">Reading the file…</div>
       <div class="trim-cv"><canvas class="trim-over"></canvas></div>
       <div class="trim-dh"><span>Close-up of the <b class="trim-which">start</b> · drag here to place it exactly · ← → nudge it 1 s (Shift: 0.1 s)</span></div>
@@ -3546,6 +3562,7 @@ function trimLong(t) {
       <div class="trim-fields">
         <div class="trim-f"><label>Start <input data-f="a" inputmode="decimal" spellcheck="false"></label><button type="button" class="btn sm" data-hear="a">▶ Hear from the start</button></div>
         <div class="trim-f"><label>End <input data-f="b" inputmode="decimal" spellcheck="false"></label><button type="button" class="btn sm" data-hear="b">▶ Hear up to the end</button></div>
+        <div class="trim-f"><label>or Length <input data-f="len" inputmode="decimal" spellcheck="false" title="A plain number is minutes: 30 = 30 minutes. 2:30 = 2 min 30 s. 1:00:00 = an hour."></label><span class="trim-hint">30 = 30 min · 2:30 = 2½ min</span></div>
         <div class="trim-len"></div>
       </div>
       <div class="trim-act"><button type="button" class="btn" data-x="cancel">Cancel</button><span class="sp"></span><button type="button" class="btn" data-x="save" title="Download the part as an MP3 file">Save as MP3 file</button><button type="button" class="btn primary" data-x="keep">Keep this part</button></div>
@@ -3579,8 +3596,10 @@ function trimLong(t) {
       const c = center(); drawWave(det, c - DW, c + DW, detMinMax);
       q('.trim-which').textContent = act === 'a' ? 'start' : 'end';
       for (const k of ['a', 'b']) { const i = q(`[data-f="${k}"]`); if (document.activeElement !== i) i.value = fmtH(sel[k], 1); }
-      const len = sel.b - sel.a; q('.trim-len').innerHTML = `Length <b>${fmtH(len, 1)}</b>${len > LONG_SEC ? ' · <span class="warn">over an hour: save it as an MP3 file, or pick a shorter part to edit here</span>' : ''}`;
-      q('[data-x="keep"]').disabled = !ix || len > LONG_SEC || len < 0.5; q('[data-x="save"]').disabled = !ix || len < 0.5;
+      const len = sel.b - sel.a, li = q('[data-f="len"]'); if (document.activeElement !== li) li.value = fmtH(len, 1);
+      const tooLongToEdit = len > LONG_SEC && !opts.standalone;
+      q('.trim-len').innerHTML = tooLongToEdit ? '<span class="warn">Over an hour: save it as an MP3 file, or pick a shorter part to edit here.</span>' : '';
+      q('[data-x="keep"]').disabled = !ix || tooLongToEdit || len < 0.5; q('[data-x="save"]').disabled = !ix || len < 0.5;
     }
     let loadingDetail = false;
     async function loadDetail() { // the close-up's sound, decoded around the active handle
@@ -3605,7 +3624,11 @@ function trimLong(t) {
       const mv = ev => setH(act, tAt(ev)); det.addEventListener('pointermove', mv);
       det.addEventListener('pointerup', () => det.removeEventListener('pointermove', mv), { once: true });
     });
-    wrap.querySelectorAll('[data-f]').forEach(i => {
+    const lenIn = q('[data-f="len"]'); // start + length: the end moves, the start stays
+    lenIn.addEventListener('focus', () => { act = 'b'; draw(); loadDetail(); });
+    lenIn.addEventListener('change', () => { const v = parseLen(lenIn.value); if (v == null || v <= 0) { toast('Type a length like 30 (minutes) or 2:30'); draw(); return; } act = 'b'; setH('b', Math.min(D, sel.a + v)); if (sel.a + v > D) toast(`The song ends at ${fmtH(D)}, so the part ends there.`, 4000); });
+    lenIn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); lenIn.blur(); lenIn.dispatchEvent(new Event('change')); } });
+    wrap.querySelectorAll('[data-f="a"], [data-f="b"]').forEach(i => {
       i.addEventListener('focus', () => { act = i.dataset.f; draw(); loadDetail(); });
       i.addEventListener('change', () => { // a typed time moves the other handle out of the way rather than swapping them
         const v = parseH(i.value); if (v == null) { toast('Type a time like 1:02:30 or 45:10.5'); draw(); return; }
@@ -3635,6 +3658,7 @@ function trimLong(t) {
       const c = L.cut(t.blob, ix, sel.a, sel.b), title = partName();
       const nt = { id: uid(), name: title + '.mp3', size: c.blob.size, type: 'audio/mpeg', title, artist: t.artist || '', album: t.album || '', track: 0, duration: c.duration, added: Date.now(), blob: c.blob, art: t.art || null };
       try { await saveToLibrary(nt); } catch (e) { return toast('Could not save the part: ' + e.message, 6000); }
+      if (opts.standalone) toast(`Saved “${title}” (${fmtH(c.duration)}) in your library. Press Add, or drag it onto a track.`, 6000);
       finish(nt.id);
     });
     function onKey(e) {
