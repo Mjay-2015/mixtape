@@ -557,6 +557,7 @@ function trackMenu(id, anchor) {
   const l = curList(); if (l && l.ids.includes(id)) items.push({ label: `Remove from ${l.name}`, act: () => removeFromList(l, id) });
   if (matchMedia('(min-width: 900px) and (pointer: fine)').matches) items.push({ label: 'Open in Studio', act: () => { location.href = 'studio.html?add=' + encodeURIComponent(id); } });
   items.push({ label: t.lyrics && t.lyrics.lines && t.lyrics.lines.length ? 'Edit lyrics' : 'Add lyrics', act: () => window.MixtapeLyrics && MixtapeLyrics.edit(id) });
+  items.push({ label: 'Transcribe or read along', act: () => { location.href = 'transcribe/?song=' + encodeURIComponent(id); } });
   items.push({ label: 'Open in Cutter', act: () => { location.href = 'cutter/?song=' + encodeURIComponent(id); } });
   items.push({ sep: 1 }, { label: 'Remove from library', danger: 1, act: () => deleteTrack(id) });
   openMenu(anchor, items);

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Transcripts · Mixtape</title>
+<meta name="theme-color" content="#F6F3EC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17191C" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="../manifest.webmanifest">
+<link rel="icon" href="../icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="tb">
+  <a class="back" href="../" title="Back to Mixtape">← Mixtape</a>
+  <div class="brand"><b>Transcripts</b><span>and read-along</span></div>
+  <span class="sp"></span>
+  <label class="find" id="findBox" hidden><input id="q" type="search" placeholder="Find in the text" aria-label="Find in the text" autocomplete="off"><span id="qn"></span></label>
+  <button class="btn" id="exportBtn" hidden>Save as a file ▾</button>
+  <button class="btn ghost" id="railBtn" title="Your recordings">Recordings</button>
+</header>
+
+<div class="wrap">
+  <aside class="rail" id="rail" aria-label="Recordings">
+    <div class="rail-h"><input id="libQ" type="search" placeholder="Search your library" aria-label="Search your library" autocomplete="off"><button class="btn sm primary" id="openBtn" title="Open a recording or video from this computer">Open a file…</button><input id="fileIn" type="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.opus,.flac,.mp4,.mov,.webm,.mkv" hidden></div>
+    <ol class="libl" id="libL"></ol>
+  </aside>
+
+  <main class="doc" id="doc">
+    <div class="empty" id="empty"><h1>Click a word, hear it.</h1><p>Pick a recording on the left (or open a file). Mixtape writes down what is said, or matches your own text to it — an interview, a voice note, an audiobook. Then click any word to play from there; the word being spoken is lit as it plays.</p><button class="btn primary" id="openBtn2">Open a file…</button></div>
+    <section class="head" id="head" hidden>
+      <div class="ttl"><h1 id="title"></h1><p id="meta"></p></div>
+      <div class="vid" id="vidBox" hidden></div>
+    </section>
+    <section class="start" id="start" hidden>
+      <div class="choice">
+        <h2>Write down what is said</h2>
+        <p>For interviews, voice notes and anything without a script. Speakers can be named afterwards.</p>
+        <button class="btn primary" id="goHeard">Transcribe</button>
+      </div>
+      <div class="choice">
+        <h2>Match my text to it</h2>
+        <p>For an audiobook or a read script: paste the text (or load a .txt) and every word is matched to the moment it is read.</p>
+        <textarea id="ownText" rows="6" placeholder="Paste the book or script here. Blank lines keep your paragraphs."></textarea>
+        <div class="row"><button class="btn" id="loadTxt">Load a .txt…</button><input id="txtIn" type="file" accept=".txt,.md,text/plain" hidden><span class="sp"></span><button class="btn primary" id="goText">Match it</button></div>
+      </div>
+      <p class="note" id="estimate"></p>
+    </section>
+    <section class="run" id="run" hidden><div class="runrow"><span id="runSt" aria-live="polite"></span><span class="sp"></span><button class="btn sm" id="stopBtn">Pause</button></div><div class="bar"><i id="runBar"></i></div></section>
+    <section class="cont" id="cont" hidden><span id="contSt"></span><span class="sp"></span><button class="btn sm primary" id="contBtn">Continue</button></section>
+    <article class="text" id="text" aria-label="Transcript: click a word to play from there"></article>
+  </main>
+</div>
+
+<footer class="pb" id="pb" hidden>
+  <button class="ib" id="bBack" title="Back 5 seconds (←)" aria-label="Back 5 seconds">↺5</button>
+  <button class="ib play" id="bPlay" title="Play / pause (Space; Tab while editing)" aria-label="Play">▶</button>
+  <button class="ib" id="bFwd" title="Forward 5 seconds (→)" aria-label="Forward 5 seconds">5↻</button>
+  <span class="tm" id="tm">0:00 / 0:00</span>
+  <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Position">
+  <select id="speed" aria-label="Playback speed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
+  <label class="fl" title="Keep the spoken word in view"><input type="checkbox" id="follow" checked> Follow</label>
+</footer>
+<div class="toast" id="toast" hidden role="status"></div>
+<div class="menu" id="menu" hidden></div>
+
+<script src="../lyrics-core.js"></script>
+<script src="../transcript-core.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

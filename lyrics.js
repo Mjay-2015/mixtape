@@ -3,7 +3,7 @@
    - The lyrics editor (song menu → Add lyrics / Edit lyrics): paste the words, or load a .lrc / .srt / .vtt / .txt file;
      then time them automatically (Whisper hears the song and your lines are matched to what it hears), by tapping along,
      or line by line. Lines it is unsure of are marked to check. Saves to the song; exports .lrc, .srt and .vtt.
-   Rules live in lyrics-core.js (checked by lyrics-check.cjs); the recogniser runs in lyrics-worker.js.
+   Rules live in lyrics-core.js (checked by lyrics-check.cjs); the recogniser runs in asr-worker.js.
    Talks to the player only through window.MixtapeApp. */
 (function () {
   const A = window.MixtapeApp, L = window.LyricsCore; if (!A || !L) return;
@@ -151,7 +151,7 @@
       status(`Reading ${stem ? 'the vocals stem of ' : ''}the song…`); bar(0);
       const pcm = await pcm16k(src.blob);
       const words = await new Promise((res, rej) => {
-        const w = new Worker('lyrics-worker.js', { type: 'module' }); E.worker = w; const files = {};
+        const w = new Worker('asr-worker.js', { type: 'module' }); E.worker = w; const files = {};
         w.onmessage = m => { const d = m.data;
           if (d.type === 'load') { files[d.file] = d; const tot = Object.values(files).reduce((s, f) => s + (f.total || 0), 0), got = Object.values(files).reduce((s, f) => s + (f.loaded || 0), 0); status(`Getting the recogniser (one time only): ${Math.round(got / 1e6)} of ${Math.round(tot / 1e6)} MB`); bar(tot ? got / tot : 0); }
           else if (d.type === 'progress') { status(`Listening… ${Math.round(d.done * 100)}%`); bar(d.done); }

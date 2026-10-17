@@ -1,0 +1,244 @@
+/* Mixtape transcripts and read-along: click a word, hear it.
+   A recording from the library (or a file opened here, which joins the library) is either written down as heard, or
+   matched to your own text (an audiobook, a script). The words light up as they are spoken; clicking one plays from it.
+   Long recordings are read 30 seconds at a time (mediabunny decodes just that window), so hours are fine, and the work is
+   saved as it goes: a recording can be paused and continued later.
+   Rules: ../transcript-core.js and ../lyrics-core.js. Recogniser: ../asr-worker.js. Library: Mixtape's IndexedDB. */
+import * as M from '../vendor/mediabunny/mediabunny.min.mjs';
+const T = window.TranscriptCore;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+let toastT = 0; const toast = (m, ms = 3200) => { const t = $('#toast'); t.textContent = m; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); };
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+
+/* ---------- storage: Mixtape's library (read; files opened here are added), transcripts in their own database ---------- */
+function idb(name, version, upgrade) { return new Promise((res, rej) => { const r = indexedDB.open(name, version); r.onupgradeneeded = () => upgrade(r.result); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('Close other Mixtape tabs and try again.')); }); }
+const libDB = () => idb('mixtape-player', 1, d => { if (!d.objectStoreNames.contains('tracks')) d.createObjectStore('tracks', { keyPath: 'id' }); if (!d.objectStoreNames.contains('lists')) d.createObjectStore('lists', { keyPath: 'id' }); });
+const trDB = () => idb('mixtape-transcripts', 1, d => { if (!d.objectStoreNames.contains('transcripts')) d.createObjectStore('transcripts', { keyPath: 'id' }); });
+async function tx(open, store, mode, fn) { const d = await open(); return new Promise((res, rej) => { let out; const t = d.transaction(store, mode), r = fn(t.objectStore(store)); r.onsuccess = () => { out = r.result; }; t.oncomplete = () => { d.close(); res(out); }; t.onerror = () => { d.close(); rej(t.error); }; t.onabort = () => { d.close(); rej(t.error); }; }); }
+const getTrack = id => tx(libDB, 'tracks', 'readonly', o => o.get(id));
+const allTracks = () => tx(libDB, 'tracks', 'readonly', o => o.getAll());
+const getTr = id => tx(trDB, 'transcripts', 'readonly', o => o.get(id));
+const allTr = () => tx(trDB, 'transcripts', 'readonly', o => o.getAll());
+const putTr = v => tx(trDB, 'transcripts', 'readwrite', o => o.put(v));
+const blobOf = t => t.blob || (t.buf ? new Blob([t.buf], { type: t.type || '' }) : null);
+
+/* ---------- state ---------- */
+let lib = [], trs = new Map(), cur = null; // cur: { track, blob, tr: { id, mode, words, upTo, done, duration, updated }, media }
+let job = null, hits = [], hitAt = -1, lit = -1, editing = null;
+
+/* ---------- the library rail ---------- */
+async function loadLib() {
+  const [ts, rs] = await Promise.all([allTracks().catch(() => []), allTr().catch(() => [])]);
+  lib = ts.filter(t => !t.stemOf && (t.blob || t.buf)).sort((a, b) => (b.added || 0) - (a.added || 0)); trs = new Map(rs.map(r => [r.id, r])); drawLib();
+}
+function drawLib() {
+  const q = $('#libQ').value.trim().toLowerCase(), el = $('#libL');
+  const rows = lib.filter(t => !q || `${t.title} ${t.artist || ''} ${t.album || ''}`.toLowerCase().includes(q)).sort((a, b) => (trs.has(b.id) - trs.has(a.id)) || 0);
+  el.innerHTML = rows.slice(0, 400).map(t => { const r = trs.get(t.id); const st = !r ? '' : r.done ? `<span class="s done">${r.mode === 'text' ? 'Read-along ready' : 'Transcript ready'}</span>` : `<span class="s">${r.mode === 'text' ? 'Read-along' : 'Transcript'} done to ${T.short(r.upTo)}</span>`;
+    return `<li data-id="${esc(t.id)}" class="${cur && cur.track.id === t.id ? 'on' : ''}" tabindex="0"><span class="n">${t.kind === 'video' ? '▣ ' : ''}${esc(t.title || t.name)}</span><span class="d">${t.duration ? T.short(t.duration) : ''}</span>${st}</li>`; }).join('') || '<li class="s">Nothing in the library yet. Open a file.</li>';
+}
+$('#libQ').addEventListener('input', drawLib);
+$('#libL').addEventListener('click', e => { const li = e.target.closest('[data-id]'); if (li) select(li.dataset.id); });
+$('#libL').addEventListener('keydown', e => { if (e.key === 'Enter') { const li = e.target.closest('[data-id]'); if (li) select(li.dataset.id); } });
+$('#railBtn').addEventListener('click', () => $('#rail').classList.toggle('open'));
+for (const b of ['#openBtn', '#openBtn2']) $(b).addEventListener('click', () => $('#fileIn').click());
+$('#fileIn').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (f) addFile(f); });
+async function addFile(f) {
+  // the file joins the library (album "Recordings"), so its transcript has a home and it can be played in Mixtape too
+  const video = /^video\//.test(f.type) || /\.(mp4|m4v|mov|webm|mkv)$/i.test(f.name);
+  const dur = await mediaDuration(f).catch(() => 0);
+  const t = { id: uid(), name: f.name, size: f.size, type: f.type || '', title: f.name.replace(/\.[^.]+$/, ''), artist: '', album: 'Recordings', track: 0, duration: dur, added: Date.now(), blob: f, art: null, ...(video ? { kind: 'video' } : {}) };
+  try { await tx(libDB, 'tracks', 'readwrite', o => o.put(t)); try { new BroadcastChannel('mixtape').postMessage({ type: 'library' }); } catch (e) {} } catch (e) { toast(`Could not add it to the library: ${e.message || e}`, 5000); }
+  await loadLib(); select(t.id);
+}
+const mediaDuration = blob => new Promise(res => { const a = document.createElement(/^video\//.test(blob.type) ? 'video' : 'audio'); a.preload = 'metadata'; a.onloadedmetadata = () => { res(isFinite(a.duration) ? a.duration : 0); URL.revokeObjectURL(a.src); }; a.onerror = () => res(0); a.src = URL.createObjectURL(blob); });
+
+/* ---------- one recording ---------- */
+async function select(id) {
+  if (job) { toast('Pause the current transcript first.'); return; }
+  $('#rail').classList.remove('open'); if (editing) cancelEdit();
+  const t = await getTrack(id); if (!t) return toast('That recording is no longer in the library.'); const blob = blobOf(t); if (!blob) return toast('That recording has no sound saved on this device.');
+  if (cur && cur.url) URL.revokeObjectURL(cur.url);
+  const video = t.kind === 'video' || /^video\//.test(blob.type);
+  const media = document.createElement(video ? 'video' : 'audio'); media.preload = 'auto'; media.playsInline = true; const url = URL.createObjectURL(blob); media.src = url;
+  $('#vidBox').innerHTML = ''; $('#vidBox').hidden = !video; if (video) $('#vidBox').appendChild(media);
+  cur = { track: t, blob, url, media, tr: (await getTr(id)) || null };
+  history.replaceState(null, '', `?song=${encodeURIComponent(id)}`);
+  wireMedia(media); media.playbackRate = +$('#speed').value;
+  $('#empty').hidden = true; $('#head').hidden = false; $('#pb').hidden = false; $('#title').textContent = t.title || t.name;
+  drawLib(); drawAll();
+}
+function drawAll() {
+  const r = cur.tr, d = cur.track.duration || cur.media.duration || 0;
+  $('#meta').textContent = [d ? T.short(d) : '', cur.track.artist, r ? `${r.mode === 'text' ? 'read-along' : 'transcript'} · ${T.wordCount(r.words).toLocaleString()} words` : ''].filter(Boolean).join(' · ');
+  $('#start').hidden = !!r || !!job; $('#estimate').textContent = d ? `This recording is ${T.short(d)} long; on this computer that takes about ${T.short(d * 0.6)} to go through (you can read and click along while it works). The first time, the recogniser (about 80 MB) is downloaded once.` : '';
+  $('#cont').hidden = !(r && !r.done && !job); if (r && !r.done) $('#contSt').textContent = `Done up to ${T.short(r.upTo)} of ${T.short(r.duration || d)}.`;
+  $('#findBox').hidden = !r; $('#exportBtn').hidden = !r;
+  drawText();
+}
+function drawText() {
+  const el = $('#text'), r = cur && cur.tr; lit = -1;
+  if (!r || !r.words.length) { el.innerHTML = ''; return; }
+  const ps = T.paragraphs(r.words);
+  el.innerHTML = ps.map((p, pi) => paraHTML(r.words, p, pi)).join('');
+  if (hits.length) markHits();
+}
+function paraHTML(words, p, pi) {
+  const first = words[p.i0], timed = first.s != null;
+  const ws = []; for (let i = p.i0; i < p.i1; i++) { const w = words[i]; ws.push(`<span class="w${w.s == null ? ' un' : ''}" data-i="${i}">${esc(w.t)}</span>`); }
+  return `<div class="para" data-p="${pi}" data-i0="${p.i0}" data-i1="${p.i1}"><div class="gut">${timed ? `<button class="ts" data-ts="${first.s}" title="Play from here">${T.short(first.s)}</button>` : '<span class="ts">—</span>'}<button class="spk${p.speaker ? '' : ' none'}" data-spk title="Name the speaker">${p.speaker ? esc(p.speaker) : '+ speaker'}</button></div><div class="words">${ws.join(' ')}</div><button class="ed" data-ed title="Correct this paragraph" aria-label="Correct this paragraph">✎</button></div>`;
+}
+
+/* ---------- playing: click a word, the spoken word lights ---------- */
+function wireMedia(m) {
+  m.addEventListener('timeupdate', () => { tick(); });
+  m.addEventListener('play', () => { $('#bPlay').textContent = '❚❚'; $('#bPlay').setAttribute('aria-label', 'Pause'); loop(); });
+  m.addEventListener('pause', () => { $('#bPlay').textContent = '▶'; $('#bPlay').setAttribute('aria-label', 'Play'); tick(); });
+  m.addEventListener('loadedmetadata', tick);
+}
+let raf = 0; function loop() { cancelAnimationFrame(raf); const go = () => { if (!cur || cur.media.paused) return; tick(); raf = requestAnimationFrame(go); }; raf = requestAnimationFrame(go); }
+function tick() {
+  if (!cur) return; const m = cur.media, d = m.duration || cur.track.duration || 0;
+  $('#tm').textContent = `${T.short(m.currentTime)} / ${T.short(d)}`; if (document.activeElement !== $('#seek')) $('#seek').value = d ? Math.round(m.currentTime / d * 1000) : 0;
+  const r = cur.tr; if (!r || !r.words.length) return;
+  const k = T.wordAt(r.words, m.currentTime, T.timedUpTo(r.words)); if (k === lit) return;
+  const old = lit >= 0 && $(`.w[data-i="${lit}"]`); if (old) old.classList.remove('on'); lit = k;
+  const el = k >= 0 && $(`.w[data-i="${k}"]`); if (el) { el.classList.add('on'); if ($('#follow').checked && !m.paused && !editing) keepInView(el); }
+}
+let scrolledAt = 0; $('#doc').addEventListener('wheel', () => { scrolledAt = performance.now(); }, { passive: true }); $('#doc').addEventListener('touchmove', () => { scrolledAt = performance.now(); }, { passive: true });
+function keepInView(el) { if (performance.now() - scrolledAt < 5000) return; const box = $('#doc').getBoundingClientRect(), r = el.getBoundingClientRect(); if (r.top < box.top + box.height * 0.2 || r.bottom > box.top + box.height * 0.7) $('#doc').scrollBy({ top: r.top - box.top - box.height * 0.35, behavior: 'smooth' }); }
+function playAt(t) { if (!cur) return; cur.media.currentTime = Math.max(0, t); cur.media.play().catch(() => {}); scrolledAt = 0; }
+const togglePlay = () => { if (!cur) return; cur.media.paused ? cur.media.play().catch(() => {}) : cur.media.pause(); };
+$('#bPlay').addEventListener('click', togglePlay);
+$('#bBack').addEventListener('click', () => { if (cur) cur.media.currentTime = Math.max(0, cur.media.currentTime - 5); });
+$('#bFwd').addEventListener('click', () => { if (cur) cur.media.currentTime = Math.min(cur.media.duration || 1e9, cur.media.currentTime + 5); });
+$('#seek').addEventListener('input', e => { if (cur && cur.media.duration) cur.media.currentTime = e.target.value / 1000 * cur.media.duration; });
+$('#speed').addEventListener('change', e => { if (cur) cur.media.playbackRate = +e.target.value; });
+$('#text').addEventListener('click', e => {
+  const w = e.target.closest('.w'); if (w && !w.classList.contains('un')) { const r = cur.tr.words[+w.dataset.i]; playAt(r.s); return; }
+  const ts = e.target.closest('[data-ts]'); if (ts) return playAt(+ts.dataset.ts);
+  const p = e.target.closest('.para'); if (!p) return;
+  if (e.target.closest('[data-ed]')) return startEdit(p);
+  if (e.target.closest('[data-spk]')) return nameSpeaker(p, e.target.closest('[data-spk]'));
+});
+
+/* ---------- correcting the words, naming the speakers ---------- */
+function startEdit(p) {
+  if (editing) cancelEdit(); if (job) return toast('Pause first, then correct the text.');
+  const i0 = +p.dataset.i0, i1 = +p.dataset.i1, words = cur.tr.words, text = words.slice(i0, i1).map(w => w.t).join(' ');
+  const box = p.querySelector('.words'); editing = { p, i0, i1, html: box.innerHTML };
+  box.innerHTML = `<div class="edit"><textarea aria-label="Correct the paragraph">${esc(text)}</textarea><div class="row"><span class="hint">Words you keep keep their timing. A blank line splits the paragraph. <b>Tab</b> plays / pauses.</span><span class="sp"></span><button class="btn sm" data-x="cancel">Cancel</button><button class="btn sm primary" data-x="save">Save</button></div></div>`;
+  const ta = box.querySelector('textarea'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  ta.addEventListener('keydown', ev => { if (ev.key === 'Tab') { ev.preventDefault(); togglePlay(); } else if (ev.key === 'Escape') { ev.preventDefault(); cancelEdit(); } else if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); saveEdit(ta.value); } });
+  box.querySelector('[data-x="cancel"]').addEventListener('click', cancelEdit); box.querySelector('[data-x="save"]').addEventListener('click', () => saveEdit(ta.value));
+}
+function cancelEdit() { if (!editing) return; editing.p.querySelector('.words').innerHTML = editing.html; editing = null; }
+async function saveEdit(text) {
+  const { i0, i1 } = editing; editing = null;
+  cur.tr.words = T.editParagraph(cur.tr.words, i0, i1, text); await save(); drawAll(); toast('Corrected.');
+}
+function nameSpeaker(p, btn) {
+  const i0 = +p.dataset.i0, names = [...new Set(T.paragraphs(cur.tr.words).map(x => x.speaker).filter(Boolean))];
+  const inp = document.createElement('input'); inp.className = 'spkin'; inp.value = cur.tr.words[i0].sp || ''; inp.placeholder = 'Name'; inp.setAttribute('list', 'spkNames'); inp.style.cssText = 'width:76px;font:600 12px var(--f-ui);border:1px solid var(--accent);border-radius:6px;padding:2px 4px;background:var(--sheet)';
+  let dl = $('#spkNames'); if (!dl) { dl = document.createElement('datalist'); dl.id = 'spkNames'; document.body.appendChild(dl); } dl.innerHTML = names.map(n => `<option value="${esc(n)}">`).join('');
+  btn.replaceWith(inp); inp.focus(); inp.select();
+  const done = async keep => { if (!inp.isConnected) return; if (keep) { cur.tr.words = T.setSpeaker(cur.tr.words, i0, inp.value.trim()); await save(); } drawText(); };
+  inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); done(true); } else if (ev.key === 'Escape') { ev.preventDefault(); done(false); } });
+  inp.addEventListener('blur', () => done(true));
+}
+
+/* ---------- find ---------- */
+$('#q').addEventListener('input', () => { hits = cur && cur.tr ? T.search(cur.tr.words, $('#q').value) : []; hitAt = -1; markHits(); $('#qn').textContent = $('#q').value.trim() ? `${hits.length}` : ''; });
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter' && hits.length) { e.preventDefault(); hitAt = (hitAt + (e.shiftKey ? -1 : 1) + hits.length) % hits.length; $('#qn').textContent = `${hitAt + 1} of ${hits.length}`; const el = $(`.w[data-i="${hits[hitAt]}"]`); if (el) { scrolledAt = performance.now(); el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } } else if (e.key === 'Escape') { $('#q').value = ''; $('#q').dispatchEvent(new Event('input')); $('#q').blur(); } });
+function markHits() { document.querySelectorAll('.w.hit').forEach(x => x.classList.remove('hit')); const n = Math.max(1, cur && cur.tr ? window.LyricsCore.tokens($('#q').value).length : 1); for (const i of hits) for (let k = 0; k < n; k++) { const el = $(`.w[data-i="${i + k}"]`); if (el) el.classList.add('hit'); } }
+
+/* ---------- export ---------- */
+$('#exportBtn').addEventListener('click', e => {
+  const r = cur.tr, base = (cur.track.title || 'transcript').replace(/[\\/:*?"<>|]+/g, '-'), timedWords = r.words.slice(0, T.timedUpTo(r.words));
+  menu(e.currentTarget, [['Save the text as', null],
+    ['Text with timestamps (.txt)', () => dl(T.toTxt(r.words.map(w => w.s == null ? { ...w, s: 0 } : w)), base + '.txt')],
+    ['Plain text (.txt)', () => dl(T.toTxt(r.words.map(w => w.s == null ? { ...w, s: 0 } : w), { timestamps: false }), base + ' (plain).txt')],
+    ['Subtitles (.srt)', () => dl(T.toSrt(timedWords), base + '.srt')],
+    ['Web subtitles (.vtt)', () => dl(T.toVtt(timedWords), base + '.vtt')],
+    ['Words with times (.json)', () => dl(JSON.stringify({ title: cur.track.title, mode: r.mode, words: r.words }, null, 1), base + '.json')],
+    ['Start again…', null],
+    ['Start again (this transcript is deleted)', async () => { if (!confirm(`Delete the ${r.mode === 'text' ? 'read-along' : 'transcript'} of “${cur.track.title}” and start again? Save it as a file first if you want to keep it.`)) return; await tx(trDB, 'transcripts', 'readwrite', o => o.delete(r.id)); trs.delete(r.id); cur.tr = null; hits = []; drawLib(); drawAll(); }]]);
+});
+function dl(text, name) { const a = document.createElement('a'), u = URL.createObjectURL(new Blob([text], { type: 'text/plain' })); a.href = u; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(u), 60e3); }
+function menu(anchor, items) {
+  const m = $('#menu'); m.innerHTML = items.map(([l, f], i) => f ? `<button data-m="${i}">${esc(l)}</button>` : `<div class="lbl">${esc(l)}</div>`).join(''); m.hidden = false;
+  const r = anchor.getBoundingClientRect(); m.style.top = r.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
+  m.onclick = ev => { const b = ev.target.closest('[data-m]'); if (!b) return; m.hidden = true; items[+b.dataset.m][1](); };
+  setTimeout(() => document.addEventListener('pointerdown', function off(ev) { if (!m.contains(ev.target)) { m.hidden = true; document.removeEventListener('pointerdown', off); } }), 0);
+}
+
+/* ---------- making it: 30 seconds at a time ---------- */
+$('#goHeard').addEventListener('click', () => start('heard'));
+$('#goText').addEventListener('click', () => { const tx = $('#ownText').value.trim(); if (!tx) return toast('Paste the text first (or load a .txt).'); start('text', tx); });
+$('#loadTxt').addEventListener('click', () => $('#txtIn').click());
+$('#txtIn').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (f) { $('#ownText').value = await f.text(); toast(`${f.name} loaded.`); } });
+$('#contBtn').addEventListener('click', () => start(cur.tr.mode));
+$('#stopBtn').addEventListener('click', () => { if (job) { job.stop = true; $('#runSt').textContent = 'Pausing after this part…'; } });
+async function save() { cur.tr.updated = Date.now(); await putTr(cur.tr); trs.set(cur.tr.id, cur.tr); drawLib(); }
+async function start(mode, text) {
+  if (job) return; const d = cur.track.duration || cur.media.duration || 0;
+  if (!cur.tr) cur.tr = { id: cur.track.id, mode, words: mode === 'text' ? T.fromText(text) : [], upTo: 0, done: false, duration: d, updated: Date.now() };
+  const tr = cur.tr; job = { stop: false }; $('#start').hidden = true; $('#cont').hidden = true; $('#run').hidden = false; drawAll(); $('#start').hidden = true; $('#cont').hidden = true;
+  const st = $('#runSt'), bar = $('#runBar');
+  let worker;
+  try {
+    const input = new M.Input({ source: new M.BlobSource(cur.blob), formats: M.ALL_FORMATS }), a = await input.getPrimaryAudioTrack(); if (!a) throw new Error('this file has no sound');
+    if (!(await a.canDecode())) throw new Error(`this browser cannot decode its sound (${a.codec})`);
+    const dur = await a.computeDuration(); tr.duration = dur;
+    worker = new Worker('../asr-worker.js', { type: 'module' }); const files = {};
+    const hear = msg => new Promise((res, rej) => { worker.onmessage = m => { const x = m.data; if (x.type === 'load') { files[x.file] = x; const tot = Object.values(files).reduce((s, f) => s + (f.total || 0), 0), got = Object.values(files).reduce((s, f) => s + (f.loaded || 0), 0); st.textContent = `Getting the recogniser (once only): ${Math.round(got / 1e6)} of ${Math.round(tot / 1e6)} MB`; bar.style.width = (tot ? got / tot * 100 : 0) + '%'; } else if (x.type === 'window') res(x.words); else if (x.type === 'error') rej(new Error(x.message)); }; worker.onerror = e => rej(new Error(e.message || 'the recogniser could not start')); worker.postMessage(msg, [msg.audio.buffer]); });
+    let ptr = tr.mode === 'text' ? T.timedUpTo(tr.words) : 0, from = tr.upTo || 0, t0 = performance.now();
+    for (let w0 = Math.max(0, from - 2.5); w0 < dur; w0 += 25) {
+      const w1 = Math.min(dur, w0 + 30), keepFrom = w0 <= from ? from : w0 + 2.5, keepTo = w1 >= dur ? Infinity : w0 + 27.5;
+      const pcm = await window16k(a, w0, w1);
+      const heard = pcm.length > 8000 ? await hear({ window: true, audio: pcm, offset: w0, keepFrom: keepFrom === 0 ? -1 : keepFrom, keepTo }) : [];
+      if (tr.mode === 'text') ptr = T.matchBatch(tr.words, ptr, heard).ptr; else tr.words = T.append(tr.words, heard);
+      tr.upTo = Math.min(dur, keepTo); tr.done = w1 >= dur || (tr.mode === 'text' && ptr >= tr.words.length);
+      await save(); appendRender();
+      const el = (performance.now() - t0) / 1000, doneSec = tr.upTo - from, left = doneSec > 0 ? (dur - tr.upTo) * el / doneSec : 0;
+      st.textContent = tr.mode === 'text' ? `Matching the text: up to ${T.short(tr.upTo)} of ${T.short(dur)} · ${Math.round(ptr / tr.words.length * 100)}% of the words${left > 5 ? ` · about ${T.short(left)} left` : ''}` : `Writing it down: ${T.short(tr.upTo)} of ${T.short(dur)}${left > 5 ? ` · about ${T.short(left)} left` : ''}`;
+      bar.style.width = Math.round(tr.upTo / dur * 100) + '%';
+      if (tr.done || job.stop) break;
+    }
+    if (tr.mode === 'text' && tr.done) { const up = T.timedUpTo(tr.words); if (up < tr.words.length) toast(`The recording ended before the text did: the last ${(tr.words.length - up).toLocaleString()} words were not heard.`, 7000); }
+    toast(tr.done ? (tr.mode === 'text' ? 'Read-along ready. Click any word to hear it.' : 'Transcript ready. Click any word to hear it.') : `Paused at ${T.short(tr.upTo)}. Continue any time.`, 5000);
+  } catch (e) { toast(`Stopped: ${e.message || e}`, 7000); console.error(e); }
+  finally { if (worker) worker.terminate(); job = null; $('#run').hidden = true; await save().catch(() => {}); drawAll(); }
+}
+let rendered = 0;
+function appendRender() { // the text grows as it is made: redraw, keeping the reader's place
+  const doc = $('#doc'), y = doc.scrollTop; drawText(); doc.scrollTop = y; $('#meta').textContent = `${T.short(cur.tr.duration)} · ${cur.tr.mode === 'text' ? 'read-along' : 'transcript'} · ${T.wordCount(cur.tr.words).toLocaleString()} words`; tick();
+}
+/* the sound from w0 to w1, mono at 16 kHz (each output sample the average of the input samples it covers) */
+async function window16k(track, w0, w1) {
+  const sink = new M.AudioSampleSink(track), n = Math.max(0, Math.round((w1 - w0) * 16000)), out = new Float32Array(n), cnt = new Float32Array(n);
+  for await (const s of sink.samples(w0, w1)) {
+    const sr = s.sampleRate, ch = s.numberOfChannels, f = s.numberOfFrames, buf = new Float32Array(f * ch); s.copyTo(buf, { planeIndex: 0, format: 'f32' }); const ts = s.timestamp; s.close();
+    for (let i = 0; i < f; i++) { const k = Math.floor((ts + i / sr - w0) * 16000); if (k < 0 || k >= n) continue; let v = 0; for (let c = 0; c < ch; c++) v += buf[i * ch + c]; out[k] += v / ch; cnt[k]++; }
+  }
+  for (let k = 0; k < n; k++) if (cnt[k]) out[k] /= cnt[k]; else if (k) out[k] = out[k - 1];
+  return out;
+}
+
+/* ---------- keys ---------- */
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input, textarea, select')) { if ((e.ctrlKey || e.metaKey) && e.key === 'f' && cur && cur.tr) { e.preventDefault(); $('#q').focus(); } return; }
+  if (!cur) return;
+  if (e.key === ' ') { if (e.target.closest('button')) return; e.preventDefault(); togglePlay(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); cur.media.currentTime = Math.max(0, cur.media.currentTime - 5); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); cur.media.currentTime += 5; }
+  else if ((e.ctrlKey || e.metaKey) && e.key === 'f' && cur.tr) { e.preventDefault(); $('#q').focus(); }
+});
+document.addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.closest('.edit')) b.blur(); });
+addEventListener('beforeunload', e => { if (job) { e.preventDefault(); e.returnValue = ''; } });
+
+/* ---------- start ---------- */
+await loadLib();
+const want = new URLSearchParams(location.search).get('song'); if (want) select(want);
+if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__tr = { get cur() { return cur; }, select, start, T, get job() { return job; } };

@@ -1,8 +1,9 @@
 // Mixtape offline cache. Bump VERSION whenever app files change so installed copies pick up the new version.
-const VERSION = 'mixtape-v51';
+const VERSION = 'mixtape-v52';
 const CORE = ['./', './index.html', './app.js', './studio.html', './studio.js', './dsp-worker.js', './dsp-shared.js', './midi.js', './long-mp3.js', './media-cut.js', './vendor/mediabunny/mediabunny.min.mjs', './lofi-worklet.js', './vendor/tone/Tone.js', './manifest.webmanifest', './icon-192.png', './icon-512.png',
   './cutter/', './cutter/index.html', './cutter/app.js', './cutter/engine.js', './cutter/model.js', './cutter/h264.js', './cutter/style.css', './cutter/host-mixtape.js',
-  './lyrics-core.js', './lyrics.js', './lyrics.css', './lyrics-worker.js'];
+  './lyrics-core.js', './lyrics.js', './lyrics.css', './asr-worker.js',
+  './transcript-core.js', './transcribe/', './transcribe/index.html', './transcribe/app.js', './transcribe/style.css'];
 // The AI stem splitter is large and changes rarely, so it lives in its own caches that app updates don't clear.
 const STEMS_RUNTIME = 'mixtape-stems-runtime-v1';   // ONNX Runtime + splitter code, saved on first use
 const LYRICS_RUNTIME = 'mixtape-lyrics-runtime-v1'; // the lyrics recogniser's runtime (transformers.js + ONNX Runtime), saved on first use
@@ -55,7 +56,7 @@ self.addEventListener('fetch', e => {
   }
   // Pages: try the network for updates, fall back to the saved copy of that same page offline.
   if (req.mode === 'navigate') {
-    const key = path.endsWith('studio.html') ? './studio.html' : path.includes('/cutter/') ? './cutter/index.html' : './index.html'; // offline, each page falls back to itself
+    const key = path.endsWith('studio.html') ? './studio.html' : path.includes('/cutter/') ? './cutter/index.html' : path.includes('/transcribe/') ? './transcribe/index.html' : './index.html'; // offline, each page falls back to itself
     e.respondWith(fetch(req).then(r => { if (r.ok) { const copy = r.clone(); caches.open(VERSION).then(c => c.put(key, copy)); } return r; })
       .catch(() => caches.match(key)));
     return;
