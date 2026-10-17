@@ -446,6 +446,24 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:80;background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:8px;font-size:13px;font-weight:500;max-width:calc(100vw - 32px);box-shadow:0 10px 30px -10px var(--shadow)}
 .modalwrap{position:fixed;inset:0;z-index:70;background:var(--scrim);display:grid;place-items:center;padding:16px}
 .modal{background:var(--panel-2);border:1px solid var(--line-2);border-radius:12px;padding:20px;width:min(100%,420px);display:flex;flex-direction:column;gap:12px;box-shadow:0 24px 60px -20px var(--shadow)}
+.trimwrap{position:fixed;inset:0;z-index:72;background:var(--scrim);display:grid;place-items:center;padding:16px}
+.trim{background:var(--panel-2);border:1px solid var(--line-2);border-radius:12px;padding:20px;width:min(100%,1100px);display:flex;flex-direction:column;gap:10px;box-shadow:0 24px 60px -20px var(--shadow)}
+.trim h3{font:600 18px var(--f-ui);margin:0}
+.trim .trim-sub{margin:0;color:var(--muted);font:14px/1.45 var(--f-ui);max-width:75ch}
+.trim .trim-sub b{color:var(--ink)}
+.trim-status{font:13px var(--f-mono);color:var(--accent)}
+.trim-cv{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.trim-cv canvas{display:block;width:100%;cursor:ew-resize;touch-action:none}
+.trim-over{height:120px}.trim-detail{height:110px}
+.trim-dh{font-size:13px;color:var(--muted)}.trim-dh b{color:var(--ink)}
+.trim-fields{display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px;margin-top:4px}
+.trim-f{display:flex;align-items:center;gap:8px}
+.trim-f label{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
+.trim-f input{width:120px;background:var(--bg);border:1px solid var(--line-2);border-radius:6px;color:var(--ink);font:15px var(--f-mono);padding:6px 8px}
+.trim-f input:focus{border-color:var(--accent);outline:none}
+.trim-f .btn.on{background:var(--accent);color:var(--accent-ink)}
+.trim-len{font-size:14px;color:var(--muted)}.trim-len b{color:var(--ink);font-family:var(--f-mono)}.trim-len .warn{color:var(--danger)}
+.trim-act{display:flex;gap:8px;align-items:center;margin-top:6px}.trim-act .sp{flex:1}
 .modal h3{font:600 17px var(--f-ui);margin:0}
 .modal p{margin:0;color:var(--muted);font-size:13px}
 .modal input{height:36px;border-radius:7px;border:1px solid var(--line-2);background:var(--bg);padding:0 10px;outline:0}
@@ -627,6 +645,7 @@ input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 <script src="vendor/tone/Tone.js"></script>
 <script src="dsp-shared.js"></script>
 <script src="midi.js"></script>
+<script src="long-mp3.js"></script>
 <script src="studio.js"></script>
 </body>
 </html>

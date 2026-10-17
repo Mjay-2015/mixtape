@@ -67,6 +67,7 @@ function ensureBuf(trackId) {
   if (loading.has(trackId)) return loading.get(trackId);
   const t = libTrack(trackId);
   if (!t) return Promise.reject(new Error('This song is no longer in your library.'));
+  if (t.duration > LONG_SEC) return Promise.reject(new Error(`“${t.title}” is ${fmtH(t.duration)} long, too long to edit whole. Add it to a track and pick the part you need.`));
   const p = (async () => {
     busy(`Loading “${t.title}”…`);
     try {
@@ -273,6 +274,11 @@ const newClip = (trackId, lane, at, start, end, extra = {}) => ({ id: uid(), tra
 
 /* ---------- editing operations ---------- */
 async function addRegion(trackId, a, b, mode) {
+  const lt = libTrack(trackId);
+  if (await tooLong(lt)) { // too long to edit whole: pick the part needed first (see trimLong)
+    if (!window.MixtapeLongMP3 || !MixtapeLongMP3.isMp3(lt)) return toast(`“${lt.title}” is ${fmtH(lt.duration)} long, too long to edit whole. Picking a part works for MP3 files: save it as an MP3 and add it again.`, 8000);
+    const part = await trimLong(lt); if (!part) return; trackId = part; a = 0; b = null;
+  }
   let e; try { e = await ensureBuf(trackId); } catch (err) { return toast(err.message, 5000); }
   if (b == null) { a = 0; b = e.buffer.duration; }
   let laneId, at, xf = 0;
@@ -2760,7 +2766,7 @@ function renderLibrary() {
   const list = lib.filter(t => !t.stemOf && t.kind !== 'video' && (!q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q)));
   $('#lib').innerHTML = list.length ? list.map(t => { const a = ana[t.id];
     const info = a ? `<span class="bk">${a.bpm ? a.bpm + ' BPM' : 'no steady beat'} · ${esc(a.keyName)}</span>` : analyzing.has(t.id) ? '<span class="bk busy">finding tempo and key…</span>' : '';
-    return `<li draggable="true" data-drag="${t.id}" title="Drag onto a track"><button class="lp${libPrev && libPrev.id === t.id ? ' on' : ''}" data-libprev="${t.id}" title="${libPrev && libPrev.id === t.id ? 'Stop listening' : 'Listen'}" aria-label="${libPrev && libPrev.id === t.id ? 'Stop listening to' : 'Listen to'} ${esc(t.title)}">${libPrev && libPrev.id === t.id ? '■' : '▶'}</button><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span class="li-sub">${esc(t.artist || 'Unknown artist')} · ${fmtT(t.duration).replace(/\.\d$/, '')}</span>${info}</div>
+    return `<li draggable="true" data-drag="${t.id}" title="Drag onto a track"><button class="lp${libPrev && libPrev.id === t.id ? ' on' : ''}" data-libprev="${t.id}" title="${libPrev && libPrev.id === t.id ? 'Stop listening' : 'Listen'}" aria-label="${libPrev && libPrev.id === t.id ? 'Stop listening to' : 'Listen to'} ${esc(t.title)}">${libPrev && libPrev.id === t.id ? '■' : '▶'}</button><div style="min-width:0"><b title="${esc(t.title)}">${esc(t.title)}</b><span class="li-sub">${esc(t.artist || 'Unknown artist')} · ${(t.duration >= 3600 ? fmtH(t.duration) : fmtT(t.duration)).replace(/\.\d$/, '')}</span>${info}</div>
       <div class="acts"><button data-add="append" data-id="${t.id}" title="Add to the end of the selected track">Add</button><button data-add="layer" data-id="${t.id}" title="Put it on a new track at the playhead">New track</button></div></li>`; }).join('')
     : `<li class="empty-note">${lib.length ? 'No songs match your search.' : 'No songs yet. Press “Import audio files” above, or drop music files onto the timeline.'}</li>`;
   const n = lib.filter(t => !t.stemOf && t.kind !== 'video').length; $('#libCount').textContent = `${n} song${n === 1 ? '' : 's'}`;
@@ -2919,7 +2925,7 @@ function showShortcuts() {
     ${g('Edit', [['Del', 'Remove the selected stretch or part'], ['K', 'Keep only the selection'], ['Ctrl E', 'Split it off'], ['S', 'Split at the playhead (or around the selection)'], ['Ctrl D', 'Repeat'], ['Ctrl C', 'Copy'], ['Ctrl V', 'Paste at the playhead'], ['Ctrl Z', 'Undo (Ctrl Y redoes)']])}
     ${g('Score to picture', [['M', 'Hit point at the playhead'], ['T', 'Tempo change at the playhead']])}
   </div>
-  <p class="hint">Mixtape Studio v42</p>
+  <p class="hint">Mixtape Studio v43</p>
   <div class="credits"><h4>Made with</h4>
     <p>Tone.js by Yotam Mann (MIT licence): drum machine, synths and effects.</p>
     <p>VSCO 2 Community Edition by Versilian Studios (Sam Gossner) and Ivy Audio (Simon Dalzell) (CC0, public domain): the orchestra.</p>
@@ -3491,11 +3497,184 @@ function showDrop(tg, len) {
   $('#dropLbl').textContent = `${l ? l.name : 'New track'} · ${fmtT(tg.at)}`;
 }
 function hideDrop() { $('#dropMark').hidden = true; $('#tl').classList.remove('dragover'); }
+/* ---- songs too long to edit whole ----
+   The Studio unpacks a song into raw audio to edit it; 5 hours of stereo is ~6.6 GB, more than a tab may use, and the
+   decode failed after a minute with "the file may be damaged". So a long song opens in "Pick the part you need" instead:
+   long-mp3.js maps its frames, draws it a few minutes at a time, and cuts the part out without re-encoding. */
+const LONG_SEC = 60 * 60;
+const fmtH = (s, dp = 0) => { s = Math.max(0, s || 0); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = (s % 60).toFixed(dp).padStart(dp ? 3 + dp : 2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${x}` : `${m}:${x}`; };
+const parseH = v => { const p = String(v).trim().split(':').map(Number); if (!p.length || p.some(x => !isFinite(x))) return null; return p.reduce((a, x) => a * 60 + x, 0); };
+function probeDur(blob) {
+  return new Promise(res => { const a = new Audio(), u = URL.createObjectURL(blob), fin = d => { URL.revokeObjectURL(u); res(isFinite(d) ? d : 0); };
+    a.preload = 'metadata'; a.onloadedmetadata = () => fin(a.duration); a.onerror = () => fin(0); setTimeout(() => fin(0), 8000); a.src = u; });
+}
+async function tooLong(t) {
+  if (!t || !t.blob) return false;
+  if (!(t.duration > 0)) { t.duration = await probeDur(t.blob); if (t.duration > 0) req('tracks', 'readwrite', o => o.put(t)).catch(() => {}); }
+  return t.duration > LONG_SEC || (!(t.duration > 0) && t.blob.size > 150e6);
+}
+// the drawn waveform is kept, so the same song opens at once the next time
+const PEAK_KEY = id => 'mixtape-longpeaks:' + id;
+function savePeaks(id, pk) {
+  try {
+    const enc = a => { const b = new Uint8Array(Int8Array.from(a, v => clamp(Math.round(v * 127), -127, 127)).buffer); let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192)); return btoa(s); };
+    const keys = Object.keys(localStorage).filter(k => k.startsWith('mixtape-longpeaks:') && k !== PEAK_KEY(id));
+    while (keys.length >= 4) localStorage.removeItem(keys.shift()); // keep the last few
+    localStorage.setItem(PEAK_KEY(id), JSON.stringify({ b: pk.bucketSec, min: enc(pk.min), max: enc(pk.max) }));
+  } catch (e) {}
+}
+function loadPeaks(id) {
+  try {
+    const o = JSON.parse(localStorage.getItem(PEAK_KEY(id))); if (!o) return null;
+    const dec = s => { const r = atob(s), b = new Int8Array(r.length); for (let i = 0; i < r.length; i++) b[i] = (r.charCodeAt(i) << 24) >> 24; return Float32Array.from(b, v => v / 127); };
+    return { bucketSec: o.b, min: dec(o.min), max: dec(o.max) };
+  } catch (e) { return null; }
+}
+let trimOpen = null;
+/* Resolves to the library id of the part kept (already saved in the library), or null. */
+function trimLong(t) {
+  const L = window.MixtapeLongMP3;
+  return new Promise(resolve => {
+    const wrap = document.createElement('div'); wrap.className = 'trimwrap';
+    wrap.innerHTML = `<div class="trim" role="dialog" aria-label="Pick the part you need">
+      <h3>Pick the part you need</h3>
+      <p class="trim-sub">“${esc(t.title)}” is <b>${fmtH(t.duration)}</b> long, too long to edit whole. Choose the part you want: it is cut straight out of the MP3, with no re-encoding, so it sounds exactly like the original.</p>
+      <div class="trim-status" aria-live="polite">Reading the file…</div>
+      <div class="trim-cv"><canvas class="trim-over"></canvas></div>
+      <div class="trim-dh"><span>Close-up of the <b class="trim-which">start</b> · drag here to place it exactly · ← → nudge it 1 s (Shift: 0.1 s)</span></div>
+      <div class="trim-cv"><canvas class="trim-detail"></canvas></div>
+      <div class="trim-fields">
+        <div class="trim-f"><label>Start <input data-f="a" inputmode="decimal" spellcheck="false"></label><button type="button" class="btn sm" data-hear="a">▶ Hear from the start</button></div>
+        <div class="trim-f"><label>End <input data-f="b" inputmode="decimal" spellcheck="false"></label><button type="button" class="btn sm" data-hear="b">▶ Hear up to the end</button></div>
+        <div class="trim-len"></div>
+      </div>
+      <div class="trim-act"><button type="button" class="btn" data-x="cancel">Cancel</button><span class="sp"></span><button type="button" class="btn" data-x="save" title="Download the part as an MP3 file">Save as MP3 file</button><button type="button" class="btn primary" data-x="keep">Keep this part</button></div>
+    </div>`;
+    document.body.appendChild(wrap);
+    const q = s => wrap.querySelector(s), over = q('.trim-over'), det = q('.trim-detail'), status = q('.trim-status');
+    let ix = null, pk = loadPeaks(t.id), D = t.duration, sel = { a: 0, b: Math.min(D, 10 * 60) }, act = 'a', closed = false;
+    let detail = null, detailFor = null, hear = null, hearPos = null;
+    const DW = 15; // the close-up shows 15 s either side of the handle
+    const size = cv => { const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1; if (cv.width !== Math.round(r.width * d)) { cv.width = Math.round(r.width * d); cv.height = Math.round(r.height * d); } return { w: cv.width, h: cv.height, d }; };
+    function drawWave(cv, t0, t1, getMinMax) {
+      const { w, h, d } = size(cv), g = cv.getContext('2d'), X = s => (s - t0) / (t1 - t0) * w, mid = h * 0.55, amp = h * 0.4;
+      g.fillStyle = css('--bg'); g.fillRect(0, 0, w, h);
+      g.fillStyle = css('--panel'); if (t0 < 0) g.fillRect(0, 0, X(0), h); if (t1 > D) g.fillRect(X(D), 0, w - X(D), h); // before the start, after the end
+      // the part kept
+      const xa = X(sel.a), xb = X(sel.b); g.fillStyle = css('--sel'); g.fillRect(xa, 0, xb - xa, h);
+      g.fillStyle = css('--muted');
+      for (let x = 0; x < w; x++) { const r = getMinMax(t0 + x / w * (t1 - t0), t0 + (x + 1) / w * (t1 - t0)); if (!r) continue; const inSel = x >= xa && x <= xb; g.fillStyle = inSel ? css('--accent') : css('--dim'); g.fillRect(x, mid - r[1] * amp, 1, Math.max(1, (r[1] - r[0]) * amp)); }
+      // a time ruler along the top
+      const span = t1 - t0, steps = [1, 5, 10, 30, 60, 300, 600, 1800, 3600], st = steps.find(s => span / s <= w / d / 90) || 3600;
+      g.font = `${10 * d}px ${css('--f-mono')}`; g.textBaseline = 'top';
+      for (let s = Math.max(0, Math.ceil(t0 / st) * st); s <= Math.min(t1, D); s += st) { const x = X(s); g.fillStyle = css('--line-2'); g.fillRect(x, 0, d, 6 * d); g.fillStyle = css('--muted'); g.fillText(fmtH(s), x + 3 * d, 2 * d); }
+      for (const k of ['a', 'b']) { const x = X(sel[k]); g.fillStyle = k === act ? css('--ink') : css('--accent'); g.fillRect(x - d, 0, 2 * d, h); g.fillRect(k === 'a' ? x : x - 8 * d, h - 14 * d, 8 * d, 14 * d); }
+      if (hearPos != null && hearPos >= t0 && hearPos <= t1) { g.fillStyle = css('--danger'); g.fillRect(X(hearPos), 0, 2 * d, h); }
+    }
+    const pkMinMax = (s0, s1) => { if (!pk) return null; const b0 = Math.floor(s0 / pk.bucketSec), b1 = Math.max(b0 + 1, Math.ceil(s1 / pk.bucketSec)); let lo = 0, hi = 0, any = false; for (let b = b0; b < b1 && b < pk.max.length; b++) { if (pk.max[b] === 0 && pk.min[b] === 0 && b * pk.bucketSec > (pk.upTo ?? D)) continue; any = true; if (pk.min[b] < lo) lo = pk.min[b]; if (pk.max[b] > hi) hi = pk.max[b]; } return any ? [lo, hi] : null; };
+    const detMinMax = (s0, s1) => { if (!detail) return null; const b = detail.buffer, sr = b.sampleRate, i0 = Math.max(0, Math.floor((s0 - detail.at) * sr)), i1 = Math.min(b.length, Math.ceil((s1 - detail.at) * sr)); if (i1 <= i0) return null; let lo = 0, hi = 0; for (let c = 0; c < b.numberOfChannels; c++) { const x = b.getChannelData(c); for (let i = i0; i < i1; i++) { const v = x[i]; if (v < lo) lo = v; else if (v > hi) hi = v; } } return [lo, hi]; };
+    const center = () => sel[act];
+    function draw() {
+      drawWave(over, 0, D, pkMinMax);
+      const c = center(); drawWave(det, c - DW, c + DW, detMinMax);
+      q('.trim-which').textContent = act === 'a' ? 'start' : 'end';
+      for (const k of ['a', 'b']) { const i = q(`[data-f="${k}"]`); if (document.activeElement !== i) i.value = fmtH(sel[k], 1); }
+      const len = sel.b - sel.a; q('.trim-len').innerHTML = `Length <b>${fmtH(len, 1)}</b>${len > LONG_SEC ? ' · <span class="warn">over an hour: save it as an MP3 file, or pick a shorter part to edit here</span>' : ''}`;
+      q('[data-x="keep"]').disabled = !ix || len > LONG_SEC || len < 0.5; q('[data-x="save"]').disabled = !ix || len < 0.5;
+    }
+    let loadingDetail = false;
+    async function loadDetail() { // the close-up's sound, decoded around the active handle
+      if (!ix || loadingDetail) return; const c = center();
+      if (detailFor != null && Math.abs(detailFor - c) < DW / 2) return;
+      loadingDetail = true; const want = c;
+      try { detail = await L.decode(ctx, t.blob, ix, Math.max(0, want - DW * 1.6), Math.min(D, want + DW * 1.6)); detailFor = want; } catch (e) {}
+      loadingDetail = false; if (!closed) { draw(); if (Math.abs(center() - want) >= DW / 2) loadDetail(); }
+    }
+    const setH = (k, v) => { sel[k] = clamp(v, 0, D); if (sel.a > sel.b) { const x = sel.a; sel.a = sel.b; sel.b = x; act = act === 'a' ? 'b' : 'a'; } draw(); loadDetail(); };
+    // dragging on the overview: grab the nearest handle (or move it to where you pressed)
+    over.addEventListener('pointerdown', e => {
+      const r = over.getBoundingClientRect(), tAt = ev => clamp((ev.clientX - r.left) / r.width * D, 0, D), t0 = tAt(e);
+      act = Math.abs(t0 - sel.a) <= Math.abs(t0 - sel.b) ? 'a' : 'b'; setH(act, t0);
+      try { over.setPointerCapture(e.pointerId); } catch (_) {}
+      const mv = ev => setH(act, tAt(ev)); over.addEventListener('pointermove', mv);
+      over.addEventListener('pointerup', () => over.removeEventListener('pointermove', mv), { once: true });
+    });
+    det.addEventListener('pointerdown', e => {
+      const r = det.getBoundingClientRect(), c = center(), tAt = ev => c - DW + (ev.clientX - r.left) / r.width * 2 * DW;
+      setH(act, tAt(e)); try { det.setPointerCapture(e.pointerId); } catch (_) {}
+      const mv = ev => setH(act, tAt(ev)); det.addEventListener('pointermove', mv);
+      det.addEventListener('pointerup', () => det.removeEventListener('pointermove', mv), { once: true });
+    });
+    wrap.querySelectorAll('[data-f]').forEach(i => {
+      i.addEventListener('focus', () => { act = i.dataset.f; draw(); loadDetail(); });
+      i.addEventListener('change', () => { // a typed time moves the other handle out of the way rather than swapping them
+        const v = parseH(i.value); if (v == null) { toast('Type a time like 1:02:30 or 45:10.5'); draw(); return; }
+        act = i.dataset.f; const len = Math.max(1, sel.b - sel.a), t0 = clamp(v, 0, D);
+        if (act === 'a' && t0 >= sel.b) sel.b = Math.min(D, t0 + len); if (act === 'b' && t0 <= sel.a) sel.a = Math.max(0, t0 - len);
+        setH(act, t0);
+      });
+      i.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); i.blur(); i.dispatchEvent(new Event('change')); } });
+    });
+    function stopHear() { if (hear) { try { hear.stop(); } catch (e) {} hear = null; } hearPos = null; cancelAnimationFrame(stopHear.raf); wrap.querySelectorAll('[data-hear]').forEach(b => b.classList.remove('on')); }
+    async function hearIt(k) {
+      const was = hear && hear.k === k; stopHear(); if (was || !ix) return;
+      const s0 = k === 'a' ? sel.a : Math.max(sel.a, sel.b - 6), s1 = k === 'a' ? Math.min(sel.b, sel.a + 6) : sel.b;
+      ctx.resume(); let d; try { d = await L.decode(ctx, t.blob, ix, s0, s1); } catch (e) { return toast('Could not play that stretch: ' + e.message, 5000); }
+      const src = ctx.createBufferSource(); src.buffer = d.buffer; src.connect(ctx.destination);
+      const off = Math.max(0, s0 - d.at), len = s1 - s0, t0 = ctx.currentTime + 0.02; src.start(t0, off, len); src.k = k; hear = src;
+      wrap.querySelector(`[data-hear="${k}"]`).classList.add('on');
+      src.onended = () => { if (hear === src) stopHear(), draw(); };
+      const tick = () => { if (hear !== src) return; hearPos = s0 + Math.max(0, ctx.currentTime - t0); draw(); stopHear.raf = requestAnimationFrame(tick); }; tick();
+    }
+    wrap.querySelectorAll('[data-hear]').forEach(b => b.addEventListener('click', () => { act = b.dataset.hear; hearIt(act); }));
+    const partName = () => `${t.title} (${fmtH(sel.a)}–${fmtH(sel.b)})`;
+    function finish(v) { if (closed) return; closed = true; stopHear(); trimOpen = null; window.removeEventListener('keydown', onKey, true); removeEventListener('resize', draw); wrap.remove(); resolve(v); }
+    q('[data-x="cancel"]').addEventListener('click', () => finish(null));
+    q('[data-x="save"]').addEventListener('click', () => { const c = L.cut(t.blob, ix, sel.a, sel.b); downloadBlob(c.blob, partName().replace(/[\\/:*?"<>|]/g, '-') + '.mp3'); toast('Saved the part as an MP3 file.'); });
+    q('[data-x="keep"]').addEventListener('click', async () => {
+      const c = L.cut(t.blob, ix, sel.a, sel.b), title = partName();
+      const nt = { id: uid(), name: title + '.mp3', size: c.blob.size, type: 'audio/mpeg', title, artist: t.artist || '', album: t.album || '', track: 0, duration: c.duration, added: Date.now(), blob: c.blob, art: t.art || null };
+      try { await saveToLibrary(nt); } catch (e) { return toast('Could not save the part: ' + e.message, 6000); }
+      finish(nt.id);
+    });
+    function onKey(e) {
+      if (e.target.closest && e.target.closest('input')) { if (e.key === 'Escape') { e.target.blur(); e.stopImmediatePropagation(); } return; }
+      e.stopImmediatePropagation(); // nothing behind the window reacts while it is open
+      if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setH(act, sel[act] + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 0.1 : 1)); }
+      else if (e.key === ' ' && !(e.target.closest && e.target.closest('button'))) { e.preventDefault(); hearIt(act); }
+    }
+    window.addEventListener('keydown', onKey, true); addEventListener('resize', draw);
+    trimOpen = { finish };
+    draw();
+    (async () => {
+      try { ix = await L.index(t.blob, p => { status.textContent = `Reading the file… ${Math.round(p * 100)}%`; }); }
+      catch (e) { status.textContent = 'Could not read this MP3: ' + e.message; return; }
+      if (closed) return;
+      D = ix.duration; sel.b = Math.min(sel.b, D); draw(); loadDetail();
+      if (pk && Math.abs(pk.max.length * pk.bucketSec - D) < pk.bucketSec * 2) { status.textContent = 'Drag the handles, or type the times. ▶ plays a few seconds at each end.'; draw(); return; }
+      const bucket = D > 3 * 3600 ? 1 : 0.5;
+      pk = { bucketSec: bucket, min: new Float32Array(Math.ceil(D / bucket)), max: new Float32Array(Math.ceil(D / bucket)), upTo: 0 };
+      let lastDraw = 0;
+      const done = await L.peaks(ctx, t.blob, ix, bucket, (p, upTo) => {
+        pk = { ...p, upTo }; status.textContent = `Drawing the waveform… ${Math.round(upTo / D * 100)}% (you can pick the part already: the times and ▶ work now)`;
+        if (performance.now() - lastDraw > 250) { lastDraw = performance.now(); draw(); }
+      }, () => closed);
+      if (!done || closed) return;
+      pk = done; savePeaks(t.id, done); status.textContent = 'Drag the handles, or type the times. ▶ plays a few seconds at each end.'; draw();
+    })();
+  });
+}
 async function placeSongs(ids, tg) {
   let laneId = tg.lane;
   if (!laneId) { const l = newLane(P.lanes.length + 1); P.lanes.push(l); laneId = l.id; }
   let at = tg.at, lastClip = null;
-  for (const id of ids) {
+  for (let id of ids) {
+    const lt = libTrack(id);
+    if (await tooLong(lt)) { // too long to edit whole: pick the part needed first
+      if (!window.MixtapeLongMP3 || !MixtapeLongMP3.isMp3(lt)) { toast(`“${lt.title}” is ${fmtH(lt.duration)} long, too long to edit whole. Picking a part works for MP3 files: save it as an MP3 and add it again.`, 8000); continue; }
+      const part = await trimLong(lt); if (!part) continue; id = part;
+    }
     let e; try { e = await ensureBuf(id); } catch (err) { toast(err.message, 5000); continue; }
     const t = libTrack(id);
     if (t && !(t.duration > 0)) { t.duration = e.buffer.duration; req('tracks', 'readwrite', o => o.put(t)).catch(() => {}); }
@@ -3503,7 +3682,7 @@ async function placeSongs(ids, tg) {
   }
   if (!lastClip) return;
   selClip = lastClip.id; selLane = laneId; edSel = null;
-  const first = libTrack(ids[0]);
+  const first = libTrack(lastClip.trackId);
   commit(ids.length === 1 ? `Added “${first ? first.title : 'song'}” at ${fmtT(tg.at)}` : `Added ${ids.length} songs, one after another`);
 }
 async function importDropped(files) {
