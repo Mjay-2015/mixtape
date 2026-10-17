@@ -43,14 +43,27 @@ $('#libL').addEventListener('click', e => { const li = e.target.closest('[data-i
 $('#libL').addEventListener('keydown', e => { if (e.key === 'Enter') { const li = e.target.closest('[data-id]'); if (li) select(li.dataset.id); } });
 $('#railBtn').addEventListener('click', () => $('#rail').classList.toggle('open'));
 for (const b of ['#openBtn', '#openBtn2']) $(b).addEventListener('click', () => $('#fileIn').click());
-$('#fileIn').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (f) addFile(f); });
-async function addFile(f) {
+$('#fileIn').addEventListener('change', async e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) openPicked(fs); });
+/* A recording, or a studio narration: its audio and its .read-along.json picked together (any order). */
+async function openPicked(fs) {
+  const json = fs.find(f => /\.json$/i.test(f.name)), media = fs.filter(f => !/\.json$/i.test(f.name));
+  if (!json) return addFile(media[0]);
+  let ra; try { ra = JSON.parse(await json.text()); } catch (e) { return toast('That .json is not a read-along file.'); }
+  if (!ra || !Array.isArray(ra.words) || !ra.words.length) return toast('That .json has no words with times in it.');
+  const audio = media.find(f => f.name === ra.audio) || media[0];
+  if (!audio) return toast(`Pick the narration too: ${ra.audio || 'its .mp3'} together with the .json.`, 6000);
+  const id = await addFile(audio, { quiet: true }); if (!id) return;
+  const words = ra.words.map(w => ({ t: String(w.t), s: w.s == null ? null : +w.s, e: w.e == null ? null : +w.e, ...(w.p ? { p: true } : {}), ...(w.sp ? { sp: w.sp } : {}) }));
+  cur.tr = { id, mode: 'text', words, upTo: ra.duration || cur.track.duration || 0, done: true, duration: ra.duration || cur.track.duration || 0, updated: Date.now(), voice: ra.voice || '' };
+  await save(); drawAll(); toast(`Ready: ${words.length.toLocaleString()} words, each with its moment${ra.voice ? `, read by ${String(ra.voice).replace(/^[a-z]{2}-[A-Z]{2}-/, '').replace(/:.*/, '')}` : ''}. Click any word.`, 6000);
+}
+async function addFile(f, { quiet = false } = {}) {
   // the file joins the library (album "Recordings"), so its transcript has a home and it can be played in Mixtape too
   const video = /^video\//.test(f.type) || /\.(mp4|m4v|mov|webm|mkv)$/i.test(f.name);
   const dur = await mediaDuration(f).catch(() => 0);
   const t = { id: uid(), name: f.name, size: f.size, type: f.type || '', title: f.name.replace(/\.[^.]+$/, ''), artist: '', album: 'Recordings', track: 0, duration: dur, added: Date.now(), blob: f, art: null, ...(video ? { kind: 'video' } : {}) };
   try { await tx(libDB, 'tracks', 'readwrite', o => o.put(t)); try { new BroadcastChannel('mixtape').postMessage({ type: 'library' }); } catch (e) {} } catch (e) { toast(`Could not add it to the library: ${e.message || e}`, 5000); }
-  await loadLib(); select(t.id);
+  await loadLib(); await select(t.id); return t.id;
 }
 const mediaDuration = blob => new Promise(res => { const a = document.createElement(/^video\//.test(blob.type) ? 'video' : 'audio'); a.preload = 'metadata'; a.onloadedmetadata = () => { res(isFinite(a.duration) ? a.duration : 0); URL.revokeObjectURL(a.src); }; a.onerror = () => res(0); a.src = URL.createObjectURL(blob); });
 
@@ -177,7 +190,27 @@ function menu(anchor, items) {
 $('#goHeard').addEventListener('click', () => start('heard'));
 $('#goText').addEventListener('click', () => { const tx = $('#ownText').value.trim(); if (!tx) return toast('Paste the text first (or load a .txt).'); start('text', tx); });
 $('#loadTxt').addEventListener('click', () => $('#txtIn').click());
-$('#txtIn').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (f) { $('#ownText').value = await f.text(); toast(`${f.name} loaded.`); } });
+$('#txtIn').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { $('#ownText').value = /\.docx$/i.test(f.name) ? await docxText(f) : await f.text(); toast(`${f.name} loaded.`); } catch (err) { toast(`Could not read ${f.name}: ${err.message || err}`, 6000); } });
+/* The words of a Word file: a .docx is a zip, and word/document.xml holds one <w:p> per paragraph. The browser's own
+   DecompressionStream unzips it, so no library is needed. */
+async function docxText(file) {
+  const b = new Uint8Array(await file.arrayBuffer()), dv = new DataView(b.buffer); let eocd = -1;
+  for (let i = b.length - 22; i >= Math.max(0, b.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('it is not a Word (.docx) file');
+  let p = dv.getUint32(eocd + 16, true); const n = dv.getUint16(eocd + 10, true);
+  for (let k = 0; k < n; k++) {
+    const method = dv.getUint16(p + 10, true), size = dv.getUint32(p + 20, true), nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), local = dv.getUint32(p + 42, true);
+    if (new TextDecoder().decode(b.subarray(p + 46, p + 46 + nl)) === 'word/document.xml') {
+      const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true), data = b.subarray(start, start + size);
+      const raw = method === 0 ? data : new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+      const xml = new TextDecoder().decode(raw), paras = [];
+      for (const m of xml.matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g)) { const t = m[0].replace(/<w:tab\/>|<w:br\/>|<w:cr\/>/g, ' ').replace(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<[^>]+>/g, (_a, x) => x ?? ''); const el = document.createElement('textarea'); el.innerHTML = t; const s = el.value.replace(/\s+/g, ' ').trim(); if (s) paras.push(s); }
+      return paras.join('\n\n');
+    }
+    p += 46 + nl + xl + cl;
+  }
+  throw new Error('no text was found in it');
+}
 $('#contBtn').addEventListener('click', () => start(cur.tr.mode));
 $('#stopBtn').addEventListener('click', () => { if (job) { job.stop = true; $('#runSt').textContent = 'Pausing after this part…'; } });
 async function save() { cur.tr.updated = Date.now(); await putTr(cur.tr); trs.set(cur.tr.id, cur.tr); drawLib(); }
@@ -241,4 +274,4 @@ addEventListener('beforeunload', e => { if (job) { e.preventDefault(); e.returnV
 /* ---------- start ---------- */
 await loadLib();
 const want = new URLSearchParams(location.search).get('song'); if (want) select(want);
-if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__tr = { get cur() { return cur; }, select, start, T, get job() { return job; } };
+if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__tr = { get cur() { return cur; }, select, start, T, get job() { return job; }, openPicked, docxText };

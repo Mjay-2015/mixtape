@@ -25,12 +25,12 @@
 
 <div class="wrap">
   <aside class="rail" id="rail" aria-label="Recordings">
-    <div class="rail-h"><input id="libQ" type="search" placeholder="Search your library" aria-label="Search your library" autocomplete="off"><button class="btn sm primary" id="openBtn" title="Open a recording or video from this computer">Open a file…</button><input id="fileIn" type="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.opus,.flac,.mp4,.mov,.webm,.mkv" hidden></div>
+    <div class="rail-h"><input id="libQ" type="search" placeholder="Search your library" aria-label="Search your library" autocomplete="off"><button class="btn sm primary" id="openBtn" title="Open a recording or video from this computer">Open a file…</button><input id="fileIn" type="file" multiple accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.opus,.flac,.mp4,.mov,.webm,.mkv,.json" hidden></div>
     <ol class="libl" id="libL"></ol>
   </aside>
 
   <main class="doc" id="doc">
-    <div class="empty" id="empty"><h1>Click a word, hear it.</h1><p>Pick a recording on the left (or open a file). Mixtape writes down what is said, or matches your own text to it — an interview, a voice note, an audiobook. Then click any word to play from there; the word being spoken is lit as it plays.</p><button class="btn primary" id="openBtn2">Open a file…</button></div>
+    <div class="empty" id="empty"><h1>Click a word, hear it.</h1><p>Pick a recording on the left (or open a file). Mixtape writes down what is said, or matches your own text to it — an interview, a voice note, an audiobook. Then click any word to play from there; the word being spoken is lit as it plays.</p><p>A narration made by the studio comes with its word times: open the .mp3 and its .read-along.json together and it is ready at once.</p><button class="btn primary" id="openBtn2">Open a file…</button></div>
     <section class="head" id="head" hidden>
       <div class="ttl"><h1 id="title"></h1><p id="meta"></p></div>
       <div class="vid" id="vidBox" hidden></div>
@@ -43,9 +43,9 @@
       </div>
       <div class="choice">
         <h2>Match my text to it</h2>
-        <p>For an audiobook or a read script: paste the text (or load a .txt) and every word is matched to the moment it is read.</p>
+        <p>For an audiobook or a read script: paste the text (or load a Word file) and every word is matched to the moment it is read.</p>
         <textarea id="ownText" rows="6" placeholder="Paste the book or script here. Blank lines keep your paragraphs."></textarea>
-        <div class="row"><button class="btn" id="loadTxt">Load a .txt…</button><input id="txtIn" type="file" accept=".txt,.md,text/plain" hidden><span class="sp"></span><button class="btn primary" id="goText">Match it</button></div>
+        <div class="row"><button class="btn" id="loadTxt">Load a file (.docx, .txt)…</button><input id="txtIn" type="file" accept=".docx,.txt,.md,text/plain" hidden><span class="sp"></span><button class="btn primary" id="goText">Match it</button></div>
       </div>
       <p class="note" id="estimate"></p>
     </section>
