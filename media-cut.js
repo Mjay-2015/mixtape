@@ -74,6 +74,11 @@ async function hear(p, ctx, t0, t1) {
 }
 
 /* Where the output goes: a file in the browser's private storage (OPFS), so a 2 GB cut never has to sit in memory. */
+/* The highest AAC rate this browser's encoder accepts for the channel count (stereo at 320 kb/s is refused on some). */
+async function aacBitrate(channels, sampleRate) {
+  for (const per of [160e3, 128e3, 96e3, 64e3]) { const bitrate = Math.min(320e3, per * channels); try { if ((await AudioEncoder.isConfigSupported({ codec: 'mp4a.40.2', numberOfChannels: channels, sampleRate, bitrate })).supported) return bitrate; } catch (e) {} }
+  return 96e3 * channels;
+}
 async function opfsTarget(M, name) {
   const root = await navigator.storage.getDirectory(), dir = await root.getDirectoryHandle('cuts', { create: true });
   // each cut gets its own file (a reused name once handed back the previous cut), and cuts older than an hour are swept
@@ -189,7 +194,7 @@ async function encodeStretch(p, t0, t1, codecString, bitrate, onFrame) {
 async function addExactAudio(M, p, output, t0, t1, webm, onProgress) {
   if (!p.a || !p.audio.canDecode) return null;
   const lossless = p.audio.lossless, codec = webm ? 'opus' : lossless ? 'pcm-s16' : 'aac';
-  const src = new M.AudioSampleSource(lossless && !webm ? { codec } : { codec, quality: new M.Quality({ bitrate: Math.min(webm ? 256e3 : 320e3, (webm ? 128e3 : 160e3) * p.audio.ch) }) });
+  const src = new M.AudioSampleSource(lossless && !webm ? { codec } : { codec, quality: new M.Quality({ bitrate: webm ? Math.min(256e3, 128e3 * p.audio.ch) : await aacBitrate(p.audio.ch, p.audio.sr) }) });
   output.addAudioTrack(src);
   return async () => {
     const sink = new M.AudioSampleSink(p.a);
@@ -214,7 +219,7 @@ async function cutSmart(p, t0, t1, base, onProgress) {
   if (!K1 || !Kz || Kz.timestamp <= K1.timestamp) throw new Error('no whole group of frames to copy');
   // closed groups only: every packet between K1 and Kz must show between them
   const middle = []; for await (const pk of sink.packets(K1)) { if (pk.timestamp >= Kz.timestamp - 1e-9 && pk.type === 'key') break; if (pk.timestamp < K1.timestamp - 1e-6 || pk.timestamp >= Kz.timestamp - 1e-9) throw new Error('open groups of frames'); middle.push(pk); }
-  const stats = await p.v.computePacketStats(600).catch(() => null), srcBr = stats?.averageBitrate || 8e6, px = p.video.w * p.video.h, floor = px >= 3840 * 2160 ? 45e6 : px >= 1920 * 1080 ? 12e6 : 6e6, bitrate = Math.min(100e6, Math.max(floor, srcBr * 3));
+  const stats = await p.v.computePacketStats(600).catch(() => null), srcBr = stats?.averageBitrate || 8e6, px = p.video.w * p.video.h, floor = px >= 3840 * 2160 ? 45e6 : px >= 1920 * 1080 ? 12e6 : 6e6, bitrate = Math.round(Math.min(100e6, Math.max(floor, srcBr * 3)));
   const codecString = p.video.codecString && /^avc1\./.test(p.video.codecString) ? p.video.codecString : 'avc1.640033';
   const headN = Math.max(0, Math.round((K1.timestamp - t0) * (p.video.fps || 30))), tailN = Math.max(0, Math.round((t1 - Kz.timestamp) * (p.video.fps || 30))), total = headN + tailN + middle.length;
   onProgress(0.02);
@@ -270,12 +275,14 @@ async function cut(p, t0, t1, opts = {}) {
   const stats = await p.v.computePacketStats(600).catch(() => null);
   const srcBr = stats?.averageBitrate || 8e6, px = p.video.w * p.video.h, floor = px >= 3840 * 2160 ? 45e6 : px >= 1920 * 1080 ? 12e6 : 6e6;
   const vcodec = p.video.codec === 'avc' || p.video.codec === 'hevc' ? (webm ? 'vp9' : p.video.codec) : (p.video.codec || (webm ? 'vp9' : 'avc'));
+  // the sound rate: what this browser's encoder accepts for the channel count (stereo AAC at 320 kb/s is refused on some)
+  const abr = p.a && !p.audio.lossless ? (webm ? Math.min(256e3, 128e3 * p.audio.ch) : await aacBitrate(p.audio.ch, p.audio.sr)) : 0;
   const conv = await M.Conversion.init({
     input: p.input, output,
     trim: { start: t0, end: t1 },
-    video: { codec: vcodec, quality: new M.Quality({ bitrate: Math.min(100e6, Math.max(floor, srcBr * 3)) }), keyFrameInterval: 2, hardwareAcceleration: 'no-preference' },
+    video: { codec: vcodec, quality: new M.Quality({ bitrate: Math.round(Math.min(100e6, Math.max(floor, srcBr * 3))) }), keyFrameInterval: 2, hardwareAcceleration: 'no-preference' },
     // the sound: lossless stays lossless; compressed sound is re-encoded at the top rate the encoder allows per channel
-    audio: p.a ? (p.audio.lossless ? { codec: webm ? 'opus' : 'pcm-s16' } : { codec: webm ? 'opus' : 'aac', quality: new M.Quality({ bitrate: Math.min(webm ? 256e3 : 320e3, (webm ? 128e3 : 160e3) * p.audio.ch) }) }) : undefined,
+    audio: p.a ? (p.audio.lossless ? { codec: webm ? 'opus' : 'pcm-s16' } : { codec: webm ? 'opus' : 'aac', quality: new M.Quality({ bitrate: abr }) }) : undefined,
   });
   const dropped = conv.discardedTracks.map(d => `${d.track.type}: ${d.reason}`);
   if (!conv.isValid || dropped.length) { await tgt.remove(); throw new Error(`This file cannot be cut here (${dropped.join('; ') || 'the browser cannot decode it'}).`); }
@@ -283,8 +290,7 @@ async function cut(p, t0, t1, opts = {}) {
   try { await conv.execute(); } catch (e) { await tgt.remove(); throw e; }
   const blob = await tgt.file();
   try { await checkTracks(M, blob, ['video', ...(p.a ? ['audio'] : [])]); } catch (e) { await tgt.remove(); throw e; }
-  const abr = p.a && !p.audio.lossless ? Math.min(webm ? 256e3 : 320e3, (webm ? 128e3 : 160e3) * p.audio.ch) : 0;
-  return { blob, name, how: 'reencode', exact: true, fallbackWhy, note: `Exact to the frame. ${fallbackWhy ? `The whole picture was re-encoded (a frame-copy cut was not possible here: ${fallbackWhy})` : 'The picture was re-encoded'} at ${Math.round(Math.min(100e6, Math.max(floor, srcBr * 3)) / 1e6)} Mb/s (the original was ${Math.round(srcBr / 1e6)} Mb/s), so it looks the same; ${p.a ? (p.audio.lossless ? 'the sound is lossless' : `the sound is ${Math.round(abr / 1000)} kb/s ${webm ? 'Opus' : 'AAC'}`) : 'there is no sound track'}.`, cleanup: tgt.remove };
+  return { blob, name, how: 'reencode', exact: true, fallbackWhy, note: `Exact to the frame. ${fallbackWhy ? `The whole picture was re-encoded (a frame-copy cut was not possible here: ${fallbackWhy})` : 'The picture was re-encoded'} at ${Math.round(Math.round(Math.min(100e6, Math.max(floor, srcBr * 3))) / 1e6)} Mb/s (the original was ${Math.round(srcBr / 1e6)} Mb/s), so it looks the same; ${p.a ? (p.audio.lossless ? 'the sound is lossless' : `the sound is ${Math.round(abr / 1000)} kb/s ${webm ? 'Opus' : 'AAC'}`) : 'there is no sound track'}.`, cleanup: tgt.remove };
 }
 
 /* Lossless audio → WAV, exact to the sample. */
