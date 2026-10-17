@@ -163,3 +163,4 @@ button,input,select,textarea{font:inherit;color:inherit}
 .menu .why{padding:2px 10px 8px;max-width:320px;color:var(--muted);font-size:13px}
 .menu .sugrow{display:flex;gap:6px;padding:0 10px 8px}
 .menu textarea.notes{margin:4px 10px 6px;width:300px;min-height:70px;border:1px solid var(--sug);border-radius:7px;background:var(--paper);padding:6px 8px;outline:0;resize:vertical;font:14px var(--f-ui)}
+.menu{max-height:calc(100vh - 16px);overflow:auto}

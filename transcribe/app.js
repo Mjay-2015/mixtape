@@ -10,6 +10,8 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 let toastT = 0; const toast = (m, ms = 3200) => { const t = $('#toast'); t.textContent = m; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); };
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+/* a pop-up under its button, or above it when there is no room below (a short window), never off the screen */
+const below = (m, r) => { const h = m.offsetHeight; let y = r.bottom + 6; if (y + h > innerHeight - 8) y = r.top - h - 6 >= 8 ? r.top - h - 6 : Math.max(8, innerHeight - h - 8); return y + 'px'; };
 
 /* ---------- storage: Mixtape's library (read; files opened here are added), transcripts in their own database ---------- */
 function idb(name, version, upgrade) { return new Promise((res, rej) => { const r = indexedDB.open(name, version); r.onupgradeneeded = () => upgrade(r.result); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('Close other Mixtape tabs and try again.')); }); }
@@ -200,7 +202,7 @@ async function renameAll(from, to) { if (!to || to === from) return; remember();
 function askName(anchor, title, value, done) {
   const m = $('#menu'); m.innerHTML = `<div class="lbl">${esc(title)}</div><input class="nm" value="${esc(value)}" placeholder="Name" aria-label="${esc(title)}" list="spkNames"><div class="row"><span class="sp"></span><button class="btn sm primary" data-ok>OK</button></div>`; m.hidden = false;
   let dlist = $('#spkNames'); if (!dlist) { dlist = document.createElement('datalist'); dlist.id = 'spkNames'; document.body.appendChild(dlist); } dlist.innerHTML = T.speakerNames(cur.tr.words).map(n => `<option value="${esc(n)}">`).join('');
-  const r = anchor.getBoundingClientRect(); m.style.top = r.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - 260, r.left)) + 'px';
+  const r = anchor.getBoundingClientRect(); m.style.top = below(m, r); m.style.left = Math.max(8, Math.min(innerWidth - 260, r.left)) + 'px';
   const inp = m.querySelector('input'); inp.focus(); inp.select();
   const ok = () => { const v = inp.value.trim(); m.hidden = true; if (v) done(v); };
   inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); ok(); } else if (ev.key === 'Escape') { ev.preventDefault(); m.hidden = true; } });
@@ -253,7 +255,7 @@ function askReview(btn) {
   if (job) return toast('Wait for the transcript to finish first.');
   const r = cur.tr, n = r.words.length, est = Math.max(0.01, n / 1000 * 0.07);
   const m = $('#menu'); m.innerHTML = `<div class="lbl">AI check: a second reader for the recogniser</div><div class="why">Claude reads the transcript for sense and marks the words that were probably misheard, and speakers that look wrong. It never rewrites what people said, and fillers stay. You accept or keep each one.</div><textarea class="notes" placeholder="Optional: names, places or the topic, so it can spell them (e.g. “Interview with Thandi Nkosi in Soweto about the 1995 floodlights”)">${esc(r.reviewNotes || '')}</textarea><div class="why">${n.toLocaleString()} words · about $${est.toFixed(2)} · goes through the studio and is costed there.</div><div class="sugrow"><span class="sp"></span><button class="btn sm" data-x>Cancel</button><button class="btn sm primary" data-go>Check it</button></div>`; m.hidden = false;
-  const rc = btn.getBoundingClientRect(); m.style.top = rc.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.right - m.offsetWidth)) + 'px';
+  const rc = btn.getBoundingClientRect(); m.style.top = below(m, rc); m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.right - m.offsetWidth)) + 'px';
   const ta = m.querySelector('textarea'); ta.focus();
   m.onclick = ev => { if (ev.target.closest('[data-x]')) m.hidden = true; else if (ev.target.closest('[data-go]')) { m.hidden = true; runReview(ta.value.trim()); } };
 }
@@ -283,7 +285,7 @@ function takeFix(k) {
 function fixMenu(btn, k) {
   const f = cur.tr.review.fixes[k]; if (!f) return; const at = T.locateFix(cur.tr.words, f);
   const m = $('#menu'); m.innerHTML = `<div class="lbl">Heard “${esc(f.heard)}” · probably “${esc(f.likely)}”</div><div class="why">${esc(f.why)}</div><div class="sugrow"><button class="btn sm" data-hear>▶ Hear it</button><span class="sp"></span><button class="btn sm" data-keep>Keep as heard</button><button class="btn sm primary" data-take>Accept</button></div>`; m.hidden = false;
-  const rc = btn.getBoundingClientRect(); m.style.top = rc.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.left)) + 'px';
+  const rc = btn.getBoundingClientRect(); m.style.top = below(m, rc); m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.left)) + 'px';
   m.onclick = async ev => {
     if (ev.target.closest('[data-hear]')) { if (at >= 0 && cur.tr.words[at].s != null) playAt(Math.max(0, cur.tr.words[at].s - 1.5)); return; }
     const take = ev.target.closest('[data-take]'), keep = ev.target.closest('[data-keep]'); if (!take && !keep) return; m.hidden = true; remember();
@@ -324,7 +326,7 @@ $('#exportBtn').addEventListener('click', e => {
 function dl(text, name) { const a = document.createElement('a'), u = URL.createObjectURL(new Blob([text], { type: 'text/plain' })); a.href = u; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(u), 60e3); }
 function menu(anchor, items, opt = {}) {
   const m = $('#menu'); m.innerHTML = items.map(([l, f], i) => f ? `<button data-m="${i}">${esc(l)}</button>` : `<div class="lbl">${esc(l)}</div>`).join(''); m.hidden = false;
-  const r = anchor.getBoundingClientRect(); m.style.top = r.bottom + 6 + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, opt.left ? r.left : r.right - m.offsetWidth)) + 'px';
+  const r = anchor.getBoundingClientRect(); m.style.top = below(m, r); m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, opt.left ? r.left : r.right - m.offsetWidth)) + 'px';
   m.onclick = ev => { const b = ev.target.closest('[data-m]'); if (!b) return; m.hidden = true; items[+b.dataset.m][1](); };
   setTimeout(() => document.addEventListener('pointerdown', function off(ev) { if (!m.contains(ev.target)) { m.hidden = true; document.removeEventListener('pointerdown', off); } }), 0);
 }
@@ -437,6 +439,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === '?') { e.preventDefault(); keysHelp(); }
 });
 document.addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.closest('.edit')) b.blur(); });
+addEventListener('resize', () => { $('#menu').hidden = true; }); // a pop-up placed for the old window size would hang off the new one
 addEventListener('beforeunload', e => { if (job) { e.preventDefault(); e.returnValue = ''; } });
 
 /* ---------- start ---------- */
