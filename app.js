@@ -149,6 +149,7 @@ function renderPlayer() {
   $('#now').style.setProperty('--nh', t ? hueOf(t.album || t.title) : 270);
   if (t && !isFinite(audio.duration)) $$('.js-dur').forEach(e => e.textContent = fmt(t.duration));
   renderTransport(); renderUpNext();
+  if (window.MixtapeLyrics) MixtapeLyrics.onTrack();
 }
 function renderUpNext() {
   const rest = S.queue.slice(S.qi + 1);
@@ -555,6 +556,7 @@ function trackMenu(id, anchor) {
     { label: 'Add to playlist…', act: () => openMenu(anchor, [{ lbl: 'Add to playlist' }, ...lists.map(l => ({ label: l.name, act: () => addToList(l, id) })), ...(lists.length ? [{ sep: 1 }] : []), { label: 'New playlist…', act: () => newList(id) }]) }];
   const l = curList(); if (l && l.ids.includes(id)) items.push({ label: `Remove from ${l.name}`, act: () => removeFromList(l, id) });
   if (matchMedia('(min-width: 900px) and (pointer: fine)').matches) items.push({ label: 'Open in Studio', act: () => { location.href = 'studio.html?add=' + encodeURIComponent(id); } });
+  items.push({ label: t.lyrics && t.lyrics.lines && t.lyrics.lines.length ? 'Edit lyrics' : 'Add lyrics', act: () => window.MixtapeLyrics && MixtapeLyrics.edit(id) });
   items.push({ label: 'Open in Cutter', act: () => { location.href = 'cutter/?song=' + encodeURIComponent(id); } });
   items.push({ sep: 1 }, { label: 'Remove from library', danger: 1, act: () => deleteTrack(id) });
   openMenu(anchor, items);
@@ -713,4 +715,6 @@ let installEvt = null; const installBtn = $('#installBtn');
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; installBtn.hidden = false; });
 installBtn.addEventListener('click', async () => { if (!installEvt) return; installEvt.prompt(); try { await installEvt.userChoice; } catch (e) {} installEvt = null; installBtn.hidden = true; });
 window.addEventListener('appinstalled', () => { installBtn.hidden = true; toast('Installed. Open Mixtape from your home screen or app list.', 4000); });
+/* what the lyrics (lyrics.js) may use: the library, the audio, saving, and the player's own messages and menus */
+window.MixtapeApp = { tracks, audio, get curId() { return curId; }, loadTrack, saveTrack, toast, ask, openMenu, download, esc, fmt };
 })();

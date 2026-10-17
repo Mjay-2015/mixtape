@@ -1,10 +1,12 @@
 // Mixtape offline cache. Bump VERSION whenever app files change so installed copies pick up the new version.
-const VERSION = 'mixtape-v50';
+const VERSION = 'mixtape-v51';
 const CORE = ['./', './index.html', './app.js', './studio.html', './studio.js', './dsp-worker.js', './dsp-shared.js', './midi.js', './long-mp3.js', './media-cut.js', './vendor/mediabunny/mediabunny.min.mjs', './lofi-worklet.js', './vendor/tone/Tone.js', './manifest.webmanifest', './icon-192.png', './icon-512.png',
-  './cutter/', './cutter/index.html', './cutter/app.js', './cutter/engine.js', './cutter/model.js', './cutter/h264.js', './cutter/style.css', './cutter/host-mixtape.js'];
+  './cutter/', './cutter/index.html', './cutter/app.js', './cutter/engine.js', './cutter/model.js', './cutter/h264.js', './cutter/style.css', './cutter/host-mixtape.js',
+  './lyrics-core.js', './lyrics.js', './lyrics.css', './lyrics-worker.js'];
 // The AI stem splitter is large and changes rarely, so it lives in its own caches that app updates don't clear.
 const STEMS_RUNTIME = 'mixtape-stems-runtime-v1';   // ONNX Runtime + splitter code, saved on first use
-const KEEP = k => k === VERSION || k.startsWith('mixtape-stems-') || k.startsWith('mixtape-orch-');
+const LYRICS_RUNTIME = 'mixtape-lyrics-runtime-v1'; // the lyrics recogniser's runtime (transformers.js + ONNX Runtime), saved on first use
+const KEEP = k => k === VERSION || k.startsWith('mixtape-stems-') || k.startsWith('mixtape-orch-') || k.startsWith('mixtape-lyrics-');
 const ORCH_CACHE = 'mixtape-orch-v1'; // the orchestra's recordings, saved on first use
 
 self.addEventListener('install', e => {
@@ -28,6 +30,12 @@ self.addEventListener('fetch', e => {
     }));
     return;
   }
+  // Lyrics recogniser runtime (transformers.js and its ONNX Runtime, at pinned versions from jsDelivr): saved on first use
+  // so lyrics can be timed offline later; the Whisper model itself is cached by transformers.js
+  if (url.hostname === 'cdn.jsdelivr.net' && /^\/npm\/(@huggingface\/transformers@4\.3\.1|onnxruntime-web@)/.test(url.pathname)) {
+    e.respondWith(caches.open(LYRICS_RUNTIME).then(async c => { const hit = await c.match(req); if (hit) return hit; const r = await fetch(req); if (r.ok) c.put(req, r.clone()); return r; }));
+    return;
+  }
   if (url.origin !== location.origin) return;
   const path = url.pathname;
   // Orchestra recordings: saved the first time each one is used, so the orchestra also works offline.
@@ -47,7 +55,7 @@ self.addEventListener('fetch', e => {
   }
   // Pages: try the network for updates, fall back to the saved copy of that same page offline.
   if (req.mode === 'navigate') {
-    const key = path.endsWith('studio.html') ? './studio.html' : './index.html';
+    const key = path.endsWith('studio.html') ? './studio.html' : path.includes('/cutter/') ? './cutter/index.html' : './index.html'; // offline, each page falls back to itself
     e.respondWith(fetch(req).then(r => { if (r.ok) { const copy = r.clone(); caches.open(VERSION).then(c => c.put(key, copy)); } return r; })
       .catch(() => caches.match(key)));
     return;
