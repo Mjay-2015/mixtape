@@ -1,0 +1,30 @@
+# Builds the Cutter's decoder for sound formats no browser reads (WMA, AMR, AC3, AIFF): a custom libav.js variant
+# (LGPL-2.1, ffmpeg's own decoders compiled to WebAssembly). Runs only on the build-libav branch; the result is
+# downloaded as an artifact and vendored into vendor/libav/ with its sources and licence.
+name: libav.js cutter-oldaudio
+on:
+  push:
+    branches: [build-libav]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: '24' }
+      - uses: mymindstorm/setup-emsdk@v14
+        with: { version: 6.0.5, actions-cache-folder: cache-emsdk }
+      - run: sudo apt-get install -y meson
+      - name: libav.js v6.10.9.0
+        run: git clone --depth 1 --branch v6.10.9.0 https://github.com/Yahweasel/libav.js.git && cd libav.js && npm ci --no-audit --no-fund
+      - name: the variant
+        working-directory: libav.js/configs
+        run: |
+          ./mkconfig.js cutter-oldaudio '["avformat","avcodec","swresample","demuxer-asf","decoder-wmav1","decoder-wmav2","decoder-wmapro","decoder-wmalossless","decoder-wmavoice","demuxer-amr","decoder-amrnb","decoder-amrwb","demuxer-ac3","demuxer-eac3","parser-ac3","decoder-ac3","decoder-eac3","demuxer-aiff","decoder-pcm_s16be","decoder-pcm_s24be","decoder-pcm_s32be","decoder-pcm_f32be","decoder-pcm_s8"]'
+      - name: build
+        working-directory: libav.js
+        run: make -j4 build-cutter-oldaudio && ls -la dist
+      - name: sources (LGPL: shipped alongside)
+        working-directory: libav.js
+        run: mkdir -p out && cp dist/libav-*cutter-oldaudio* out/ && cp -r dist/sources out/ 2>/dev/null || true; cp configs/configs/cutter-oldaudio/*.txt out/ 2>/dev/null || true; ls -la out out/sources 2>/dev/null | head -60
+      - uses: actions/upload-artifact@v4
+        with: { name: libav-cutter-oldaudio, path: libav.js/out }
