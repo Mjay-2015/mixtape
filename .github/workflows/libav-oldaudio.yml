@@ -23,7 +23,7 @@ jobs:
       - name: build
         working-directory: libav.js
         run: make -j4 build-cutter-oldaudio && ls -la dist
-      - name: sources (LGPL: shipped alongside)
+      - name: 'sources, shipped alongside (LGPL)'
         working-directory: libav.js
         run: mkdir -p out && cp dist/libav-*cutter-oldaudio* out/ && cp -r dist/sources out/ 2>/dev/null || true; cp configs/configs/cutter-oldaudio/*.txt out/ 2>/dev/null || true; ls -la out out/sources 2>/dev/null | head -60
       - uses: actions/upload-artifact@v4
