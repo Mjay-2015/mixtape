@@ -19,7 +19,7 @@ jobs:
       - name: the variant
         working-directory: libav.js/configs
         run: |
-          ./mkconfig.js cutter-oldaudio '["avformat","avcodec","swresample","demuxer-asf","decoder-wmav1","decoder-wmav2","decoder-wmapro","decoder-wmalossless","decoder-wmavoice","demuxer-amr","decoder-amrnb","decoder-amrwb","demuxer-ac3","demuxer-eac3","parser-ac3","decoder-ac3","decoder-eac3","demuxer-aiff","decoder-pcm_s16be","decoder-pcm_s24be","decoder-pcm_s32be","decoder-pcm_f32be","decoder-pcm_s8"]'
+          ./mkconfig.js cutter-oldaudio '["avformat","avcodec","swresample","demuxer-asf","decoder-wmav1","decoder-wmav2","decoder-wmapro","decoder-wmalossless","decoder-wmavoice","demuxer-amr","parser-amr","decoder-amrnb","decoder-amrwb","demuxer-ac3","demuxer-eac3","parser-ac3","decoder-ac3","decoder-eac3","demuxer-aiff","decoder-pcm_s16be","decoder-pcm_s24be","decoder-pcm_s32be","decoder-pcm_f32be","decoder-pcm_s8"]'
       - name: build
         working-directory: libav.js
         run: make -j4 build-cutter-oldaudio && ls -la dist
