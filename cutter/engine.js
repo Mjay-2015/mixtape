@@ -20,7 +20,7 @@ export { M };
 const EPS = 1e-6;
 const PCM = new Set(M.PCM_AUDIO_CODECS);
 export const isLossless = c => PCM.has(c) || c === 'flac' || c === 'alac';
-export const isMediaFile = f => /^(video|audio)\//.test(f.type || '') || /\.(mp4|m4v|mov|webm|mkv|mka|avi|ts|mts|m2ts|3gp|mp3|m4a|aac|wav|aif|aiff|flac|ogg|oga|opus|weba)$/i.test(f.name || '');
+export const isMediaFile = f => /^(video|audio)\//.test(f.type || '') || /\.(mp4|m4v|mov|webm|mkv|mka|avi|ts|mts|m2ts|3gp|mp3|m4a|aac|wav|aif|aiff|flac|ogg|oga|opus|weba|wma|wmv|asf|amr|ac3)$/i.test(f.name || '');
 
 /* ---------- formats ---------- */
 function familyOf(fmt) {
@@ -82,7 +82,12 @@ export class Media {
   constructor(file) { this.file = file; this.name = file.name.replace(/\.[^.]+$/, ''); this.id = `${file.name}|${file.size}|${file.lastModified}`; }
   async open() {
     this.input = new M.Input({ source: new M.BlobSource(this.file), formats: M.ALL_FORMATS });
-    let fmt; try { fmt = await this.input.getFormat(); } catch (e) { throw new Error(`“${this.file.name}” is not a sound or video file this browser can read.`); }
+    let fmt; try { fmt = await this.input.getFormat(); } catch (e) {
+      // Microsoft's and old phone formats no browser can decode: say what it is and what to do, not just "can't"
+      const ext = (this.file.name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase(), known = { wma: 'WMA (Windows Media Audio)', wmv: 'WMV (Windows Media Video)', asf: 'Windows Media', amr: 'AMR (phone voice notes)', ac3: 'AC3 (Dolby Digital)' }[ext];
+      if (known) throw new Error(`No browser can read ${known} yet. Drag “${this.file.name}” onto “Convert for Cutter” (in PROJECTS\\tools): it makes a copy the Cutter opens, on this computer, losing nothing.`);
+      throw new Error(`“${this.file.name}” is not a sound or video file this browser can read.`);
+    }
     this.family = familyOf(fmt); this.formatName = fmt.name;
     this.v = await this.input.getPrimaryVideoTrack(); this.a = await this.input.getPrimaryAudioTrack();
     // a still picture inside a sound file (cover art) is not a video to cut

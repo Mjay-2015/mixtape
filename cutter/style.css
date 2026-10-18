@@ -181,3 +181,7 @@ select { background: var(--panel-2); border: 1px solid var(--line-2); border-rad
 .librow .t small { color: var(--faint); margin-left: 8px; font-size: 12px; }
 .librow .d { font: 11.5px var(--f-mono); color: var(--faint); }
 .drop button + button { margin-left: 8px; }
+
+/* files from last time that the browser wants permission to read again */
+.reopen { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); z-index: 31; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-radius: 10px; background: var(--panel, #10231A); border: 1px solid var(--accent, #F26B3A); box-shadow: 0 10px 34px rgba(0, 0, 0, .45); max-width: calc(100vw - 32px); }
+.reopen span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

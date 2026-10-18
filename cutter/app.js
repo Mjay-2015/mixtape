@@ -60,7 +60,7 @@ async function openFiles(list, { show = false } = {}) {
     const media = new Media(f); if (files.some(x => x.id === media.id)) continue;
     const entry = { id: media.id, media, state: 'opening', parts: [], undo: [], redo: [] }; files.push(entry); renderFiles();
     try {
-      await media.open(); entry.state = 'ok'; entry.parts = (LS.get('cutter:parts:' + media.id, []) || []).map(p => C.clampPart(p, media.duration, media.fps));
+      await media.open(); entry.state = 'ok'; remember(entry); entry.parts = (LS.get('cutter:parts:' + media.id, []) || []).map(p => C.clampPart(p, media.duration, media.fps));
       media.keyframes().then(k => { entry.keys = k; if (entry === cur) dirty(); }).catch(() => {});
       if (show || !cur || cur.state !== 'ok') select(entry); else renderFiles();
       loadPeaks(entry);
@@ -76,7 +76,7 @@ function renderFiles() {
   el.innerHTML = files.map((f, i) => `<div class="fi${f === cur ? ' on' : ''}" data-i="${i}" title="${esc(f.media.file.name)}"><span class="k">${f.state === 'ok' ? (f.media.v ? '▣' : '♪') : f.state === 'error' ? '!' : '…'}</span><span class="n">${esc(f.media.file.name)}</span><button class="x" data-x="${i}" title="Close this file" aria-label="Close ${esc(f.media.file.name)}">✕</button>${f.state === 'ok' ? `<span class="d">${C.fmtTime(f.media.duration, f.media.fps)}</span>` : f.state === 'error' ? `<span class="err">${esc(f.error)}</span>` : '<span class="d">opening…</span>'}</div>`).join('');
 }
 $('#fileList').addEventListener('click', e => {
-  const x = e.target.closest('[data-x]'); if (x) { const i = +x.dataset.x, f = files[i]; files.splice(i, 1); if (f === cur) { player.stop(); cur = null; select(files.find(z => z.state === 'ok') || null); } renderFiles(); return; }
+  const x = e.target.closest('[data-x]'); if (x) { const i = +x.dataset.x, f = files[i]; files.splice(i, 1); forget(f.id); if (f === cur) { player.stop(); cur = null; select(files.find(z => z.state === 'ok') || null); } renderFiles(); return; }
   const row = e.target.closest('.fi'); if (row) { const f = files[+row.dataset.i]; if (f.state === 'ok') select(f); }
 });
 function select(entry) {
@@ -90,7 +90,7 @@ function select(entry) {
   if (v) { const w = Math.min(1280, v.w), h = Math.round(w * v.h / v.w); mon.width = w; mon.height = h; const ctx = mon.getContext('2d'); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h); if (!v.canDecode) { ctx.fillStyle = '#AFC0B5'; ctx.font = '22px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(`This browser cannot show ${v.codec.toUpperCase()} pictures. Untouched cuts still work.`, w / 2, h / 2); } }
   else { $('#scName').textContent = m.name; $('#scMeta').textContent = `${a.codec.toUpperCase()} · ${(a.sr / 1000).toFixed(1)} kHz · ${C.fmtTime(m.duration)}`; }
   $('#tl').dataset.h = v ? 168 : 150; sizeCanvases();
-  updateExportBar(); renderParts(); movePH(0); dirty(); drawOverview();
+  updateExportBar(); renderParts(); movePH(0); dirty(); drawOverview(); saveState();
 }
 
 /* ---------- parts ---------- */
@@ -169,7 +169,9 @@ async function drawMonitor() {
   if (!cur || !cur.media.v || !cur.media.video.canDecode || player.playing) return; const my = ++monReq, t = ph;
   const f = await cur.media.frame(t, mon.width).catch(() => null); if (my !== monReq || !f) return; mctx.drawImage(f.canvas, 0, 0, mon.width, mon.height);
 }
-function movePH(t) { if (!cur) return; ph = Math.max(0, Math.min(dur(), C.snapFrame(t, fps()))); phBox.set(ph); if (player.playing) playFrom(ph); else drawMonitor(); dirty(); }
+function movePH(t) { if (!cur) return; ph = Math.max(0, Math.min(dur(), C.snapFrame(t, fps()))); phBox.set(ph); if (player.playing) playFrom(ph); else drawMonitor(); dirty(); saveSoon(); }
+// kept a moment after the playhead (or the zoom) settles: a save started as the page closes does not finish in time
+let saveT = 0; function saveSoon() { clearTimeout(saveT); saveT = setTimeout(saveState, 400); }
 function revealT(t) { if (t < view.t0 || t > view.t1) { const span = view.t1 - view.t0; setView(t - span / 2, t + span / 2); } }
 function playFrom(t, to) { if (!cur) return; player.play(cur.media, t >= dur() - step() ? 0 : t, to); $('#tPlay').textContent = '❚❚ Pause'; }
 function playRange(a, b) { if (!cur) return; ph = a; player.play(cur.media, a, b); $('#tPlay').textContent = '❚❚ Pause'; }
@@ -191,7 +193,7 @@ const minSpan = () => cur ? Math.min(dur(), cur.media.v ? Math.max(0.5, 30 * ste
 function setView(a, b, fromSlider = false) {
   if (!cur) return; const D = dur(); let span = Math.max(minSpan(), Math.min(D, b - a)); a = Math.max(0, Math.min(D - span, a)); view = { t0: a, t1: a + span };
   if (!fromSlider) { const z = D <= minSpan() ? 0 : Math.log(D / span) / Math.log(D / minSpan()); $('#zoom').value = Math.round(z * 1000); }
-  dirty(); drawOverview(); wantDetail();
+  dirty(); drawOverview(); wantDetail(); saveSoon();
 }
 function zoomAt(t, factor) { const a = t - (t - view.t0) * factor, b = t + (view.t1 - t) * factor; setView(a, b); }
 $('#zoom').addEventListener('input', e => { if (!cur) return; const D = dur(), z = +e.target.value / 1000, span = D / Math.pow(D / minSpan(), z), c = player.playing || (ph >= view.t0 && ph <= view.t1) ? ph : (view.t0 + view.t1) / 2; setView(c - span / 2, c + span / 2, true); });
@@ -528,14 +530,27 @@ document.addEventListener('keydown', e => {
 document.addEventListener('keyup', e => { if (e.key === ' ' && e.target.tagName === 'BUTTON') e.preventDefault(); });
 
 /* ---------- opening: button, drop, launch from the OS ---------- */
-for (const b of ['#openBtn', '#openBtn2']) $(b).addEventListener('click', () => $('#fileIn').click());
+// Chrome and Edge: the system picker gives a handle, so the file can be found again after you leave (nothing is copied)
+for (const b of ['#openBtn', '#openBtn2']) $(b).addEventListener('click', async () => {
+  if (!window.showOpenFilePicker) return $('#fileIn').click();
+  let hs; try { hs = await showOpenFilePicker({ multiple: true, id: 'cutter-open' }); } catch (e) { if (e.name !== 'AbortError') $('#fileIn').click(); return; }
+  openFiles(await Promise.all(hs.map(async h => withSrc(await h.getFile(), { handle: h }))));
+});
 $('#fileIn').addEventListener('change', e => { openFiles(e.target.files); e.target.value = ''; });
 let dragN = 0;
 addEventListener('dragenter', e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { dragN++; $('#dropveil').hidden = false; } });
 addEventListener('dragleave', () => { dragN = Math.max(0, dragN - 1); if (!dragN) $('#dropveil').hidden = true; });
 addEventListener('dragover', e => e.preventDefault());
-addEventListener('drop', e => { e.preventDefault(); dragN = 0; $('#dropveil').hidden = true; if (e.dataTransfer?.files?.length) openFiles(e.dataTransfer.files); });
-if ('launchQueue' in window) launchQueue.setConsumer(async p => { const fs = await Promise.all((p.files || []).map(h => h.getFile())); if (fs.length) openFiles(fs); });
+addEventListener('drop', async e => {
+  e.preventDefault(); dragN = 0; $('#dropveil').hidden = true; const dt = e.dataTransfer; if (!dt?.files?.length) return;
+  // the handles must be asked for during the drop itself; a dropped file with one can be found again later
+  const items = [...(dt.items || [])].filter(i => i.kind === 'file'), plain = [...dt.files];
+  const hs = items.length === plain.length && items[0]?.getAsFileSystemHandle ? items.map(i => i.getAsFileSystemHandle().catch(() => null)) : null;
+  if (!hs) return openFiles(plain);
+  const got = await Promise.all(hs);
+  openFiles(await Promise.all(got.map(async (h, k) => (h && h.kind === 'file' ? withSrc(await h.getFile(), { handle: h }) : plain[k]))));
+});
+if ('launchQueue' in window) launchQueue.setConsumer(async p => { const fs = await Promise.all((p.files || []).map(async h => withSrc(await h.getFile(), { handle: h }))); if (fs.length) openFiles(fs); });
 addEventListener('beforeunload', e => { if (exporting) { e.preventDefault(); e.returnValue = ''; } });
 
 /* ---------- inside another app (Mixtape): its library in, finished cuts back out ---------- */
@@ -545,7 +560,7 @@ if (host) {
   const lb = document.createElement('button'); lb.id = 'libBtn'; lb.textContent = 'From my library'; lb.title = `Open a song or video from your ${host.name} library`; $('#openBtn').after(lb); lb.addEventListener('click', openLibrary);
   const lb2 = lb.cloneNode(true); lb2.id = 'libBtn2'; $('#openBtn2').after(lb2); lb2.addEventListener('click', openLibrary);
   const id = new URLSearchParams(location.search).get('song');
-  if (id) host.getSong(id).then(f => { if (f) openFiles([f], { show: true }); else toast('That song is no longer in the library.'); }).catch(e => toast(e.message || String(e), 5000));
+  if (id) host.getSong(id).then(f => { if (f) openFiles([withSrc(f, { lib: id })], { show: true }); else toast('That song is no longer in the library.'); }).catch(e => toast(e.message || String(e), 5000));
 }
 async function openLibrary() {
   let songs; try { songs = await host.listSongs(); } catch (e) { return toast(`Could not read the ${host.name} library: ${e.message || e}`, 6000); }
@@ -554,12 +569,68 @@ async function openLibrary() {
   const draw = q => { q = (q || '').toLowerCase(); sh.querySelector('#libL').innerHTML = songs.filter(x => !q || `${x.title} ${x.artist} ${x.album}`.toLowerCase().includes(q)).slice(0, 300).map(x => `<button class="librow" data-id="${esc(x.id)}"><span class="k">${x.video ? '▣' : '♪'}</span><span class="t">${esc(x.title)}${x.artist ? `<small>${esc(x.artist)}</small>` : ''}</span><span class="d">${x.duration ? C.fmtTime(x.duration) : ''}</span></button>`).join('') || '<p class="hint">Nothing matches.</p>'; };
   draw(''); const q = sh.querySelector('#libQ'); q.addEventListener('input', () => draw(q.value)); setTimeout(() => q.focus(), 0);
   sh.querySelector('#libClose').addEventListener('click', closeSheet);
-  sh.querySelector('#libL').addEventListener('click', async e => { const b = e.target.closest('[data-id]'); if (!b) return; const f = await host.getSong(b.dataset.id); closeSheet(); if (f) openFiles([f], { show: true }); });
+  sh.querySelector('#libL').addEventListener('click', async e => { const b = e.target.closest('[data-id]'); if (!b) return; const f = await host.getSong(b.dataset.id); closeSheet(); if (f) openFiles([withSrc(f, { lib: b.dataset.id })], { show: true }); });
+}
+
+/* ---------- your session: the open files and where you were, kept when you leave and come back ----------
+   Parts were always kept per file; this keeps the list of open files, which one you were on, the playhead and the zoom.
+   Each file is remembered by how it can be found again: a handle to it on your disk (picked or dropped in Chrome or
+   Edge; nothing is copied), the library song it came from, or, in other browsers, a copy kept on this computer.
+   Nothing leaves the computer. */
+const SESS_COPY_MAX = 1.5e9; // bigger files opened without a handle are listed, and asked for again
+function withSrc(f, src) { try { Object.defineProperty(f, '__src', { value: src }); } catch (e) {} return f; }
+const sessDB = () => new Promise((res, rej) => { const r = indexedDB.open('cutter-session', 1); r.onupgradeneeded = () => { const d = r.result; d.createObjectStore('files', { keyPath: 'id' }); d.createObjectStore('state', { keyPath: 'k' }); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+async function sessTx(store, mode, fn) { const d = await sessDB(); return new Promise((res, rej) => { let out; const t = d.transaction(store, mode), r = fn(t.objectStore(store)); if (r) r.onsuccess = () => { out = r.result; }; t.oncomplete = () => { d.close(); res(out); }; t.onerror = () => { d.close(); rej(t.error); }; t.onabort = () => { d.close(); rej(t.error); }; }); }
+let restoring = false;
+async function remember(entry) {
+  if (restoring) return; const f = entry.media.file, src = f.__src || {};
+  const rec = { id: entry.id, name: f.name, size: f.size, at: Date.now() };
+  if (src.handle) rec.handle = src.handle; else if (src.lib) rec.lib = src.lib; else if (f.size <= SESS_COPY_MAX) rec.file = f; else rec.lost = true;
+  try { await sessTx('files', 'readwrite', o => o.put(rec)); }
+  catch (e) { if (rec.file) { delete rec.file; rec.lost = true; await sessTx('files', 'readwrite', o => o.put(rec)).catch(() => {}); } } // no room for a copy: listed, asked for again
+}
+function forget(id) { sessTx('files', 'readwrite', o => o.delete(id)).catch(() => {}); saveState(); }
+function saveState() { if (restoring) return; sessTx('state', 'readwrite', o => o.put({ k: 'state', cur: cur ? cur.id : null, ph, t0: view.t0, t1: view.t1 })).catch(() => {}); }
+addEventListener('pagehide', saveState);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveState(); });
+function goBack(st) { const back = st && files.find(f => f.id === st.cur && f.state === 'ok'); if (back) { select(back); if (st.t1 > st.t0) setView(st.t0, st.t1); movePH(st.ph || 0); } }
+async function restoreSession() {
+  let recs, st; try { [recs, st] = await Promise.all([sessTx('files', 'readonly', o => o.getAll()), sessTx('state', 'readonly', o => o.get('state'))]); } catch (e) { return; }
+  if (!recs || !recs.length) return; recs.sort((a, b) => a.at - b.at);
+  const ready = [], ask = [], lost = [];
+  for (const r of recs) {
+    try {
+      if (r.handle) { if ((await r.handle.queryPermission({ mode: 'read' })) === 'granted') ready.push(withSrc(await r.handle.getFile(), { handle: r.handle })); else ask.push(r); }
+      else if (r.lib && host) { const f = await host.getSong(r.lib); if (f) ready.push(withSrc(f, { lib: r.lib })); else lost.push(r); }
+      else if (r.file) ready.push(r.file);
+      else lost.push(r);
+    } catch (e) { lost.push(r); }
+  }
+  restoring = true;
+  try { if (ready.length) await openFiles(ready); } finally { restoring = false; }
+  goBack(st);
+  if (ask.length) offerReopen(ask, st);
+  if (lost.length) toast(`${lost.length === 1 ? `“${lost[0].name}” was` : `${lost.length} files were`} too big to keep a copy of: open ${lost.length === 1 ? 'it' : 'them'} again and the parts come back.`, 7000);
+  else if (ready.length && !ask.length) toast(`Back where you were: ${ready.length} file${ready.length > 1 ? 's' : ''}.`);
+}
+/* the browser asks once before a page may read a file again (Chrome then offers "allow on every visit") */
+function offerReopen(recs, st) {
+  const bar = document.createElement('div'); bar.className = 'reopen';
+  bar.innerHTML = `<span>${recs.length === 1 ? `“${esc(recs[0].name)}”` : `${recs.length} files`} from last time</span><button class="primary" data-go>Reopen ${recs.length === 1 ? 'it' : 'them'}</button><button data-no title="Forget them" aria-label="Forget them">✕</button>`;
+  document.body.appendChild(bar);
+  bar.querySelector('[data-no]').addEventListener('click', () => { recs.forEach(r => forget(r.id)); bar.remove(); });
+  bar.querySelector('[data-go]').addEventListener('click', async () => {
+    const got = [];
+    for (const r of recs) { try { if ((await r.handle.requestPermission({ mode: 'read' })) === 'granted') got.push(withSrc(await r.handle.getFile(), { handle: r.handle })); } catch (e) {} }
+    bar.remove(); if (!got.length) return toast('The browser was not allowed to read them. Open them again with Open files.');
+    restoring = true; try { await openFiles(got); } finally { restoring = false; }
+    goBack(st);
+  });
 }
 
 /* ---------- start ---------- */
 writableTargets().then(t => { targets = t; updateExportBar(); }).catch(() => {});
-updateExportBar(); renderParts(); sizeCanvases();
+updateExportBar(); renderParts(); sizeCanvases(); restoreSession();
 if ('serviceWorker' in navigator && !host && !document.querySelector('base') && location.protocol !== 'file:' && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) navigator.serviceWorker.register('sw.js').catch(() => {});
 // for tests on this computer only
-if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__cutter = { files, openFiles, get cur() { return cur; }, get ph() { return ph; }, movePH, get sel() { return sel; }, set sel(v) { sel = v; markSel(); dirty(); }, commit, C, get view() { return view; }, setView, S };
+if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__cutter = { files, openFiles, withSrc, get cur() { return cur; }, get ph() { return ph; }, movePH, get sel() { return sel; }, set sel(v) { sel = v; markSel(); dirty(); }, commit, C, get view() { return view; }, setView, S };
