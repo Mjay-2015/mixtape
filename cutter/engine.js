@@ -83,9 +83,10 @@ export class Media {
   async open() {
     this.input = new M.Input({ source: new M.BlobSource(this.file), formats: M.ALL_FORMATS });
     let fmt; try { fmt = await this.input.getFormat(); } catch (e) {
-      // Microsoft's and old phone formats no browser can decode: say what it is and what to do, not just "can't"
-      const ext = (this.file.name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase(), known = { wma: 'WMA (Windows Media Audio)', wmv: 'WMV (Windows Media Video)', asf: 'Windows Media', amr: 'AMR (phone voice notes)', ac3: 'AC3 (Dolby Digital)' }[ext];
-      if (known) throw new Error(`No browser can read ${known} yet. Drag “${this.file.name}” onto “Convert for Cutter” (in PROJECTS\\tools): it makes a copy the Cutter opens, on this computer, losing nothing.`);
+      // Windows Media video no browser decodes: say what it is and what to do, not just "can't". (WMA, AMR, AC3 and AIFF
+      // sound never get here: olddecode.js unpacks them first.)
+      const ext = (this.file.name.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase(), known = { wmv: 'WMV (Windows Media Video)', asf: 'Windows Media (ASF)' }[ext];
+      if (known) throw new Error(`The Cutter cannot open ${known} video yet. Drag “${this.file.name}” onto “Convert for Cutter” (in PROJECTS\\tools): it makes a copy the Cutter opens, on this computer.`);
       throw new Error(`“${this.file.name}” is not a sound or video file this browser can read.`);
     }
     this.family = familyOf(fmt); this.formatName = fmt.name;

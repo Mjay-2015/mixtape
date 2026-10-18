@@ -2,6 +2,7 @@
    room: files, parts, the timeline, playback, splitting and export. */
 import * as C from './model.js';
 import { Media, Player, writeCut, writableTargets, sameTracks, isMediaFile } from './engine.js';
+import { isOldAudio, decodeOld } from './olddecode.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -57,9 +58,15 @@ function timeBox(inp, { onValue, getFps = fps, onEnter }) {
 async function openFiles(list, { show = false } = {}) {
   const add = [...list].filter(f => isMediaFile(f) || !f.type); if (!add.length) return toast('Those are not sound or video files.');
   for (const f of add) {
-    const media = new Media(f); if (files.some(x => x.id === media.id)) continue;
+    let media = new Media(f); if (files.some(x => x.id === media.id || x.origId === media.id)) continue;
     const entry = { id: media.id, media, state: 'opening', parts: [], undo: [], redo: [] }; files.push(entry); renderFiles();
     try {
+      if (isOldAudio(f)) { // WMA, AMR, AC3, AIFF: unpacked here in the browser into a WAV, then cut like anything else
+        entry.origId = media.id; toast(`Unpacking “${f.name}” here in the browser (it stays on this computer)…`, 60000);
+        const wav = await decodeOld(f, sec => { entry.note = `unpacking… ${C.fmtLength(sec)}`; renderFiles(); });
+        if (f.__src) withSrc(wav, f.__src); // found again the same way as the original
+        media = entry.media = new Media(wav); entry.id = media.id; delete entry.note; toast(wav.skipped ? `“${f.name}” unpacked, but ${wav.skipped} damaged bit${wav.skipped > 1 ? "s were" : " was"} passed over (a few milliseconds each). Cut it as usual.` : `“${f.name}” unpacked: cut it as usual.`, 6000);
+      }
       await media.open(); entry.state = 'ok'; remember(entry); entry.parts = (LS.get('cutter:parts:' + media.id, []) || []).map(p => C.clampPart(p, media.duration, media.fps));
       media.keyframes().then(k => { entry.keys = k; if (entry === cur) dirty(); }).catch(() => {});
       if (show || !cur || cur.state !== 'ok') select(entry); else renderFiles();
@@ -73,7 +80,7 @@ function loadPeaks(entry) {
 }
 function renderFiles() {
   const el = $('#fileList'); $('#filesHint').hidden = files.length > 0; $('#joinBtn').disabled = files.filter(f => f.state === 'ok').length < 2;
-  el.innerHTML = files.map((f, i) => `<div class="fi${f === cur ? ' on' : ''}" data-i="${i}" title="${esc(f.media.file.name)}"><span class="k">${f.state === 'ok' ? (f.media.v ? '▣' : '♪') : f.state === 'error' ? '!' : '…'}</span><span class="n">${esc(f.media.file.name)}</span><button class="x" data-x="${i}" title="Close this file" aria-label="Close ${esc(f.media.file.name)}">✕</button>${f.state === 'ok' ? `<span class="d">${C.fmtTime(f.media.duration, f.media.fps)}</span>` : f.state === 'error' ? `<span class="err">${esc(f.error)}</span>` : '<span class="d">opening…</span>'}</div>`).join('');
+  el.innerHTML = files.map((f, i) => `<div class="fi${f === cur ? ' on' : ''}" data-i="${i}" title="${esc(f.media.file.name)}"><span class="k">${f.state === 'ok' ? (f.media.v ? '▣' : '♪') : f.state === 'error' ? '!' : '…'}</span><span class="n">${esc(f.media.file.name)}</span><button class="x" data-x="${i}" title="Close this file" aria-label="Close ${esc(f.media.file.name)}">✕</button>${f.state === 'ok' ? `<span class="d">${C.fmtTime(f.media.duration, f.media.fps)}</span>` : f.state === 'error' ? `<span class="err">${esc(f.error)}</span>` : `<span class="d">${esc(f.note || 'opening…')}</span>`}</div>`).join('');
 }
 $('#fileList').addEventListener('click', e => {
   const x = e.target.closest('[data-x]'); if (x) { const i = +x.dataset.x, f = files[i]; files.splice(i, 1); forget(f.id); if (f === cur) { player.stop(); cur = null; select(files.find(z => z.state === 'ok') || null); } renderFiles(); return; }
@@ -344,7 +351,7 @@ function exportRangesNow() { if (!cur) return []; if (S.mode === 'keep' && !cur.
 /* ---------- where files go ---------- */
 $('#destBtn').addEventListener('click', e => {
   const r = e.currentTarget.getBoundingClientRect();
-  menu(r.left, r.top - 8, [['Downloads', () => { destDir = null; $('#destBtn').textContent = 'To Downloads'; }], ...(window.showDirectoryPicker ? [['Choose a folder…', async () => { try { destDir = await showDirectoryPicker({ id: 'cutter-out', mode: 'readwrite' }); $('#destBtn').textContent = `To “${destDir.name}”`; } catch (err) {} }]] : [])], true);
+  menu(r.left, r.top - 8, [['Downloads', () => { destDir = null; $('#destBtn').textContent = 'To Downloads'; sessTx('state', 'readwrite', o => o.delete('dest')).catch(() => {}); }], ...(window.showDirectoryPicker ? [['Choose a folder…', async () => { try { destDir = await showDirectoryPicker({ id: 'cutter-out', mode: 'readwrite' }); $('#destBtn').textContent = `To “${destDir.name}”`; sessTx('state', 'readwrite', o => o.put({ k: 'dest', handle: destDir })).catch(() => {}); } catch (err) {} }]] : [])], true);
 });
 async function saveFile(file, name) {
   if (window.__cutterSave) return window.__cutterSave(file, name); // tests on this computer only (set from the console on localhost)
@@ -595,6 +602,8 @@ addEventListener('pagehide', saveState);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveState(); });
 function goBack(st) { const back = st && files.find(f => f.id === st.cur && f.state === 'ok'); if (back) { select(back); if (st.t1 > st.t0) setView(st.t0, st.t1); movePH(st.ph || 0); } }
 async function restoreSession() {
+  // the folder you chose for cuts: kept too (the browser may ask once, at the next export, before writing into it again)
+  sessTx('state', 'readonly', o => o.get('dest')).then(d => { if (d && d.handle && !destDir) { destDir = d.handle; $('#destBtn').textContent = `To “${destDir.name}”`; } }).catch(() => {});
   let recs, st; try { [recs, st] = await Promise.all([sessTx('files', 'readonly', o => o.getAll()), sessTx('state', 'readonly', o => o.get('state'))]); } catch (e) { return; }
   if (!recs || !recs.length) return; recs.sort((a, b) => a.at - b.at);
   const ready = [], ask = [], lost = [];

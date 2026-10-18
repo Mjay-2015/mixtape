@@ -1,0 +1,25 @@
+--enable-protocol=data --enable-protocol=file
+--enable-swresample --enable-filter=aresample
+--enable-demuxer=asf
+--enable-decoder=wmav1
+--enable-decoder=wmav2
+--enable-decoder=wmapro
+--enable-decoder=wmalossless
+--enable-decoder=wmavoice
+--enable-demuxer=amr
+--enable-parser=amr
+--enable-decoder=amrnb
+--enable-decoder=amrwb
+--enable-demuxer=ac3
+--enable-demuxer=eac3
+--enable-parser=ac3
+--enable-decoder=ac3
+--enable-decoder=eac3
+--enable-demuxer=aiff
+--enable-decoder=pcm_s16be --enable-decoder=pcm_s24be
+--enable-decoder=pcm_f32be
+--enable-decoder=pcm_s16be
+--enable-decoder=pcm_s24be
+--enable-decoder=pcm_s32be
+--enable-decoder=pcm_f32be
+--enable-decoder=pcm_s8
