@@ -164,3 +164,12 @@ button,input,select,textarea{font:inherit;color:inherit}
 .menu .sugrow{display:flex;gap:6px;padding:0 10px 8px}
 .menu textarea.notes{margin:4px 10px 6px;width:300px;min-height:70px;border:1px solid var(--sug);border-radius:7px;background:var(--paper);padding:6px 8px;outline:0;resize:vertical;font:14px var(--f-ui)}
 .menu{max-height:calc(100vh - 16px);overflow:auto}
+
+/* sensitive recordings: a quiet control until it is on, then unmistakable */
+.sens{margin-top:10px;height:28px;padding:0 10px;border-radius:999px;border:1px dashed var(--faint);background:transparent;color:var(--muted);font:600 12.5px var(--f-ui);cursor:pointer}
+.sens:hover{border-color:var(--ink);color:var(--ink)}
+.sens.on{border:1px solid #9B2C2C;background:#FBE9E7;color:#7A1F1F}
+.sens.on small{font-weight:500;opacity:.85}
+@media (prefers-color-scheme:dark){.sens.on{border-color:#E08A80;background:#3A1D1A;color:#F2B8B0}}
+.libl .lock{font-size:12px}
+.aibtn:disabled{opacity:.75;cursor:not-allowed}

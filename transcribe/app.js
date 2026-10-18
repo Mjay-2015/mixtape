@@ -16,7 +16,10 @@ const below = (m, r) => { const h = m.offsetHeight; let y = r.bottom + 6; if (y 
 /* ---------- storage: Mixtape's library (read; files opened here are added), transcripts in their own database ---------- */
 function idb(name, version, upgrade) { return new Promise((res, rej) => { const r = indexedDB.open(name, version); r.onupgradeneeded = () => upgrade(r.result); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('Close other Mixtape tabs and try again.')); }); }
 const libDB = () => idb('mixtape-player', 1, d => { if (!d.objectStoreNames.contains('tracks')) d.createObjectStore('tracks', { keyPath: 'id' }); if (!d.objectStoreNames.contains('lists')) d.createObjectStore('lists', { keyPath: 'id' }); });
-const trDB = () => idb('mixtape-transcripts', 1, d => { if (!d.objectStoreNames.contains('transcripts')) d.createObjectStore('transcripts', { keyPath: 'id' }); });
+// v2 adds 'flags' (per recording: { id, sensitive }), so a recording can be marked before it has a transcript
+const trDB = () => idb('mixtape-transcripts', 2, d => { if (!d.objectStoreNames.contains('transcripts')) d.createObjectStore('transcripts', { keyPath: 'id' }); if (!d.objectStoreNames.contains('flags')) d.createObjectStore('flags', { keyPath: 'id' }); });
+const allFlags = () => tx(trDB, 'flags', 'readonly', o => o.getAll());
+const putFlag = v => tx(trDB, 'flags', 'readwrite', o => o.put(v));
 async function tx(open, store, mode, fn) { const d = await open(); return new Promise((res, rej) => { let out; const t = d.transaction(store, mode), r = fn(t.objectStore(store)); r.onsuccess = () => { out = r.result; }; t.oncomplete = () => { d.close(); res(out); }; t.onerror = () => { d.close(); rej(t.error); }; t.onabort = () => { d.close(); rej(t.error); }; }); }
 const getTrack = id => tx(libDB, 'tracks', 'readonly', o => o.get(id));
 const allTracks = () => tx(libDB, 'tracks', 'readonly', o => o.getAll());
@@ -26,19 +29,20 @@ const putTr = v => tx(trDB, 'transcripts', 'readwrite', o => o.put(v));
 const blobOf = t => t.blob || (t.buf ? new Blob([t.buf], { type: t.type || '' }) : null);
 
 /* ---------- state ---------- */
-let lib = [], trs = new Map(), cur = null; // cur: { track, blob, tr: { id, mode, words, upTo, done, duration, updated }, media }
+let lib = [], trs = new Map(), flags = new Map(), cur = null; // cur: { track, blob, tr: { id, mode, words, upTo, done, duration, updated }, media }
 let job = null, hits = [], hitAt = -1, lit = -1, editing = null;
 
 /* ---------- the library rail ---------- */
 async function loadLib() {
-  const [ts, rs] = await Promise.all([allTracks().catch(() => []), allTr().catch(() => [])]);
+  const [ts, rs, fs] = await Promise.all([allTracks().catch(() => []), allTr().catch(() => []), allFlags().catch(() => [])]);
+  flags = new Map(fs.map(f => [f.id, f]));
   lib = ts.filter(t => !t.stemOf && (t.blob || t.buf)).sort((a, b) => (b.added || 0) - (a.added || 0)); trs = new Map(rs.map(r => [r.id, r])); drawLib();
 }
 function drawLib() {
   const q = $('#libQ').value.trim().toLowerCase(), el = $('#libL');
   const rows = lib.filter(t => !q || `${t.title} ${t.artist || ''} ${t.album || ''}`.toLowerCase().includes(q)).sort((a, b) => (trs.has(b.id) - trs.has(a.id)) || 0);
   el.innerHTML = rows.slice(0, 400).map(t => { const r = trs.get(t.id); const st = !r ? '' : r.done ? `<span class="s done">${r.mode === 'text' ? 'Read-along ready' : 'Transcript ready'}</span>` : `<span class="s">${r.mode === 'text' ? 'Read-along' : 'Transcript'} done to ${T.short(r.upTo)}</span>`;
-    return `<li data-id="${esc(t.id)}" class="${cur && cur.track.id === t.id ? 'on' : ''}" tabindex="0"><span class="n">${t.kind === 'video' ? '▣ ' : ''}${esc(t.title || t.name)}</span><span class="d">${t.duration ? T.short(t.duration) : ''}</span>${st}</li>`; }).join('') || '<li class="s">Nothing in the library yet. Open a file.</li>';
+    return `<li data-id="${esc(t.id)}" class="${cur && cur.track.id === t.id ? 'on' : ''}" tabindex="0"><span class="n">${sensitive(t.id) ? '<span class="lock" title="Sensitive: stays on this computer">🔒</span> ' : ''}${t.kind === 'video' ? '▣ ' : ''}${esc(t.title || t.name)}</span><span class="d">${t.duration ? T.short(t.duration) : ''}</span>${st}</li>`; }).join('') || '<li class="s">Nothing in the library yet. Open a file.</li>';
 }
 $('#libQ').addEventListener('input', drawLib);
 $('#libL').addEventListener('click', e => { const li = e.target.closest('[data-id]'); if (li) select(li.dataset.id); });
@@ -94,6 +98,9 @@ function drawAll() {
   $('#start').hidden = !!r || !!job; $('#estimate').textContent = d ? `This recording is ${T.short(d)} long; on this computer that takes about ${T.short(d * 0.6)} to go through (you can read and click along while it works). The first time, the recogniser (about 80 MB) is downloaded once.` : '';
   $('#cont').hidden = !(r && !r.done && !job); if (r && !r.done) $('#contSt').textContent = `Done up to ${T.short(r.upTo)} of ${T.short(r.duration || d)}.`;
   $('#findBox').hidden = !r; $('#exportBtn').hidden = !r;
+  const sb = $('#sensBtn'), on = sensitive(cur.track.id); sb.hidden = false; sb.setAttribute('aria-pressed', on); sb.classList.toggle('on', on);
+  sb.innerHTML = on ? '🔒 Sensitive <small>· nothing leaves this computer</small>' : 'Mark sensitive';
+  sb.title = on ? 'Sensitive: the AI check is locked and nothing from this recording is sent anywhere, or ever used for training. Click to unmark.' : 'Mark this recording sensitive (court, client, medical, HR…): the AI check is locked so nothing from it leaves this computer, and it is never used for training.';
   drawText();
 }
 /* view settings, kept per browser: the clean script (fillers hidden), unsure words shown lighter, back up on resume */
@@ -134,7 +141,7 @@ function drawTools() {
   box.innerHTML = `<label class="sw" title="Hide ums, uhs, false starts (“we, we”) and starters (“So,”, “Well,”) for a cleaner script; exports follow this"><input type="checkbox" data-v="clean"${V.clean ? ' checked' : ''}> Clean script${fillers ? ` <small>(${fillers} hidden)</small>` : ''}</label>`
     + `<label class="sw" title="Words the recogniser was not sure of are lighter: check those first"><input type="checkbox" data-v="unsure"${V.unsure ? ' checked' : ''}> Unsure words lighter${unsure ? ` <small>(${unsure})</small>` : ''}</label>`
     + (r.mode === 'heard' ? `<span class="spks">${names.map(n => `<button class="chip" data-ren="${esc(n)}" title="Rename “${esc(n)}” everywhere" style="--c:${spkColour(n)}">${esc(n)}</button>`).join('')}${names.length ? '' : '<span class="muted">No speakers yet</span>'}</span>` : '')
-    + `<span class="sp"></span>${reviewURL() && r.mode === 'heard' ? `<button class="btn sm aibtn" data-ai title="A second reader: Claude reads the transcript for sense and suggests where the recogniser most likely misheard (names, places, sound-alikes) and where a speaker looks wrong. Nothing changes until you accept it.">✦ AI check</button>` : ''}<button class="btn sm ghost" id="keysBtn" title="Keyboard shortcuts (?)">⌨ Keys</button>`
+    + `<span class="sp"></span>${reviewURL() && r.mode === 'heard' && sensitive(cur.track.id) ? `<button class="btn sm aibtn" disabled title="This recording is marked sensitive, so the AI check (which sends the words to Claude through the studio) is locked. Unmark it at the top if you choose to.">🔒 AI check</button>` : ''}${reviewURL() && r.mode === 'heard' && !sensitive(cur.track.id) ? `<button class="btn sm aibtn" data-ai title="A second reader: Claude reads the transcript for sense and suggests where the recogniser most likely misheard (names, places, sound-alikes) and where a speaker looks wrong. Nothing changes until you accept it.">✦ AI check</button>` : ''}<button class="btn sm ghost" id="keysBtn" title="Keyboard shortcuts (?)">⌨ Keys</button>`
     + aiBar(r);
 }
 
@@ -218,6 +225,19 @@ async function undo() { if (!undoStack.length || !cur || !cur.tr) return toast('
 $('#tools').addEventListener('change', e => { const k = e.target.dataset.v; if (!k) return; V[k] = e.target.checked; saveV(); drawText(); });
 $('#tools').addEventListener('click', e => { if (aiClick(e)) return; const c = e.target.closest('[data-ren]'); if (c) return askName(c, `Rename “${c.dataset.ren}” everywhere`, c.dataset.ren, n => renameAll(c.dataset.ren, n)); if (e.target.closest('#keysBtn')) keysHelp(); });
 
+/* ---------- sensitive recordings: nothing leaves this computer ----------
+   Court, client, medical, HR… A recording marked sensitive has the AI check locked (the only thing on this page that
+   sends anything out: its words, to Claude through the studio), is marked in exports, and is never used for training.
+   Recognising, speakers, cutting and exports all run here in the browser either way. */
+const sensitive = id => !!(flags.get(id) || {}).sensitive;
+$('#sensBtn').addEventListener('click', async () => {
+  if (!cur) return; const id = cur.track.id, on = !sensitive(id);
+  if (!on && !confirm(`Unmark “${cur.track.title}” as sensitive? The AI check will then be able to send its words to Claude through the studio.`)) return;
+  const f = { id, sensitive: on, at: Date.now() }; await putFlag(f); flags.set(id, f);
+  if (cur.tr) { if (on) cur.tr.sensitive = true; else delete cur.tr.sensitive; await save(); }
+  drawLib(); drawAll(); toast(on ? 'Marked sensitive: nothing from this recording leaves this computer.' : 'No longer marked sensitive.');
+});
+
 /* ---------- the second reader: the studio's AI check ----------
    The recogniser writes what it hears; Claude (through the studio, /studio/api/transcript/review) reads it for sense and
    suggests where it most likely misheard, where a paragraph's speaker looks wrong, and who a speaker is when the talk
@@ -257,6 +277,7 @@ function aiClick(e) {
 /* before it runs: what you know helps (names, places, the topic), and what it costs */
 function askReview(btn) {
   if (job) return toast('Wait for the transcript to finish first.');
+  if (sensitive(cur.track.id)) return toast('This recording is marked sensitive: nothing from it is sent anywhere.');
   const r = cur.tr, n = r.words.length, est = Math.max(0.01, n / 1000 * 0.07);
   const m = $('#menu'); m.innerHTML = `<div class="lbl">AI check: a second reader for the recogniser</div><div class="why">Claude reads the transcript for sense and marks the words that were probably misheard, and speakers that look wrong. It never rewrites what people said, and fillers stay. You accept or keep each one.</div><textarea class="notes" placeholder="Optional: names, places or the topic, so it can spell them (e.g. “Interview with Thandi Nkosi in Soweto about the 1995 floodlights”)">${esc(r.reviewNotes || '')}</textarea><div class="why">${n.toLocaleString()} words · about $${est.toFixed(2)} · goes through the studio and is costed there.</div><div class="sugrow"><span class="sp"></span><button class="btn sm" data-x>Cancel</button><button class="btn sm primary" data-go>Check it</button></div>`; m.hidden = false;
   const rc = btn.getBoundingClientRect(); m.style.top = below(m, rc); m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.right - m.offsetWidth)) + 'px';
@@ -264,6 +285,7 @@ function askReview(btn) {
   m.onclick = ev => { if (ev.target.closest('[data-x]')) m.hidden = true; else if (ev.target.closest('[data-go]')) { m.hidden = true; runReview(ta.value.trim()); } };
 }
 async function runReview(notes) {
+  if (sensitive(cur.track.id)) return toast('This recording is marked sensitive: nothing from it is sent anywhere.'); // checked again at the moment of sending
   const r = cur.tr, stretches = T.reviewStretches(r.words), speakers = T.speakerNames(r.words); r.reviewNotes = notes;
   remember(); const rv = r.review = { fixes: [], speakers: [], names: [], running: '', found: 0 }; job = { review: true };
   let failed = '';
@@ -323,7 +345,7 @@ $('#exportBtn').addEventListener('click', e => {
     ['Plain text (.txt)', () => dl(T.toTxt(r.words.map(w => w.s == null ? { ...w, s: 0 } : w), { timestamps: false, clean: V.clean }), base + (V.clean ? ' (clean, plain)' : ' (plain)') + '.txt')],
     ['Subtitles (.srt)', () => dl(T.toSrt(timedWords, V.clean), base + '.srt')],
     ['Web subtitles (.vtt)', () => dl(T.toVtt(timedWords, V.clean), base + '.vtt')],
-    ['Words with times (.json)', () => dl(JSON.stringify({ title: cur.track.title, mode: r.mode, words: r.words }, null, 1), base + '.json')],
+    ['Words with times (.json)', () => dl(JSON.stringify({ title: cur.track.title, mode: r.mode, ...(sensitive(cur.track.id) ? { sensitive: true } : {}), words: r.words }, null, 1), base + '.json')],
     ['Start again…', null],
     ['Start again (this transcript is deleted)', async () => { if (!confirm(`Delete the ${r.mode === 'text' ? 'read-along' : 'transcript'} of “${cur.track.title}” and start again? Save it as a file first if you want to keep it.`)) return; await tx(trDB, 'transcripts', 'readwrite', o => o.delete(r.id)); trs.delete(r.id); cur.tr = null; hits = []; drawLib(); drawAll(); }]]);
 });
