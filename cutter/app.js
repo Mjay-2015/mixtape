@@ -13,9 +13,9 @@ let toastT = 0; function toast(msg, ms = 3200) { const t = $('#toast'); t.textCo
 /* ---------- state ---------- */
 const files = [];            // { id, media, state, error, parts, undo, redo, peaks, detail, keys }
 let cur = null, sel = null, ph = 0, view = { t0: 0, t1: 1 };
-const S = Object.assign({ mode: 'keep', out: 'each', prec: 'exact', tracks: 'both', fmt: 'same', showKeys: true }, LS.get('cutter:settings', {}));
+const S = Object.assign({ mode: 'keep', out: 'each', prec: 'exact', tracks: 'both', fmt: 'same', showKeys: true, loop: false, skip: 'frame' }, LS.get('cutter:settings', {}));
 let destDir = null, targets = [];
-const saveSettings = () => LS.set('cutter:settings', { mode: S.mode, out: S.out, prec: S.prec, tracks: S.tracks, fmt: S.fmt, showKeys: S.showKeys });
+const saveSettings = () => LS.set('cutter:settings', { mode: S.mode, out: S.out, prec: S.prec, tracks: S.tracks, fmt: S.fmt, showKeys: S.showKeys, loop: S.loop, skip: S.skip });
 const dur = () => cur?.media?.duration || 0, fps = () => cur?.media?.fps || null;
 const step = () => fps() ? 1 / fps() : 0.01;
 
@@ -102,7 +102,7 @@ function select(entry) {
 
 /* ---------- parts ---------- */
 const savePartsLS = () => { if (cur) LS.set('cutter:parts:' + cur.id, cur.parts.map(p => ({ id: p.id, t0: p.t0, t1: p.t1, name: p.name }))); };
-function commit(parts, msg) { if (!cur) return; cur.undo.push(cur.parts); if (cur.undo.length > 200) cur.undo.shift(); cur.redo = []; cur.parts = parts; if (sel && !parts.some(p => p.id === sel)) sel = null; savePartsLS(); renderParts(); updateExportBar(); dirty(); drawOverview(); if (msg) toast(msg); }
+function commit(parts, msg) { if (!cur) return; cur.undo.push(cur.parts); if (cur.undo.length > 200) cur.undo.shift(); cur.redo = []; cur.parts = parts; if (sel && !parts.some(p => p.id === sel)) sel = null; savePartsLS(); renderParts(); updateExportBar(); dirty(); drawOverview(); refreshLoop(); if (msg) toast(msg); }
 function undo() { if (!cur || !cur.undo.length) return toast('Nothing to undo.'); cur.redo.push(cur.parts); cur.parts = cur.undo.pop(); savePartsLS(); renderParts(); updateExportBar(); dirty(); drawOverview(); }
 function redo() { if (!cur || !cur.redo.length) return; cur.undo.push(cur.parts); cur.parts = cur.redo.pop(); savePartsLS(); renderParts(); updateExportBar(); dirty(); drawOverview(); }
 const colourOf = i => C.COLOURS[i % C.COLOURS.length];
@@ -142,7 +142,7 @@ function renderParts() {
   });
   markSel();
 }
-function markSel() { for (const [id, r] of rows) r.el.classList.toggle('sel', id === sel); }
+function markSel() { for (const [id, r] of rows) r.el.classList.toggle('sel', id === sel); refreshLoop(); }
 let liveBase = null, liveT = 0; // typing in a box: one undo step per burst of typing
 function liveEdit(next) { if (!liveBase) liveBase = cur.parts; cur.parts = next; savePartsLS(); renderParts(); updateExportBar(); dirty(); drawOverview(); clearTimeout(liveT); liveT = setTimeout(() => { if (liveBase && liveBase !== cur.parts) { cur.undo.push(liveBase); cur.redo = []; } liveBase = null; }, 900); }
 function newPartAtPlayhead() {
@@ -180,14 +180,38 @@ function movePH(t) { if (!cur) return; ph = Math.max(0, Math.min(dur(), C.snapFr
 // kept a moment after the playhead (or the zoom) settles: a save started as the page closes does not finish in time
 let saveT = 0; function saveSoon() { clearTimeout(saveT); saveT = setTimeout(saveState, 400); }
 function revealT(t) { if (t < view.t0 || t > view.t1) { const span = view.t1 - view.t0; setView(t - span / 2, t + span / 2); } }
-function playFrom(t, to) { if (!cur) return; player.play(cur.media, t >= dur() - step() ? 0 : t, to); $('#tPlay').textContent = '❚❚ Pause'; }
-function playRange(a, b) { if (!cur) return; ph = a; player.play(cur.media, a, b); $('#tPlay').textContent = '❚❚ Pause'; }
+/* Loop (L): the selected part plays over and over, or the whole file when no part is selected. From a playhead inside
+   that stretch it plays on from there; from outside, it starts at the stretch's start. */
+const loopRange = () => { const q = cur && cur.parts.find(x => x.id === sel); return q ? { a: q.t0, b: q.t1 } : { a: 0, b: dur() }; };
+function playFrom(t, to) {
+  if (!cur) return;
+  if (S.loop) { const r = loopRange(), from = t >= r.a && t < r.b - step() ? t : r.a; ph = from; player.play(cur.media, from, r.b, r); }
+  else player.play(cur.media, t >= dur() - step() ? 0 : t, to);
+  $('#tPlay').textContent = '❚❚ Pause';
+}
+function playRange(a, b) { if (!cur) return; ph = a; player.play(cur.media, a, b, S.loop ? { a, b } : null); $('#tPlay').textContent = '❚❚ Pause'; }
+// a loop that is playing follows a change of part, or of the part's start and end
+function refreshLoop() { if (!S.loop || !player.playing || !player.loop) return; const r = loopRange(); if (Math.abs(r.a - player.loop.a) > 1e-6 || Math.abs(r.b - player.loop.b) > 1e-6) playFrom(player.time); }
+function setLoop(on) {
+  S.loop = on; saveSettings(); const b = $('#tLoop'); b.setAttribute('aria-pressed', on); b.classList.toggle('on', on);
+  if (player.playing) playFrom(player.time);
+  if (on) toast(cur && cur.parts.some(x => x.id === sel) ? 'Loop on: the selected part plays over and over (L turns it off).' : 'Loop on: select a part to loop it; with none selected the whole file loops (L turns it off).');
+  else toast('Loop off.');
+}
+$('#tLoop').addEventListener('click', () => setLoop(!S.loop));
+/* Step: how far ◀ ▶ and ← → move. Shift + arrow is always one frame (for exact placing); Ctrl + arrow is ten seconds. */
+const stepSize = () => (S.skip === 'frame' ? step() : +S.skip);
+const stepLabel = () => (S.skip === 'frame' ? 'one frame' : `${S.skip} s`);
+function showStep() { $('#skipSel').value = String(S.skip); $('#tBack').title = `Back ${stepLabel()} (←; Shift: one frame; Ctrl: ten seconds)`; $('#tFwd').title = `Forward ${stepLabel()} (→; Shift: one frame; Ctrl: ten seconds)`; $('#tBack').setAttribute('aria-label', `Back ${stepLabel()}`); $('#tFwd').setAttribute('aria-label', `Forward ${stepLabel()}`); }
+$('#skipSel').addEventListener('change', e => { S.skip = e.target.value === 'frame' ? 'frame' : e.target.value; saveSettings(); showStep(); e.target.blur(); toast(`◀ ▶ and the arrow keys now move ${stepLabel()}.`); });
+const nudge = (dir, ev) => { movePH(ph + dir * (ev.ctrlKey || ev.metaKey ? 10 : ev.shiftKey ? step() : stepSize())); revealT(ph); };
 function togglePlay() { if (!cur) return; if (player.playing) { player.stop(); ph = C.snapFrame(player.at ?? ph, fps()); phBox.set(ph); $('#tPlay').textContent = '▶ Play'; drawMonitor(); dirty(); } else playFrom(ph); }
 $('#tPlay').addEventListener('click', togglePlay);
 $('#tStart').addEventListener('click', () => { movePH(0); revealT(0); });
 $('#tEnd').addEventListener('click', () => { movePH(dur()); revealT(dur()); });
-$('#tBack').addEventListener('click', e => { movePH(ph - (e.shiftKey ? 1 : step())); revealT(ph); });
-$('#tFwd').addEventListener('click', e => { movePH(ph + (e.shiftKey ? 1 : step())); revealT(ph); });
+$('#tBack').addEventListener('click', e => nudge(-1, e));
+$('#tFwd').addEventListener('click', e => nudge(1, e));
+showStep(); $('#tLoop').setAttribute('aria-pressed', S.loop);
 // buttons do not keep focus: Space must reach the player, not press the last button again
 document.addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.closest('.sheet')) b.blur(); });
 
@@ -499,7 +523,8 @@ $('#helpBtn').addEventListener('click', help);
 function help() {
   const sh = openSheet(`<h3>Keys and tips</h3><div class="keys">
     <kbd>Space</kbd><span>Play / pause</span><kbd>P</kbd><span>Play the selected part</span>
-    <kbd>← →</kbd><span>One frame back / forward (Shift: one second; Ctrl: ten seconds)</span><kbd>[ ]</kbd><span>Previous / next keyframe</span>
+    <kbd>← →</kbd><span>Back / forward by the Step chosen beside ◀ ▶ (Shift: one frame; Ctrl: ten seconds)</span><kbd>[ ]</kbd><span>Previous / next keyframe</span>
+    <kbd>L</kbd><span>Loop the selected part (or the whole file) on or off</span>
     <kbd>Home End</kbd><span>Start / end of the file</span><kbd>N</kbd><span>A new part at the playhead</span>
     <kbd>I O</kbd><span>The selected part starts / ends at the playhead</span><kbd>B</kbd><span>Split the part under the playhead</span>
     <kbd>↑ ↓</kbd><span>Select the previous / next part</span><kbd>Delete</kbd><span>Remove the selected part</span>
@@ -523,7 +548,7 @@ document.addEventListener('keydown', e => {
   if (ctrl && k !== 'ArrowLeft' && k !== 'ArrowRight') return;
   const keyAt = dir => { const ks = cur.keys || []; if (dir < 0) { for (let i = ks.length - 1; i >= 0; i--) if (ks[i] < ph - 1e-4) return ks[i]; return 0; } for (const x of ks) if (x > ph + 1e-4) return x; return dur(); };
   const acts = {
-    ' ': togglePlay, ArrowLeft: () => { movePH(ph - (ctrl ? 10 : e.shiftKey ? 1 : step())); revealT(ph); }, ArrowRight: () => { movePH(ph + (ctrl ? 10 : e.shiftKey ? 1 : step())); revealT(ph); },
+    ' ': togglePlay, ArrowLeft: () => nudge(-1, e), ArrowRight: () => nudge(1, e), l: () => setLoop(!S.loop),
     Home: () => { movePH(0); revealT(0); }, End: () => { movePH(dur()); revealT(dur()); }, '[': () => { movePH(keyAt(-1)); revealT(ph); }, ']': () => { movePH(keyAt(1)); revealT(ph); },
     i: markStart, o: markEnd, b: splitAtPlayhead, n: newPartAtPlayhead, s: snapshot, e: () => $('#exportBtn').click(),
     p: () => { const q = cur.parts.find(x => x.id === sel); if (q) playRange(q.t0, q.t1); else togglePlay(); },

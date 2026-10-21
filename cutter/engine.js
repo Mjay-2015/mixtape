@@ -174,39 +174,63 @@ export class Media {
 /* ---------- playback: pictures on a canvas, sound through Web Audio, both on the audio clock ---------- */
 export class Player {
   constructor({ onFrame, onTime, onEnd }) { this.onFrame = onFrame; this.onTime = onTime; this.onEnd = onEnd; this.run = 0; this.playing = false; this.nodes = new Set(); }
-  get time() { return this.playing ? this.from + (this.ctx.currentTime - this.ctxStart) * this.rate : this.at || 0; }
-  async play(media, from, to = media.duration) {
+  // the time in the file now; while looping it wraps from the loop's end back to its start
+  get time() {
+    if (!this.playing) return this.at || 0;
+    const e = Math.max(0, (this.ctx.currentTime - this.ctxStart) * this.rate), first = this.to - this.from; // not before the start while the sound is still being lined up
+    if (!this.loop || e < first) return this.from + e;
+    const len = this.loop.b - this.loop.a; return this.loop.a + (e - first) % len;
+  }
+  /* plays from `from` to `to`; with `loop` ({a, b}) it plays on from `from` to b, then a to b over and over. The passes are
+     scheduled back to back on the audio clock, so a loop runs without a gap (no stop and start at each turn). */
+  async play(media, from, to = media.duration, loop = null) {
     this.stop(); const run = ++this.run; this.media = media;
     this.ctx ||= new AudioContext(); if (!this.gain) { this.gain = this.ctx.createGain(); this.gain.connect(this.ctx.destination); }
     await this.ctx.resume(); if (run !== this.run) return;
-    this.rate = 1; this.from = from; this.to = Math.min(to, media.duration); this.ctxStart = this.ctx.currentTime + 0.1; this.playing = true;
-    const ctx = this.ctx, live = () => run === this.run;
+    this.loop = loop && loop.b - loop.a > 0.02 ? { a: loop.a, b: Math.min(loop.b, media.duration) } : null;
+    this.rate = 1; this.from = from; this.to = this.loop ? this.loop.b : Math.min(to, media.duration); this.ctxStart = this.ctx.currentTime + 0.1; this.playing = true;
+    const ctx = this.ctx, live = () => run === this.run, self = this;
+    // the passes: the first from `from`, then (looping) a → b again and again, each starting on the audio clock at `base`
+    function* passes() {
+      yield { s: from, e: self.to, base: self.ctxStart }; if (!self.loop) return;
+      for (let base = self.ctxStart + (self.to - from); ; base += self.loop.b - self.loop.a) yield { s: self.loop.a, e: self.loop.b, base };
+    }
+    const endOf = p => (p.e >= media.duration - EPS ? undefined : p.e);
     if (media.a && media.audio.canDecode) (async () => {
       try {
-        const sink = new M.AudioBufferSink(media.a), end = this.to >= media.duration - EPS ? undefined : this.to;
-        for await (const { buffer, timestamp } of sink.buffers(from, end)) {
-          if (!live()) return; if (timestamp >= this.to) break;
-          const node = ctx.createBufferSource(); node.buffer = buffer; node.connect(this.gain);
-          const when = this.ctxStart + (timestamp - from), now = ctx.currentTime;
-          if (when >= now) node.start(when); else if (now - when < buffer.duration) node.start(now, now - when); else continue;
-          const stopAt = this.ctxStart + (this.to - from); if (stopAt < when + buffer.duration) node.stop(Math.max(now, stopAt));
-          this.nodes.add(node); node.onended = () => this.nodes.delete(node);
-          while (live() && timestamp - this.time > 2) await new Promise(r => setTimeout(r, 120));
+        for (const p of passes()) {
+          const sink = new M.AudioBufferSink(media.a), stopAt = p.base + (p.e - p.s);
+          for await (const { buffer, timestamp } of sink.buffers(p.s, endOf(p))) {
+            if (!live()) return; if (timestamp >= p.e) break;
+            const when = p.base + (timestamp - p.s), now = ctx.currentTime;
+            let at = Math.max(when, p.base), off = at - when; // a buffer that begins before the pass starts plays from the pass's start
+            if (at < now) { off += now - at; at = now; }
+            if (off >= buffer.duration || at >= stopAt) continue;
+            const node = ctx.createBufferSource(); node.buffer = buffer; node.connect(this.gain); node.start(at, off);
+            if (stopAt < when + buffer.duration) node.stop(stopAt);
+            this.nodes.add(node); node.onended = () => this.nodes.delete(node);
+            while (live() && when - ctx.currentTime > 2) await new Promise(r => setTimeout(r, 120));
+          }
+          if (!live()) return;
         }
       } catch (e) { console.warn('sound playback stopped:', e); }
     })();
     if (media.v && media.video.canDecode) (async () => {
       try {
-        const sink = new M.CanvasSink(media.v, { width: Math.min(1280, media.video.w), fit: 'contain', poolSize: 3 }), end = this.to >= media.duration - EPS ? undefined : this.to;
-        for await (const w of sink.canvases(from, end)) {
-          if (!live()) return; if (w.timestamp >= this.to) break;
-          while (live() && w.timestamp > this.time + 0.004) await new Promise(r => requestAnimationFrame(r));
+        for (const p of passes()) {
+          const sink = new M.CanvasSink(media.v, { width: Math.min(1280, media.video.w), fit: 'contain', poolSize: 3 });
+          for await (const w of sink.canvases(p.s, endOf(p))) {
+            if (!live()) return; if (w.timestamp >= p.e) break;
+            const when = Math.max(p.base, p.base + (w.timestamp - p.s)); // the frame showing at the pass's start waits for it
+            while (live() && ctx.currentTime < when - 0.004) await new Promise(r => requestAnimationFrame(r));
+            if (!live()) return;
+            if (ctx.currentTime - when < 0.25) this.onFrame(w.canvas, w.timestamp); // drawn unless far behind (the decoder could not keep up)
+          }
           if (!live()) return;
-          if (this.time - w.timestamp < 0.25) this.onFrame(w.canvas, w.timestamp); // drawn unless far behind (the decoder could not keep up)
         }
       } catch (e) { console.warn('picture playback stopped:', e); }
     })();
-    const tick = () => { if (!live()) return; const t = this.time; if (t >= this.to - EPS) { this.at = this.to; this.stop(); this.onTime(this.to); this.onEnd && this.onEnd(); return; } this.onTime(t); requestAnimationFrame(tick); };
+    const tick = () => { if (!live()) return; const t = this.time; if (!this.loop && t >= this.to - EPS) { this.at = this.to; this.stop(); this.onTime(this.to); this.onEnd && this.onEnd(); return; } this.onTime(t); requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
   }
   stop() { if (this.playing) this.at = Math.min(this.to, this.time); this.run++; this.playing = false; for (const n of this.nodes) { try { n.stop(); } catch (e) {} } this.nodes.clear(); }

@@ -185,3 +185,8 @@ select { background: var(--panel-2); border: 1px solid var(--line-2); border-rad
 /* files from last time that the browser wants permission to read again */
 .reopen { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); z-index: 31; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-radius: 10px; background: var(--panel, #10231A); border: 1px solid var(--accent, #F26B3A); box-shadow: 0 10px 34px rgba(0, 0, 0, .45); max-width: calc(100vw - 32px); }
 .reopen span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* loop and step, beside the transport */
+.transport .loopbtn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 650; }
+.transport .stepsel { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 13px; }
+.transport .stepsel select { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line-2); border-radius: 7px; padding: 4px 6px; font: inherit; }

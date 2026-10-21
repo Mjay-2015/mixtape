@@ -43,6 +43,8 @@
       <button id="tPlay" class="play" title="Play / pause (Space)">▶ Play</button>
       <button id="tFwd" class="ic" title="Forward one frame (→; Shift: one second)" aria-label="Forward one frame">▶</button>
       <button id="tEnd" class="ic" title="To the end (End)" aria-label="To the end">⏭</button>
+      <button id="tLoop" class="loopbtn" title="Loop: play the selected part over and over, or the whole file when no part is selected (L)" aria-pressed="false">⟲ Loop</button>
+      <label class="stepsel" title="How far ◀ ▶ and the ← → keys move (Shift + arrow: one frame; Ctrl + arrow: ten seconds)">Step <select id="skipSel" aria-label="How far the back and forward keys move"><option value="frame">1 frame</option><option value="0.1">0.1 s</option><option value="0.5">0.5 s</option><option value="1">1 s</option><option value="2">2 s</option><option value="5">5 s</option><option value="10">10 s</option><option value="30">30 s</option></select></label>
       <input id="phTime" class="tbox big" value="00:00:00:00" aria-label="Playhead time: type a time to jump there" title="Type a time to jump there">
       <span class="sp"></span>
       <button id="markIn" title="The selected part starts here (I)">⇤ Start here</button>
