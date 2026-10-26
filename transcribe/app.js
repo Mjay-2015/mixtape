@@ -36,7 +36,7 @@ let job = null, hits = [], hitAt = -1, lit = -1, editing = null;
 async function loadLib() {
   const [ts, rs, fs] = await Promise.all([allTracks().catch(() => []), allTr().catch(() => []), allFlags().catch(() => [])]);
   flags = new Map(fs.map(f => [f.id, f]));
-  lib = ts.filter(t => !t.stemOf && (t.blob || t.buf)).sort((a, b) => (b.added || 0) - (a.added || 0)); trs = new Map(rs.map(r => [r.id, r])); drawLib();
+  lib = ts.filter(t => !t.stemOf && (t.blob || t.buf)).sort((a, b) => (b.added || 0) - (a.added || 0)); trs = new Map(rs.map(r => [r.id, r])); drawLib(); drawShelf();
 }
 function drawLib() {
   const q = $('#libQ').value.trim().toLowerCase(), el = $('#libL');
@@ -51,14 +51,14 @@ $('#railBtn').addEventListener('click', () => $('#rail').classList.toggle('open'
 for (const b of ['#openBtn', '#openBtn2']) $(b).addEventListener('click', () => $('#fileIn').click());
 $('#fileIn').addEventListener('change', async e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) openPicked(fs); });
 /* A recording, or a studio narration: its audio and its .read-along.json picked together (any order). */
-async function openPicked(fs) {
+async function openPicked(fs, extra = {}) {
   const json = fs.find(f => /\.json$/i.test(f.name)), media = fs.filter(f => !/\.json$/i.test(f.name));
   if (!json) return addFile(media[0]);
   let ra; try { ra = JSON.parse(await json.text()); } catch (e) { return toast('That .json is not a read-along file.'); }
   if (!ra || !Array.isArray(ra.words) || !ra.words.length) return toast('That .json has no words with times in it.');
   const audio = media.find(f => f.name === ra.audio) || media[0];
   if (!audio) return toast(`Pick the recording too: ${ra.audio || 'its .mp3'} together with the .json.`, 6000);
-  const id = await addFile(audio, { quiet: true }); if (!id) return;
+  const id = await addFile(audio, { quiet: true, extra }); if (!id) return;
   // a narration's read-along (mode text), or a transcript made elsewhere (mode heard, e.g. Reverb on your own computer):
   // either way every word has its moment; a transcript keeps the recogniser's confidence, so unsure words show lighter
   const heard = ra.mode === 'heard';
@@ -67,11 +67,11 @@ async function openPicked(fs) {
   cur.tr = { id, mode: heard ? 'heard' : 'text', words, upTo: ra.duration || cur.track.duration || 0, done: true, duration: ra.duration || cur.track.duration || 0, updated: Date.now(), voice: ra.voice || '' };
   await save(); drawAll(); toast(`Ready: ${words.length.toLocaleString()} words, each with its moment${ra.voice ? `, read by ${String(ra.voice).replace(/^[a-z]{2}-[A-Z]{2}-/, '').replace(/:.*/, '')}` : ''}. Click any word.`, 6000);
 }
-async function addFile(f, { quiet = false } = {}) {
+async function addFile(f, { quiet = false, extra = {} } = {}) {
   // the file joins the library (album "Recordings"), so its transcript has a home and it can be played in Mixtape too
   const video = /^video\//.test(f.type) || /\.(mp4|m4v|mov|webm|mkv)$/i.test(f.name);
   const dur = await mediaDuration(f).catch(() => 0);
-  const t = { id: uid(), name: f.name, size: f.size, type: f.type || '', title: f.name.replace(/\.[^.]+$/, ''), artist: '', album: 'Recordings', track: 0, duration: dur, added: Date.now(), blob: f, art: null, ...(video ? { kind: 'video' } : {}) };
+  const t = { id: uid(), name: f.name, size: f.size, type: f.type || '', title: f.name.replace(/\.[^.]+$/, ''), artist: '', album: 'Recordings', track: 0, duration: dur, added: Date.now(), blob: f, art: null, ...(video ? { kind: 'video' } : {}), ...extra };
   try { await tx(libDB, 'tracks', 'readwrite', o => o.put(t)); try { new BroadcastChannel('mixtape').postMessage({ type: 'library' }); } catch (e) {} } catch (e) { toast(`Could not add it to the library: ${e.message || e}`, 5000); }
   await loadLib(); await select(t.id); return t.id;
 }
@@ -113,7 +113,7 @@ function drawText() {
   drawTools();
   if (!r || !r.words.length) { el.innerHTML = ''; return; }
   const ps = T.paragraphs(r.words), hidden = V.clean ? T.cleanHidden(r.words) : null;
-  SUG = sugMap(r);
+  SUG = sugMap(r); NT = noteMap(r);
   el.classList.toggle('show-unsure', V.unsure);
   el.innerHTML = ps.map((p, pi) => paraHTML(r.words, p, pi, hidden)).join('');
   if (hits.length) markHits();
@@ -125,11 +125,11 @@ function paraHTML(words, p, pi, hidden) {
   for (let i = p.i0; i < p.i1; i++) {
     const w = words[i], hide = hidden && hidden.has(i);
     // how sure the recogniser was: under 0.5 lightest, under 0.75 lighter (words a person typed carry no score)
-    const cls = ['w', w.s == null ? 'un' : '', w.c != null && w.c < 0.5 ? 'q2' : w.c != null && w.c < 0.75 ? 'q1' : '', hide ? 'f' : '', !hide && cap ? 'cap' : '', SUG.word.has(i) ? 'sug' : '', w.ai ? 'aiw' : ''].filter(Boolean).join(' ');
+    const cls = ['w', w.s == null ? 'un' : '', w.c != null && w.c < 0.5 ? 'q2' : w.c != null && w.c < 0.75 ? 'q1' : '', hide ? 'f' : '', !hide && cap ? 'cap' : '', SUG.word.has(i) ? 'sug' : '', w.ai ? 'aiw' : '', NT.word.has(i) ? 'nt' : ''].filter(Boolean).join(' ');
     if (hide) { if (/^[A-Z]/.test(w.t) && !/^I\b/.test(w.t)) cap = true; } else cap = false;
     const tip = w.ai ? ` title="Heard as “${esc(w.ai)}”; changed after the AI check"` : w.c != null && w.c < 0.75 ? ` title="Not sure (${Math.round(w.c * 100)}%)"` : '';
     const k = SUG.end.get(i), f = k != null && cur.tr.review.fixes[k];
-    ws.push(`<span class="${cls}" data-i="${i}"${tip}>${esc(w.t)}</span>${f ? `<button class="sugc" data-fix="${k}" title="AI check: probably “${esc(f.likely)}”. Click to accept it or keep what was heard.">→ ${esc(f.likely)}</button>` : ''}`);
+    ws.push(`<span class="${cls}" data-i="${i}"${tip}>${esc(w.t)}</span>${f ? `<button class="sugc" data-fix="${k}" title="AI check: probably “${esc(f.likely)}”. Click to accept it or keep what was heard.">→ ${esc(f.likely)}</button>` : ''}${(NT.end.get(i) || []).map(n => `<button class="ntb" data-note="${esc(n.id)}" title="${esc(n.text || 'Note')}">✎ ${esc(noteLabel(n))}</button>`).join('')}`);
   }
   const col = p.speaker ? spkColour(p.speaker) : '';
   return `<div class="para" data-p="${pi}" data-i0="${p.i0}" data-i1="${p.i1}"><div class="gut">${timed ? `<button class="ts" data-ts="${first.s}" title="Play from here">${T.short(first.s)}</button>` : '<span class="ts">—</span>'}<button class="spk${p.speaker ? '' : ' none'}" data-spk title="Choose or rename the speaker"${col ? ` style="color:${col}"` : ''}>${p.speaker ? esc(p.speaker) : '+ speaker'}</button>${sugSpk(p.i0)}</div><div class="words">${ws.join(' ')}</div><button class="ed" data-ed title="Correct this paragraph (or double-click a word)" aria-label="Correct this paragraph">✎</button></div>`;
@@ -141,7 +141,7 @@ function drawTools() {
   box.innerHTML = `<label class="sw" title="Hide ums, uhs, false starts (“we, we”) and starters (“So,”, “Well,”) for a cleaner script; exports follow this"><input type="checkbox" data-v="clean"${V.clean ? ' checked' : ''}> Clean script${fillers ? ` <small>(${fillers} hidden)</small>` : ''}</label>`
     + `<label class="sw" title="Words the recogniser was not sure of are lighter: check those first"><input type="checkbox" data-v="unsure"${V.unsure ? ' checked' : ''}> Unsure words lighter${unsure ? ` <small>(${unsure})</small>` : ''}</label>`
     + (r.mode === 'heard' ? `<span class="spks">${names.map(n => `<button class="chip" data-ren="${esc(n)}" title="Rename “${esc(n)}” everywhere" style="--c:${spkColour(n)}">${esc(n)}</button>`).join('')}${names.length ? '' : '<span class="muted">No speakers yet</span>'}</span>` : '')
-    + `<span class="sp"></span>${reviewURL() && r.mode === 'heard' && sensitive(cur.track.id) ? `<button class="btn sm aibtn" disabled title="This recording is marked sensitive, so the AI check (which sends the words to Claude through the studio) is locked. Unmark it at the top if you choose to.">🔒 AI check</button>` : ''}${reviewURL() && r.mode === 'heard' && !sensitive(cur.track.id) ? `<button class="btn sm aibtn" data-ai title="A second reader: Claude reads the transcript for sense and suggests where the recogniser most likely misheard (names, places, sound-alikes) and where a speaker looks wrong. Nothing changes until you accept it.">✦ AI check</button>` : ''}<button class="btn sm ghost" id="keysBtn" title="Keyboard shortcuts (?)">⌨ Keys</button>`
+    + `<span class="sp"></span>${reviewURL() && r.mode === 'heard' && sensitive(cur.track.id) ? `<button class="btn sm aibtn" disabled title="This recording is marked sensitive, so the AI check (which sends the words to Claude through the studio) is locked. Unmark it at the top if you choose to.">🔒 AI check</button>` : ''}${reviewURL() && r.mode === 'heard' && !sensitive(cur.track.id) ? `<button class="btn sm aibtn" data-ai title="A second reader: Claude reads the transcript for sense and suggests where the recogniser most likely misheard (names, places, sound-alikes) and where a speaker looks wrong. Nothing changes until you accept it.">✦ AI check</button>` : ''}<button class="btn sm ntbtn" data-notes title="Notes for the writer: select words, or press N while listening, to mark where something should change">✎ Notes${(r.notes || []).length ? ` (${r.notes.length})` : ''}</button><button class="btn sm ghost" id="keysBtn" title="Keyboard shortcuts (?)">⌨ Keys</button>`
     + aiBar(r);
 }
 
@@ -177,6 +177,7 @@ $('#seek').addEventListener('input', e => { if (cur && cur.media.duration) { cur
 $('#speed').addEventListener('change', e => { if (cur) cur.media.playbackRate = +e.target.value; });
 $('#text').addEventListener('dblclick', e => { const p = e.target.closest('.para'); if (p && e.target.closest('.w') && !editing) { e.preventDefault(); startEdit(p, +e.target.closest('.w').dataset.i); } });
 $('#text').addEventListener('click', e => {
+  const nb = e.target.closest('[data-note]'); if (nb) return openNote(nb.dataset.note, nb);
   const sf = e.target.closest('[data-fix]'); if (sf) return fixMenu(sf, +sf.dataset.fix);
   const ss = e.target.closest('[data-sfix]'); if (ss) return speakerFixMenu(ss, +ss.dataset.sfix);
   const w = e.target.closest('.w'); if (w && !w.classList.contains('un')) { const r = cur.tr.words[+w.dataset.i]; playAt(r.s); return; }
@@ -199,7 +200,7 @@ function startEdit(p, atWord) {
 function cancelEdit() { if (!editing) return; editing.p.querySelector('.words').innerHTML = editing.html; editing = null; }
 async function saveEdit(text) {
   const { i0, i1 } = editing; editing = null; remember();
-  cur.tr.words = T.editParagraph(cur.tr.words, i0, i1, text); await save(); drawAll(); toast('Corrected.');
+  const before = cur.tr.words.length; cur.tr.words = T.editParagraph(cur.tr.words, i0, i1, text); shiftNotes(i0, i1, cur.tr.words.length - before); await save(); drawAll(); toast('Corrected.');
 }
 /* a paragraph's speaker: pick one already there, add a new one, or rename this one everywhere */
 function nameSpeaker(p, btn) {
@@ -220,10 +221,10 @@ function askName(anchor, title, value, done) {
   m.onclick = ev => { if (ev.target.closest('[data-ok]')) ok(); };
 }
 /* undo: every change to the words is a step back (Ctrl Z) */
-const undoStack = []; function remember() { if (cur && cur.tr) { undoStack.push(JSON.stringify({ words: cur.tr.words, review: cur.tr.review || null })); if (undoStack.length > 60) undoStack.shift(); } }
-async function undo() { if (!undoStack.length || !cur || !cur.tr) return toast('Nothing to undo.'); const u = JSON.parse(undoStack.pop()); cur.tr.words = u.words; if (u.review) cur.tr.review = u.review; else delete cur.tr.review; await save(); drawText(); toast('Undone.'); }
+const undoStack = []; function remember() { if (cur && cur.tr) { undoStack.push(JSON.stringify({ words: cur.tr.words, review: cur.tr.review || null, notes: cur.tr.notes || [] })); if (undoStack.length > 60) undoStack.shift(); } }
+async function undo() { if (!undoStack.length || !cur || !cur.tr) return toast('Nothing to undo.'); const u = JSON.parse(undoStack.pop()); cur.tr.words = u.words; cur.tr.notes = u.notes || []; if (u.review) cur.tr.review = u.review; else delete cur.tr.review; await save(); drawText(); toast('Undone.'); }
 $('#tools').addEventListener('change', e => { const k = e.target.dataset.v; if (!k) return; V[k] = e.target.checked; saveV(); drawText(); });
-$('#tools').addEventListener('click', e => { if (aiClick(e)) return; const c = e.target.closest('[data-ren]'); if (c) return askName(c, `Rename “${c.dataset.ren}” everywhere`, c.dataset.ren, n => renameAll(c.dataset.ren, n)); if (e.target.closest('#keysBtn')) keysHelp(); });
+$('#tools').addEventListener('click', e => { if (aiClick(e)) return; const nl = e.target.closest('[data-notes]'); if (nl) return notesList(nl); const c = e.target.closest('[data-ren]'); if (c) return askName(c, `Rename “${c.dataset.ren}” everywhere`, c.dataset.ren, n => renameAll(c.dataset.ren, n)); if (e.target.closest('#keysBtn')) keysHelp(); });
 
 /* ---------- sensitive recordings: nothing leaves this computer ----------
    Court, client, medical, HR… A recording marked sensitive has the AI check locked (the only thing on this page that
@@ -306,7 +307,7 @@ async function runReview(notes) {
 }
 function takeFix(k) {
   const rv = cur.tr.review, f = rv.fixes[k]; rv.fixes.splice(k, 1); const a = T.applyFix(cur.tr.words, f);
-  if (a.at < 0) return false; cur.tr.words = a.words; rv.fixes = T.shiftFixes(rv.fixes, a.at, a.delta); rv.speakers = T.shiftFixes(rv.speakers, a.at, a.delta); return true;
+  if (a.at < 0) return false; cur.tr.words = a.words; shiftNotes(a.at, a.at + 1, a.delta); rv.fixes = T.shiftFixes(rv.fixes, a.at, a.delta); rv.speakers = T.shiftFixes(rv.speakers, a.at, a.delta); return true;
 }
 function fixMenu(btn, k) {
   const f = cur.tr.review.fixes[k]; if (!f) return; const at = T.locateFix(cur.tr.words, f);
@@ -331,6 +332,107 @@ async function acceptAll() {
   for (const s of rv.speakers.splice(0)) if (cur.tr.words[s.at]) { cur.tr.words = T.setSpeaker(cur.tr.words, s.at, s.speaker); n++; }
   await save(); drawText(); toast(`${n} change${n === 1 ? '' : 's'} made. Ctrl + Z undoes them all.`);
 }
+
+/* ---------- From the studio: narrations it made, ready to add ----------
+   The studio keeps its narrations (an mp3 and its read-along) in its store; inside the studio this page lists them, and
+   adding one copies both into this browser's library, so it plays offline afterwards like anything else here. */
+const shelfURL = () => window.MIXTAPE_NARRATIONS_URL || (location.pathname.startsWith('/studio/') ? '/studio/api/narrations' : '');
+let shelf = [];
+async function loadShelf() { const u = shelfURL(); if (!u) return; try { const r = await fetch(u); if (!r.ok) return; shelf = (await r.json()).narrations || []; drawShelf(); } catch (e) { /* offline: the shelf waits */ } }
+function drawShelf() {
+  const el = $('#shelf'); if (!shelf.length) { el.hidden = true; return; } el.hidden = false;
+  el.innerHTML = `<div class="lbl">From the studio</div>` + shelf.map((n, k) => { const have = lib.find(t => t.studio === n.title);
+    return `<button class="sh${have ? ' have' : ''}" data-sh="${k}" title="${have ? 'In your library: open it' : 'Add it to this computer: it plays offline afterwards'}"><span class="n">${esc(n.title)}</span><span class="d">${have ? 'In your library' : `+ Add · ${Math.max(1, Math.round(n.size / 1e6))} MB`}</span></button>`; }).join('');
+}
+$('#shelf').addEventListener('click', async e => { const b = e.target.closest('[data-sh]'); if (!b || b.disabled) return; const n = shelf[+b.dataset.sh], have = lib.find(t => t.studio === n.title); if (have) return select(have.id); await addFromStudio(n, b); });
+async function addFromStudio(n, btn) {
+  if (job) return toast('Pause the current transcript first.');
+  btn.disabled = true; btn.querySelector('.d').textContent = 'Fetching…';
+  try {
+    const [a, j] = await Promise.all([fetch(n.audio), fetch(n.readAlong)]); if (!a.ok || !j.ok) throw new Error(`the studio answered ${a.ok ? j.status : a.status}`);
+    const ra = await j.json(), blob = await a.blob();
+    await openPicked([new File([blob], ra.audio || `${n.title}.mp3`, { type: 'audio/mpeg' }), new File([JSON.stringify(ra)], `${n.title}.read-along.json`, { type: 'application/json' })], { studio: n.title });
+  } catch (e) { toast(`Could not fetch it: ${e.message || e}`, 6000); }
+  finally { btn.disabled = false; drawShelf(); }
+}
+
+/* ---------- notes for the writer: mark where something should change, while listening ----------
+   Select words (or press N while it reads: the sentence being read is taken), say what should change, and it is kept
+   with the read-along. The list can be saved as a file or, inside the studio, sent to the writers. */
+let NT = { word: new Map(), end: new Map() };
+function noteMap(r) { const m = { word: new Map(), end: new Map() }; for (const n of r.notes || []) { for (let i = n.i0; i <= n.i1; i++) m.word.set(i, n.id); const e = m.end.get(n.i1) || []; e.push(n); m.end.set(n.i1, e); } return m; }
+const noteNo = n => [...(cur.tr.notes || [])].sort((a, b) => a.i0 - b.i0).indexOf(n) + 1;
+const noteLabel = n => String(noteNo(n));
+const quoteOf = n => cur.tr.words.slice(n.i0, n.i1 + 1).map(w => w.t).join(' ');
+const noteTime = n => { const w = cur.tr.words[n.i0]; return w && w.s != null ? w.s : 0; };
+function selRange() {
+  const sel = getSelection(); if (!sel || sel.isCollapsed || !$('#text').contains(sel.anchorNode)) return null;
+  let a = Infinity, b = -1; for (const el of $('#text').querySelectorAll('.w')) if (sel.containsNode(el, true)) { const i = +el.dataset.i; if (i < a) a = i; if (i > b) b = i; }
+  return b < 0 ? null : [a, b];
+}
+function sentenceAround(k) {
+  const ws = cur.tr.words, end = i => /[.!?…]["”’)]*$/.test(ws[i].t); let a = k, b = k;
+  while (a > 0 && !end(a - 1) && !ws[a].p) a--; while (b < ws.length - 1 && !end(b)) b++; return [a, b];
+}
+function newNote() {
+  if (!cur || !cur.tr || !cur.tr.words.length) return toast('Open a read-along or a transcript first.');
+  let rg = selRange();
+  if (!rg) { let k = lit >= 0 ? lit : T.wordAt(cur.tr.words, cur.media.currentTime, T.timedUpTo(cur.tr.words)); rg = sentenceAround(Math.max(0, k)); }
+  const playing = !cur.media.paused; cur.media.pause(); getSelection().removeAllRanges();
+  noteBox({ id: uid(), i0: rg[0], i1: rg[1], text: '', made: Date.now() }, true, playing);
+}
+function openNote(id, anchor) { const n = (cur.tr.notes || []).find(x => x.id === id); if (n) noteBox(n, false, false, anchor); }
+function noteBox(n, isNew, resume, anchor) {
+  const m = $('#menu');
+  m.innerHTML = `<div class="ntbox"><div class="lbl">${isNew ? 'A note for the writer' : `Note ${noteLabel(n)}`} · at ${T.short(noteTime(n))}</div><blockquote class="nq">${esc(quoteOf(n))}</blockquote><textarea class="notes nt" placeholder="What should change here? (Ctrl + Enter saves, Esc cancels)">${esc(n.text)}</textarea><div class="sugrow"><button class="btn sm" data-hear title="Play from the start of these words">▶ Hear it</button>${isNew ? '' : '<button class="btn sm" data-del>Delete</button>'}<span class="sp"></span><button class="btn sm" data-x>Cancel</button><button class="btn sm primary" data-save>Save</button></div></div>`;
+  m.hidden = false;
+  const at = anchor || $(`.w[data-i="${n.i0}"]`) || $('#bPlay'), rc = at.getBoundingClientRect();
+  m.style.top = below(m, rc); m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.left)) + 'px';
+  const ta = m.querySelector('textarea'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  let done = false;
+  const close = async how => {
+    if (done) return; done = true; m.hidden = true; document.removeEventListener('pointerdown', off);
+    if (how === 'save') {
+      const text = ta.value.trim(); if (!text && isNew) { if (resume) cur.media.play().catch(() => {}); return; }
+      remember(); const ns = cur.tr.notes || (cur.tr.notes = []); n.text = text; n.edited = Date.now(); if (isNew) ns.push(n);
+      await save(); drawText(); drawTools(); toast(isNew ? `Noted (${ns.length}). It is kept with this read-along.` : 'Note saved.', 2200);
+    } else if (how === 'del') { remember(); cur.tr.notes = (cur.tr.notes || []).filter(x => x.id !== n.id); await save(); drawText(); drawTools(); toast('Note deleted. Ctrl + Z brings it back.'); }
+    if (resume) cur.media.play().catch(() => {});
+  };
+  ta.addEventListener('keydown', ev => { if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); close('save'); } else if (ev.key === 'Escape') { ev.preventDefault(); close('cancel'); } });
+  m.onclick = ev => { if (ev.target.closest('[data-save]')) close('save'); else if (ev.target.closest('[data-x]')) close('cancel'); else if (ev.target.closest('[data-del]')) close('del'); else if (ev.target.closest('[data-hear]')) playAt(Math.max(0, noteTime(n) - 0.3)); };
+  const off = ev => { if (!m.contains(ev.target)) close(ta.value.trim() && ta.value.trim() !== n.text ? 'save' : 'cancel'); };
+  setTimeout(() => document.addEventListener('pointerdown', off), 0);
+}
+function shiftNotes(i0, i1, delta) { // words i0..i1 (end exclusive) were replaced and the text grew by delta words
+  if (!cur.tr.notes || !delta) return; const last = cur.tr.words.length - 1;
+  for (const n of cur.tr.notes) { if (n.i0 >= i1) n.i0 += delta; if (n.i1 >= i1 - 1) n.i1 += delta; n.i0 = Math.max(0, Math.min(n.i0, last)); n.i1 = Math.max(n.i0, Math.min(n.i1, last)); }
+}
+function notesList(btn) {
+  const r = cur.tr, ns = [...(r.notes || [])].sort((a, b) => a.i0 - b.i0), m = $('#menu');
+  const head = ns.length ? `${ns.length} note${ns.length > 1 ? 's' : ''} for the writer` : 'No notes yet';
+  m.innerHTML = `<div class="ntbox"><div class="lbl">${head}</div>${ns.length ? '' : '<div class="why">While it reads, press <b>N</b> to note the sentence being read, or select some words first and press N (or this button’s ✎ in the bar below). Say what should change; it is kept here.</div>'}<div class="nlist">${ns.map((n, k) => `<button class="nli" data-go="${esc(n.id)}"><span class="t">${k + 1} · ${T.short(noteTime(n))}</span><span class="q">“${esc(quoteOf(n).slice(0, 110))}${quoteOf(n).length > 110 ? '…' : ''}”</span><span class="x">${esc(n.text)}</span></button>`).join('')}</div>${ns.length ? `<div class="sugrow"><button class="btn sm" data-md>Save as a file (.md)</button><span class="sp"></span>${shelfURL() ? `<button class="btn sm primary" data-send title="The writers pick them up from the studio">Send to the studio</button>` : ''}</div>${r.notesSent ? `<div class="why">Last sent to the studio ${new Date(r.notesSent).toLocaleString()}.</div>` : ''}` : ''}</div>`;
+  m.hidden = false; const rc = btn.getBoundingClientRect(); m.style.top = below(m, rc); m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, rc.right - m.offsetWidth)) + 'px';
+  m.onclick = async ev => {
+    const g = ev.target.closest('[data-go]'); if (g) { m.hidden = true; const n = ns.find(x => x.id === g.dataset.go), el = $(`.w[data-i="${n.i0}"]`); if (el) { scrolledAt = performance.now(); el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } setTimeout(() => openNote(n.id), 350); return; }
+    if (ev.target.closest('[data-md]')) { m.hidden = true; dl(notesMD(), `${(cur.track.title || 'notes').replace(/[\\/:*?"<>|]+/g, '-')} (notes).md`); return; }
+    if (ev.target.closest('[data-send]')) { m.hidden = true; sendNotes(); }
+  };
+  setTimeout(() => document.addEventListener('pointerdown', function off(ev) { if (!m.contains(ev.target)) { m.hidden = true; document.removeEventListener('pointerdown', off); } }), 0);
+}
+function notesMD() {
+  const ns = [...(cur.tr.notes || [])].sort((a, b) => a.i0 - b.i0);
+  return `# Notes on “${cur.track.title}”\n\n${ns.length} note${ns.length === 1 ? '' : 's'}, ${new Date().toLocaleString()}\n\n` + ns.map((n, k) => `## ${k + 1}. At ${T.short(noteTime(n))}\n\n> ${quoteOf(n)}\n\n${n.text}\n`).join('\n');
+}
+async function sendNotes() {
+  const ns = [...(cur.tr.notes || [])].sort((a, b) => a.i0 - b.i0);
+  try {
+    const res = await fetch('/studio/api/narrations/notes', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: cur.track.studio || cur.track.title, notes: ns.map(n => ({ at: noteTime(n), quote: quoteOf(n), text: n.text })), md: notesMD() }) });
+    const out = await res.json().catch(() => ({})); if (!res.ok) throw new Error(out.error || `the studio answered ${res.status}`);
+    cur.tr.notesSent = Date.now(); await save(); toast(`Sent ${out.saved} note${out.saved === 1 ? '' : 's'} to the studio.`, 4000);
+  } catch (e) { toast(`Could not send them: ${e.message || e}. Save them as a file instead.`, 7000); }
+}
+$('#bNote').addEventListener('click', newNote);
 
 /* ---------- find ---------- */
 $('#q').addEventListener('input', () => { hits = cur && cur.tr ? T.search(cur.tr.words, $('#q').value) : []; hitAt = -1; markHits(); $('#qn').textContent = $('#q').value.trim() ? `${hits.length}` : ''; });
@@ -442,7 +544,7 @@ async function window16k(track, w0, w1) {
 }
 
 /* ---------- keys: the transcription editors' way (Temi, Rev, Happy Scribe) ---------- */
-const KEYS = [['Tab', 'Play / pause — anywhere, even while typing'], ['Shift + Tab', 'Back 5 seconds'], ['Ctrl + →  /  Ctrl + ←', 'Forward / back 5 seconds'], ['← →', 'Forward / back 5 seconds (when not typing)'], ['Ctrl + ↑  /  Ctrl + ↓', 'Faster / slower'], ['Click a word', 'Play from that word'], ['Double-click a word', 'Correct its paragraph (Ctrl + Enter saves, Esc cancels)'], ['Ctrl + Z', 'Undo the last change'], ['Ctrl + F', 'Find in the text (Enter: next, Shift + Enter: previous)'], ['Space', 'Play / pause (when not typing)'], ['?', 'These keys']];
+const KEYS = [['Tab', 'Play / pause — anywhere, even while typing'], ['Shift + Tab', 'Back 5 seconds'], ['Ctrl + →  /  Ctrl + ←', 'Forward / back 5 seconds'], ['← →', 'Forward / back 5 seconds (when not typing)'], ['Ctrl + ↑  /  Ctrl + ↓', 'Faster / slower'], ['Click a word', 'Play from that word'], ['Double-click a word', 'Correct its paragraph (Ctrl + Enter saves, Esc cancels)'], ['N', 'Note for the writer: on the words you selected, or the sentence being read (Ctrl + Enter saves)'], ['Ctrl + Z', 'Undo the last change'], ['Ctrl + F', 'Find in the text (Enter: next, Shift + Enter: previous)'], ['Space', 'Play / pause (when not typing)'], ['?', 'These keys']];
 function keysHelp() {
   const m = $('#menu'); m.innerHTML = `<div class="lbl">Keys</div><table class="keys">${KEYS.map(([k, v]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(v)}</td></tr>`).join('')}</table><label class="sw"><input type="checkbox" id="bkp"${V.backup ? ' checked' : ''}> Back up 1 second when playing again after a pause</label>`; m.hidden = false;
   const b = $('#keysBtn') || $('#bPlay'), r = b.getBoundingClientRect(); m.style.top = Math.max(8, Math.min(innerHeight - m.offsetHeight - 8, r.bottom + 6)) + 'px'; m.style.left = Math.max(8, Math.min(innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
@@ -463,12 +565,13 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'ArrowLeft') { e.preventDefault(); back(5); }
   else if (e.key === 'ArrowRight') { e.preventDefault(); fwd(5); }
   else if (e.key === '?') { e.preventDefault(); keysHelp(); }
+  else if ((e.key === 'n' || e.key === 'N') && !ctrl && !e.altKey) { e.preventDefault(); newNote(); }
 });
 document.addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.closest('.edit')) b.blur(); });
 addEventListener('resize', () => { $('#menu').hidden = true; }); // a pop-up placed for the old window size would hang off the new one
 addEventListener('beforeunload', e => { if (job) { e.preventDefault(); e.returnValue = ''; } });
 
 /* ---------- start ---------- */
-await loadLib();
+await loadLib(); loadShelf();
 const want = new URLSearchParams(location.search).get('song'); if (want) select(want);
 if (['localhost', '127.0.0.1'].includes(location.hostname)) window.__tr = { get cur() { return cur; }, select, start, T, get job() { return job; }, openPicked, docxText };

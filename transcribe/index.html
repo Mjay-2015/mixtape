@@ -26,6 +26,7 @@
 <div class="wrap">
   <aside class="rail" id="rail" aria-label="Recordings">
     <div class="rail-h"><input id="libQ" type="search" placeholder="Search your library" aria-label="Search your library" autocomplete="off"><button class="btn sm primary" id="openBtn" title="Open a recording or video from this computer">Open a file…</button><input id="fileIn" type="file" multiple accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.opus,.flac,.mp4,.mov,.webm,.mkv,.json" hidden></div>
+    <div class="shelf" id="shelf" hidden></div>
     <ol class="libl" id="libL"></ol>
   </aside>
 
@@ -60,6 +61,7 @@
   <button class="ib" id="bBack" title="Back 5 seconds (←)" aria-label="Back 5 seconds">↺5</button>
   <button class="ib play" id="bPlay" title="Play / pause (Space; Tab while editing)" aria-label="Play">▶</button>
   <button class="ib" id="bFwd" title="Forward 5 seconds (→)" aria-label="Forward 5 seconds">5↻</button>
+  <button class="ib ntk" id="bNote" title="Note for the writer (N): on the words you selected, or the sentence being read" aria-label="Note for the writer">✎</button>
   <span class="tm" id="tm">0:00 / 0:00</span>
   <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Position">
   <select id="speed" aria-label="Playback speed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>

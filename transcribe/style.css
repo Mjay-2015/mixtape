@@ -173,3 +173,30 @@ button,input,select,textarea{font:inherit;color:inherit}
 @media (prefers-color-scheme:dark){.sens.on{border-color:#E08A80;background:#3A1D1A;color:#F2B8B0}}
 .libl .lock{font-size:12px}
 .aibtn:disabled{opacity:.75;cursor:not-allowed}
+
+/* notes for the writer: rose, apart from the teal of what is playing and the ochre of the AI check */
+:root{--nt:#A8385A;--nt-bg:#F7E0E7}
+@media (prefers-color-scheme:dark){:root{--nt:#EE8FAB;--nt-bg:#3B1F29}}
+.w.nt{background:var(--nt-bg);box-shadow:0 0 0 1px var(--nt-bg)}
+.w.nt.on{background:var(--lit);box-shadow:0 0 0 2px var(--lit)}
+.ntb{display:inline-flex;align-items:center;margin:0 2px 0 3px;padding:0 7px;height:21px;vertical-align:1px;border-radius:999px;border:1px solid var(--nt);background:var(--nt-bg);color:var(--nt);font:600 12px var(--f-ui);cursor:pointer}
+.ntb:hover{background:var(--nt);color:var(--sheet)}
+.btn.ntbtn{border-color:var(--nt);color:var(--nt)}
+.ib.ntk{color:var(--nt);font-size:17px}
+.menu .ntbox{width:min(440px,88vw);display:flex;flex-direction:column}
+.menu .nq{margin:4px 10px 6px;padding:6px 10px;border-left:3px solid var(--nt);font:15px/1.45 var(--f-read);color:var(--muted);max-height:140px;overflow:auto}
+.menu textarea.notes.nt{width:auto;border-color:var(--nt);min-height:84px}
+.menu .nlist{max-height:min(52vh,420px);overflow:auto;display:flex;flex-direction:column}
+.menu .nli{display:grid;gap:2px;padding:8px 10px;border-bottom:1px solid var(--line);border-radius:0}
+.menu .nli .t{font:11.5px var(--f-mono);color:var(--nt)}
+.menu .nli .q{font:14px/1.35 var(--f-read);color:var(--muted)}
+.menu .nli .x{font-size:13.5px}
+/* the studio's narrations, ready to add */
+.shelf{padding:8px 6px 6px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
+.shelf .lbl{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:2px 10px 4px}
+.shelf .sh{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;text-align:left;padding:8px 10px;border-radius:9px;border:1px dashed var(--line);background:none;cursor:pointer}
+.shelf .sh:hover{background:var(--sheet);border-color:var(--accent)}
+.shelf .sh .n{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shelf .sh .d{font-size:12px;color:var(--accent)}
+.shelf .sh.have{border-style:solid}
+.shelf .sh.have .d{color:var(--muted)}
