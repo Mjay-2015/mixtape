@@ -1,14 +1,23 @@
 # Mixtape
 
-A music player for your own song files. Install it once from the link below, and after that it works with no internet and keeps playing with the screen off.
+An offline music player for your own songs, with a studio for mixing, scoring to picture and transcribing, all in the browser.
 
-**Open / install:** https://mjay-2015.github.io/mixtape/
+**[Open Mixtape](https://mjay-2015.github.io/mixtape/)** · installs on a phone and keeps playing with the screen off
 
-- Songs stay on your device (saved in the browser). Nothing is uploaded.
-- Play, pause, next, previous, seek, shuffle, repeat (all / one), queue, favorites, playlists, search, sort, sleep timer, speed, lock-screen controls.
-- Reads title, artist, album and cover art from MP3 tags; other formats use the filename.
+![Mixtape Studio with its demo groove loaded: drums, bass and piano tracks on a timeline, with per-track volume, pan and effects](docs/studio.png)
+
+## What it does
+
+- **Player:** your own song files, saved on your device and never uploaded. Queue, playlists, favourites, search, shuffle and repeat, sleep timer, speed, lock-screen controls. Reads title, artist, album and cover art from MP3 tags.
+- **Studio:** cut and arrange parts on a timeline, mix with per-track EQ, compression, sends and groups, drum machine, MIDI and synthesised instruments, and an orchestra of CC0 samples.
+- **Scoring to picture:** a picture track, hit points, a tempo map that fits the cuts, and finished mixes delivered to broadcast and streaming loudness standards (EBU R128, -23 LUFS).
+- **Lyrics and transcripts:** speech recognition runs in the browser (Whisper through transformers.js) to time lyrics line by line, transcribe interviews, find the speakers, and match a read script to its recording word by word.
+
+Everything runs on the device. The only exception is an optional AI check of a transcript, which is switched off for anything marked sensitive.
 
 When you change `index.html`, bump `VERSION` in `sw.js` so installed copies pick up the update.
+
+Designed, specified and tested by Natalie Donga; built with Claude Code.
 
 ## Lyrics
 
