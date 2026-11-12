@@ -2,7 +2,7 @@
 
 An offline music player for your own songs, with a studio for mixing, scoring to picture and transcribing, all in the browser.
 
-**[Open Mixtape](https://mjay-2015.github.io/mixtape/)** · installs on a phone and keeps playing with the screen off
+**[Open Mixtape](https://nataliedonga.github.io/mixtape/)** · installs on a phone and keeps playing with the screen off
 
 ![Mixtape Studio with its demo groove loaded: drums, bass and piano tracks on a timeline, with per-track volume, pan and effects](docs/studio.png)
 
